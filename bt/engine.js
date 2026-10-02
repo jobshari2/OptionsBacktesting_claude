@@ -1,0 +1,737 @@
+// Backtest engine: replays a strategy minute by minute over cached 1-minute option candles.
+//
+// A strategy is defined relative to the market (ATM offsets, premium, delta, % of spot, expiry
+// "current/next week/month"), so the same definition works for every past and future expiry.
+//
+// Fills: entry and timed exit at the OPEN of that minute's candle; stop-loss / target are checked against
+// each candle's high/low (stop first when both are touched in one candle — the conservative choice) and
+// fill at the trigger price, or at the open if the candle gapped through it. Overall MTM rules are checked
+// on candle closes. Slippage is applied against you on every fill.
+//
+// Signal-triggered strategies (entry.when = 'signal') scan each session from the entry time to the
+// "until" time and enter at the open of the minute after all entry conditions hold (anomaly fired, near or
+// through a support/resistance level, Nifty move...), up to maxTrades times a day. Legs can take their
+// strike from the anomaly ("signal") or from the nearest support/resistance level ("sr"), and a leg can
+// stop out when Nifty closes through the level beyond it ("srb").
+const { MPD, addDays } = require('./data');
+const { normCondition, evaluate } = require('./conditions');
+const A = require('./anomalies');
+const { nearest: nearestLevels } = require('./levels');
+
+const RATE = 0.065; // risk-free rate for implied vol / delta
+const MIN_OF = (t) => {
+  const [h, m] = String(t || '09:15').split(':').map(Number);
+  return h * 60 + m - (9 * 60 + 15);
+};
+const clampMin = (m) => Math.max(0, Math.min(MPD - 1, m));
+const hhmm = (m) => {
+  const t = m + 555;
+  return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
+};
+const weekday = (day) => new Date(day + 'T00:00:00Z').getUTCDay();
+const r2 = (x) => Math.round(x * 100) / 100;
+
+// ---------- Black-Scholes ----------
+function ncdf(x) {
+  const t = 1 / (1 + 0.2316419 * Math.abs(x));
+  const d = 0.3989423 * Math.exp((-x * x) / 2);
+  const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
+  return x > 0 ? 1 - p : p;
+}
+function bs(S, K, T, v, call) {
+  if (T <= 0 || v <= 0) return Math.max(0, call ? S - K : K - S);
+  const sq = v * Math.sqrt(T);
+  const d1 = (Math.log(S / K) + (RATE + (v * v) / 2) * T) / sq;
+  const d2 = d1 - sq;
+  return call ? S * ncdf(d1) - K * Math.exp(-RATE * T) * ncdf(d2) : K * Math.exp(-RATE * T) * ncdf(-d2) - S * ncdf(-d1);
+}
+function impliedVol(price, S, K, T, call) {
+  let lo = 0.005;
+  let hi = 3;
+  if (price <= Math.max(0, call ? S - K * Math.exp(-RATE * T) : K * Math.exp(-RATE * T) - S) + 1e-6) return lo;
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    if (bs(S, K, T, mid, call) > price) hi = mid; else lo = mid;
+  }
+  return (lo + hi) / 2;
+}
+function delta(S, K, T, v, call) {
+  if (T <= 0) return call ? (S > K ? 1 : 0) : (S < K ? -1 : 0);
+  const d1 = (Math.log(S / K) + (RATE + (v * v) / 2) * T) / (v * Math.sqrt(T));
+  return call ? ncdf(d1) : ncdf(d1) - 1;
+}
+const yearsTo = (expiry, day, m) => Math.max(1e-6, (Date.parse(expiry + 'T15:30:00+05:30') - Date.parse(`${day}T${hhmm(m)}:00+05:30`)) / (365 * 86400_000));
+
+// ---------- strategy defaults ----------
+const ACTIONS = new Set(['B', 'S']);
+const TYPES = new Set(['CE', 'PE']);
+const EXPIRIES = new Set(['cur', 'next', 'mcur', 'mnext']);
+const STRIKE_BY = new Set(['atm', 'premium', 'delta', 'pct', 'pts', 'straddle', 'signal', 'sr']);
+const LEVEL = new Set(['none', 'pct', 'pts', 'upct', 'upts', 'srb']);
+const LV = new Set(['any', 'major', 'minor']);
+
+function normLevel(x) {
+  const type = LEVEL.has(x?.type) ? x.type : 'none';
+  const value = Number(x?.value);
+  if (type === 'srb') return { type, value: value >= 0 ? value : 0, lv: LV.has(x.lv) ? x.lv : 'any' }; // buffer may be 0
+  return type === 'none' || !(value > 0) ? { type: 'none', value: 0 } : { type, value };
+}
+
+function normalizeStrategy(s) {
+  const legs = (Array.isArray(s?.legs) ? s.legs : []).slice(0, 12).map((l) => ({
+    action: ACTIONS.has(l.action) ? l.action : 'S',
+    type: TYPES.has(l.type) ? l.type : 'CE',
+    lots: Math.max(1, Math.min(100, Math.round(Number(l.lots) || 1))),
+    expiry: EXPIRIES.has(l.expiry) ? l.expiry : 'cur',
+    strike: {
+      by: STRIKE_BY.has(l.strike?.by) ? l.strike.by : 'atm',
+      value: Number(l.strike?.value) || 0,
+      match: ['closest', 'gte', 'lte'].includes(l.strike?.match) ? l.strike.match : 'closest',
+      ...(l.strike?.by === 'signal' ? { ref: l.strike.ref === 'ref' ? 'ref' : 'hit' } : {}),
+      ...(l.strike?.by === 'sr' ? { lv: LV.has(l.strike.lv) ? l.strike.lv : 'any' } : {}),
+    },
+    sl: normLevel(l.sl),
+    tgt: normLevel(l.tgt),
+    trail: l.trail && Number(l.trail.x) > 0 && Number(l.trail.y) > 0 ? { x: Number(l.trail.x), y: Number(l.trail.y) } : null,
+    re: l.re && ['sl', 'tgt', 'both'].includes(l.re.on) && ['asap', 'cost', 'atm'].includes(l.re.mode)
+      ? { on: l.re.on, mode: l.re.mode, max: Math.max(1, Math.min(10, Math.round(Number(l.re.max) || 1))) }
+      : null,
+  }));
+  const num = (v) => (Number(v) > 0 ? Number(v) : null);
+  const r = s?.risk || {};
+  return {
+    id: s?.id || null,
+    name: String(s?.name || 'Untitled').slice(0, 80),
+    desc: String(s?.desc || '').slice(0, 400),
+    category: String(s?.category || 'Custom').slice(0, 30),
+    mode: s?.mode === 'positional' ? 'positional' : 'intraday',
+    expiry: s?.expiry === 'monthly' ? 'monthly' : 'weekly',
+    entry: {
+      time: /^\d{2}:\d{2}$/.test(s?.entry?.time) ? s.entry.time : '09:20',
+      days: Array.isArray(s?.entry?.days) && s.entry.days.length ? s.entry.days.map(Number).filter((d) => d >= 1 && d <= 5) : [1, 2, 3, 4, 5],
+      dte: Array.isArray(s?.entry?.dte) ? s.entry.dte.map(Number).filter((d) => d >= 0 && d <= 30) : [],
+      dteDays: Math.max(0, Math.min(40, Math.round(Number(s?.entry?.dteDays) || 0))),
+      when: s?.entry?.when === 'signal' ? 'signal' : 'time',
+      until: /^\d{2}:\d{2}$/.test(s?.entry?.until) ? s.entry.until : '14:30',
+      maxTrades: Math.max(1, Math.min(5, Math.round(Number(s?.entry?.maxTrades) || 1))),
+      conditions: (Array.isArray(s?.entry?.conditions) ? s.entry.conditions : []).map(normCondition).filter(Boolean).slice(0, 6),
+    },
+    exit: {
+      time: /^\d{2}:\d{2}$/.test(s?.exit?.time) ? s.exit.time : '15:15',
+      dteDays: Math.max(0, Math.min(40, Math.round(Number(s?.exit?.dteDays) || 0))),
+    },
+    legs,
+    risk: {
+      sl: num(r.sl),
+      tgt: num(r.tgt),
+      lockAt: num(r.lockAt),
+      lockTo: Number(r.lockTo) || 0,
+      trailEvery: num(r.trailEvery),
+      trailBy: num(r.trailBy),
+      onLegSl: r.onLegSl === 'all' ? 'all' : 'leg',
+      slToCost: Boolean(r.slToCost),
+    },
+    filters: { vixMin: num(s?.filters?.vixMin), vixMax: num(s?.filters?.vixMax) },
+  };
+}
+
+function normalizeOpts(o, cal) {
+  const last = cal.expired[cal.expired.length - 1];
+  const first = cal.expired[0];
+  let from = /^\d{4}-\d{2}-\d{2}$/.test(o?.from) ? o.from : addDays(last, -180);
+  let to = /^\d{4}-\d{2}-\d{2}$/.test(o?.to) ? o.to : last;
+  if (to > last) to = last;
+  if (from < addDays(first, -40)) from = addDays(first, -40);
+  return {
+    from,
+    to,
+    expiries: Array.isArray(o?.expiries) && o.expiries.length ? new Set(o.expiries) : null,
+    slippage: Math.max(0, Math.min(5, Number(o?.slippage) || 0)) / 100,
+    brokerage: Math.max(0, Number(o?.brokerage ?? 20) || 0),
+    taxes: o?.taxes !== false,
+    lotMode: o?.lotMode === 'historical' ? 'historical' : 'fixed',
+    lotSize: Math.max(1, Number(o?.lotSize) || cal.liveLot || 65),
+    capital: Number(o?.capital) > 0 ? Number(o.capital) : null,
+  };
+}
+
+// ---------- run ----------
+// ext: { hist (histchain, for anomaly conditions), levels (levels.createLevels()) } — shared caches.
+async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext = {}) {
+  const strat = normalizeStrategy(rawStrat);
+  if (!strat.legs.length) throw new Error('Add at least one leg');
+  const cal = await data.expiryCalendar();
+  if (!cal.expired.length) throw new Error('Upstox returned no expired Nifty expiries');
+  const opts = normalizeOpts(rawOpts, cal);
+  onProgress({ phase: 'Loading Nifty history', done: 0, total: 0 });
+
+  const sigMode = strat.entry.when === 'signal';
+  const conds = sigMode ? strat.entry.conditions : [];
+  if (sigMode && !conds.length) throw new Error('Signal entry needs at least one condition');
+  const needChain = conds.some((c) => c.kind === 'anomaly');
+  const usesLevels = conds.some((c) => c.kind === 'sr-near' || c.kind === 'sr-break') ||
+    strat.legs.some((l) => l.strike.by === 'sr' || l.sl.type === 'srb' || l.tgt.type === 'srb');
+  if (needChain && !ext.hist) throw new Error('Anomaly conditions are not available here');
+  if (usesLevels && !ext.levels) throw new Error('Support/resistance is not available here');
+
+  const needVix = Boolean(strat.filters.vixMin || strat.filters.vixMax);
+  const lastDay = cal.expired[cal.expired.length - 1];
+  // Support/resistance looks back ~120 sessions before the first trade.
+  const days = await data.loadIndex(addDays(opts.from, usesLevels ? -200 : -70), lastDay, needVix);
+  const dayIdx = new Map(days.map((d, i) => [d, i]));
+  if (ext.hist) ext.hist.setDays(days);
+  const levelsOf = (day) => (usesLevels && dayIdx.has(day) ? ext.levels.forDay(days, dayIdx.get(day), data.spotDay) : null);
+
+  const allMonthly = cal.all.filter((e) => cal.monthly.has(e));
+  const nthOnOrAfter = (list, day, n) => {
+    let lo = 0;
+    let hi = list.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (list[mid] < day) lo = mid + 1; else hi = mid; }
+    return list[lo + n] || null;
+  };
+  const legExpiry = (code, day) => (code === 'cur' ? nthOnOrAfter(cal.all, day, 0)
+    : code === 'next' ? nthOnOrAfter(cal.all, day, 1)
+      : code === 'mcur' ? nthOnOrAfter(allMonthly, day, 0)
+        : nthOnOrAfter(allMonthly, day, 1));
+  const refList = strat.expiry === 'monthly' ? allMonthly : cal.all;
+
+  // ---- which trades to take ----
+  const positions = [];
+  const em = clampMin(MIN_OF(strat.entry.time));
+  let xm = clampMin(MIN_OF(strat.exit.time));
+  const sameDay = strat.mode === 'intraday' || strat.entry.dteDays === strat.exit.dteDays;
+  const um = sameDay ? Math.min(xm - 1, clampMin(MIN_OF(strat.entry.until))) : clampMin(MIN_OF(strat.entry.until));
+  if (sigMode && um < em) throw new Error('"Until" time must be after the entry time');
+  if (strat.mode === 'intraday') {
+    if (xm <= em) throw new Error('Exit time must be after entry time');
+    for (const d of days) {
+      if (d < opts.from || d > opts.to) continue;
+      const ref = nthOnOrAfter(refList, d, 0);
+      if (!ref || !dayIdx.has(ref)) continue;
+      if (opts.expiries && !opts.expiries.has(ref)) continue;
+      if (!strat.entry.days.includes(weekday(d))) continue;
+      const dte = dayIdx.get(ref) - dayIdx.get(d);
+      if (strat.entry.dte.length && !strat.entry.dte.includes(dte)) continue;
+      positions.push({ entryDay: d, exitDay: d, ref, dte });
+    }
+  } else {
+    if (strat.exit.dteDays > strat.entry.dteDays) throw new Error('Exit must be on or after the entry day');
+    if (strat.exit.dteDays === strat.entry.dteDays && xm <= em) throw new Error('Exit time must be after entry time');
+    for (const ref of refList) {
+      if (!cal.expiredSet.has(ref) || !dayIdx.has(ref)) continue;
+      if (opts.expiries && !opts.expiries.has(ref)) continue;
+      const i = dayIdx.get(ref);
+      const entryDay = days[i - strat.entry.dteDays];
+      const exitDay = days[i - strat.exit.dteDays];
+      if (!entryDay || entryDay < opts.from || ref > opts.to) continue;
+      positions.push({ entryDay, exitDay, ref, dte: strat.entry.dteDays });
+    }
+  }
+
+  const lotOf = async (expiry) => (opts.lotMode === 'fixed' ? opts.lotSize : (await data.contracts(expiry)).lot);
+
+  // Price (₹) of a contract at the open of minute m on a day, or null if it had not traded.
+  async function priceAt(expiry, strike, type, day, m) {
+    const c = data.optionCached(expiry, strike, type, day) || (await data.option(expiry, strike, type, day));
+    const a = data.optionDay(c, day);
+    const v = a ? a[m * 4] : -1;
+    return v > 0 ? v / 100 : null;
+  }
+
+  // ---- strike selection ----
+  // sx: { hit (anomaly that triggered the entry), lv (support/resistance levels of the day) }
+  async function selectStrike(spec, type, expiry, day, m, spot, sx = {}) {
+    const info = await data.contracts(expiry);
+    const ks = info.strikes;
+    const nearest = (x) => {
+      let b = 0;
+      for (let i = 1; i < ks.length; i++) if (Math.abs(ks[i] - x) < Math.abs(ks[b] - x)) b = i;
+      return b;
+    };
+    const ai = nearest(spot);
+    const otm = type === 'CE' ? 1 : -1;
+    const at = (i) => ks[Math.max(0, Math.min(ks.length - 1, i))];
+    switch (spec.by) {
+      case 'atm': return at(ai + otm * Math.round(spec.value));
+      // n strikes above (+) / below (−) the anomaly's strike; ATM when the entry had no anomaly.
+      case 'signal': {
+        const base = spec.ref === 'ref' && sx.hit?.ref != null ? sx.hit.ref : sx.hit?.strike;
+        return base == null ? ks[ai] : at(nearest(base) + Math.round(spec.value));
+      }
+      // The strike at the nearest resistance above (calls) or support below (puts), n strikes further OTM.
+      case 'sr': {
+        const n = nearestLevels(sx.lv, spot);
+        const lvl = (type === 'CE' ? n.resistance : n.support)[spec.lv || 'any'];
+        return lvl ? at(nearest(lvl.price) + otm * Math.round(spec.value)) : at(ai + otm * Math.round(spec.value));
+      }
+      case 'pct': return ks[nearest(spot * (1 + (otm * spec.value) / 100))];
+      case 'pts': return ks[nearest(spot + otm * spec.value)];
+      case 'straddle': {
+        const [c, p] = await Promise.all([priceAt(expiry, ks[ai], 'CE', day, m), priceAt(expiry, ks[ai], 'PE', day, m)]);
+        if (c == null || p == null) return ks[ai];
+        return ks[nearest(ks[ai] + otm * (c + p) * (spec.value || 1))];
+      }
+      default: { // premium / delta: both fall steadily going OTM, so binary-search the crossing point
+        const T = yearsTo(expiry, day, m);
+        const target = spec.by === 'delta' ? Math.abs(spec.value > 1 ? spec.value / 100 : spec.value) : spec.value;
+        const order = [];
+        for (let i = ai - otm * 6; i >= 0 && i < ks.length && order.length < 90; i += otm) order.push(i);
+        const memo = new Map();
+        const val = async (j) => {
+          if (memo.has(j)) return memo.get(j);
+          const i = order[j];
+          const p = await priceAt(expiry, ks[i], type, day, m).catch(() => null);
+          // Untraded: deep OTM counts as worthless, deep ITM as above any target.
+          let v = p == null ? ((i - ai) * otm > 0 ? 0 : Infinity) : p;
+          if (p != null && spec.by === 'delta') v = Math.abs(delta(spot, ks[i], T, impliedVol(p, spot, ks[i], T, type === 'CE'), type === 'CE'));
+          memo.set(j, v);
+          return v;
+        };
+        // Find the last position whose value is still >= target. Each probe is a download on a cold cache,
+        // so start where Black-Scholes (at the ATM option's implied vol) predicts the crossing, then walk
+        // a strike at a time — usually 3-5 probes in total.
+        if (!order.length) return ks[ai];
+        const call = type === 'CE';
+        const jAtm = order.indexOf(ai);
+        const pAtm = jAtm >= 0 ? await priceAt(expiry, ks[ai], type, day, m).catch(() => null) : null;
+        let j = 0;
+        if (pAtm != null) {
+          const iv = impliedVol(pAtm, spot, ks[ai], T, call);
+          const est = (k) => (spec.by === 'delta' ? Math.abs(delta(spot, k, T, iv, call)) : bs(spot, k, T, iv, call));
+          j = jAtm;
+          while (j + 1 < order.length && est(ks[order[j + 1]]) >= target) j++;
+          memo.set(jAtm, spec.by === 'delta' ? Math.abs(delta(spot, ks[ai], T, iv, call)) : pAtm);
+        }
+        let lo;
+        let hi;
+        if ((await val(j)) >= target) {
+          lo = j;
+          while (lo + 1 < order.length && (await val(lo + 1)) >= target) lo++;
+          if (lo + 1 >= order.length) return ks[order[lo]];
+          hi = lo + 1;
+        } else {
+          hi = j;
+          while (hi > 0 && (await val(hi - 1)) < target) hi--;
+          if (hi === 0) return ks[order[0]];
+          lo = hi - 1;
+        }
+        const a = await val(lo);
+        const b = await val(hi);
+        if (spec.match === 'gte') return ks[order[lo]];
+        if (spec.match === 'lte') return ks[order[a === target ? lo : hi]];
+        return ks[order[Math.abs(a - target) <= Math.abs(b - target) ? lo : hi]];
+      }
+    }
+  }
+
+  const fill = (px, buy) => (buy ? px * (1 + opts.slippage) : px * (1 - opts.slippage));
+  function execCost(x) {
+    const buyTurn = (x.dir > 0 ? x.entryFill : x.exitFill) * x.qty;
+    const sellTurn = (x.dir > 0 ? x.exitFill : x.entryFill) * x.qty;
+    let cost = 2 * opts.brokerage;
+    if (opts.taxes) {
+      const turn = buyTurn + sellTurn;
+      const txn = turn * 0.0003503;
+      const sebi = turn * 0.000001;
+      cost += sellTurn * 0.001 + txn + sebi + 0.18 * (2 * opts.brokerage + txn + sebi) + buyTurn * 0.00003;
+    }
+    return cost;
+  }
+
+  // ---- one trade ----
+  // pos: { entryDay, exitDay, ref, dte, em? (entry minute; signal entries), hit?, sigText? }
+  async function simulate(pos) {
+    const tl = days.slice(dayIdx.get(pos.entryDay), dayIdx.get(pos.exitDay) + 1);
+    const sp0 = data.spotDay(pos.entryDay);
+    if (!sp0) return { skip: 'no Nifty data' };
+    const e0 = pos.em ?? em;
+    if (tl.length === 1 && e0 >= xm) return { skip: 'signal too late to trade', silent: true };
+    const sx = { hit: pos.hit || null, lv: levelsOf(pos.entryDay) };
+    const spotIn = sp0[e0 * 4];
+    let vix = null;
+    if (needVix) {
+      const v = data.vixDay(pos.entryDay);
+      vix = v ? v[e0 * 4] : null;
+      if (vix == null) return { skip: 'no VIX data' };
+      if (strat.filters.vixMin && vix < strat.filters.vixMin) return { skip: 'VIX filter', silent: true };
+      if (strat.filters.vixMax && vix > strat.filters.vixMax) return { skip: 'VIX filter', silent: true };
+    }
+
+    const openLeg = async (def, li, t, m, strike, spot, reCount, origPx) => {
+      const day = tl[t];
+      const expiry = legExpiry(def.expiry, tl[0]);
+      if (!expiry || !cal.expiredSet.has(expiry)) throw new Skip(`expiry ${expiry || '?'} has no data yet`);
+      if (strike == null) strike = await selectStrike(def.strike, def.type, expiry, day, m, spot, sx);
+      const c = await data.option(expiry, strike, def.type, tl[0]);
+      const a = data.optionDay(c, day);
+      const px = a && a[m * 4] > 0 ? a[m * 4] / 100 : null;
+      if (px == null) throw new Skip(`${strike} ${def.type} ${expiry} not traded at entry`);
+      const dir = def.action === 'B' ? 1 : -1;
+      const leg = {
+        def, li, expiry, strike, type: def.type, dir, c,
+        qty: def.lots * (await lotOf(expiry)),
+        entryPx: px, entryFill: fill(px, dir > 0), entryT: t, entryM: m, spotIn: spot,
+        best: px, reCount, origPx: origPx ?? px, open: true, arrDay: null, arr: null,
+        lastDay: expiry < tl[tl.length - 1] ? expiry : null, // settled at expiry if it comes before the exit
+      };
+      setLevels(leg);
+      return leg;
+    };
+
+    function setLevels(leg) {
+      const { sl, tgt } = leg.def;
+      const e = leg.entryPx;
+      const s = leg.dir;
+      leg.slPx = sl.type === 'pct' ? e * (1 - (s * sl.value) / 100) : sl.type === 'pts' ? e - s * sl.value : null;
+      if (leg.slPx != null && leg.slPx < 0) leg.slPx = null;
+      leg.tgtPx = tgt.type === 'pct' ? e * (1 + (s * tgt.value) / 100) : tgt.type === 'pts' ? e + s * tgt.value : null;
+      if (leg.tgtPx != null && leg.tgtPx <= 0) leg.tgtPx = 0.05;
+      leg.slInit = leg.slPx;
+      // Underlying-based levels, in Nifty points; adv = which way of Nifty hurts this leg.
+      leg.adv = (leg.type === 'CE' ? 1 : -1) * (leg.dir < 0 ? 1 : -1);
+      leg.uSl = sl.type === 'upts' ? sl.value : sl.type === 'upct' ? (leg.spotIn * sl.value) / 100 : null;
+      leg.uTgt = tgt.type === 'upts' ? tgt.value : tgt.type === 'upct' ? (leg.spotIn * tgt.value) / 100 : null;
+      // Support/resistance: stop when Nifty closes through the level on the adverse side (+ buffer),
+      // target when it reaches the level on the favourable side (− buffer).
+      leg.srSl = null;
+      leg.srTgt = null;
+      if ((sl.type === 'srb' || tgt.type === 'srb') && sx.lv) {
+        const n = nearestLevels(sx.lv, leg.spotIn);
+        if (sl.type === 'srb') {
+          const l = (leg.adv > 0 ? n.resistance : n.support)[sl.lv];
+          if (l) leg.srSl = l.price + leg.adv * sl.value;
+        }
+        if (tgt.type === 'srb') {
+          const l = (leg.adv > 0 ? n.support : n.resistance)[tgt.lv];
+          if (l) leg.srTgt = l.price + leg.adv * tgt.value;
+        }
+      }
+    }
+
+    const arrOf = (leg, day) => {
+      if (leg.arrDay !== day) { leg.arr = data.optionDay(leg.c, day); leg.arrDay = day; }
+      return leg.arr;
+    };
+
+    let legs;
+    try {
+      legs = await Promise.all(strat.legs.map((def, li) => openLeg(def, li, 0, e0, null, spotIn, 0)));
+    } catch (e) {
+      if (e instanceof Skip) return { skip: e.message };
+      throw e;
+    }
+    const entryLegs = legs.map((l) => ({ dir: l.dir, type: l.type, strike: l.strike, qty: l.qty, px: l.entryPx }));
+
+    const execs = [];
+    let realized = 0;
+    let costs = 0;
+    const pending = [];
+    const mtm = [];
+    const spotPath = [];
+    let maxP = -Infinity;
+    let minP = Infinity;
+    let reason = 'exit-time';
+    let done = false;
+    let lockFloor = null;
+    let exitT = tl.length - 1;
+    let exitM = xm;
+    let spotOut = null;
+    const exitAtClose = xm >= MPD - 1;
+
+    const close = (leg, t, m, px, why) => {
+      leg.open = false;
+      const exitFill = fill(px, leg.dir < 0);
+      const pnl = (exitFill - leg.entryFill) * leg.dir * leg.qty;
+      const x = {
+        leg: leg.li, action: leg.dir > 0 ? 'B' : 'S', type: leg.type, strike: leg.strike, expiry: leg.expiry, qty: leg.qty,
+        entryDay: tl[leg.entryT], entryTime: hhmm(leg.entryM), entryPx: r2(leg.entryPx), entryFill: leg.entryFill,
+        exitDay: tl[t], exitTime: hhmm(m), exitPx: r2(px), exitFill, reason: why, re: leg.reCount, dir: leg.dir,
+      };
+      const cost = execCost(x);
+      x.pnl = Math.round(pnl);
+      x.cost = Math.round(cost);
+      delete x.entryFill; delete x.exitFill; delete x.dir;
+      execs.push(x);
+      realized += pnl;
+      costs += cost;
+      // Re-entry
+      const re = leg.def.re;
+      const cnt = leg.reCount;
+      if (re && cnt < re.max && (re.on === 'both' || re.on === why) && !done) {
+        pending.push({ def: leg.def, li: leg.li, mode: re.mode, strike: re.mode === 'atm' ? null : leg.strike, t, m: m + 1, reCount: cnt + 1, origPx: leg.origPx, dir: leg.dir, c: leg.c, why });
+      }
+    };
+
+    const closeAll = (t, m, useOpen, why) => {
+      for (const leg of legs) {
+        if (!leg.open) continue;
+        const a = arrOf(leg, tl[t]);
+        const px = a ? a[m * 4 + (useOpen ? 0 : 3)] / 100 : leg.entryPx;
+        close(leg, t, m, px, why);
+      }
+      pending.length = 0;
+      done = true;
+      reason = why;
+      exitT = t;
+      exitM = m;
+    };
+
+    outer:
+    for (let t = 0; t < tl.length; t++) {
+      const day = tl[t];
+      const sp = data.spotDay(day);
+      const m0 = t === 0 ? e0 : 0;
+      const m1 = t === tl.length - 1 ? xm : MPD - 1;
+      for (let m = m0; m <= m1; m++) {
+        const isLast = t === tl.length - 1 && m === xm;
+        if (isLast && !exitAtClose) {
+          closeAll(t, m, true, 'exit-time');
+          spotOut = sp[m * 4];
+          break outer;
+        }
+        // Pending re-entries
+        for (let p = pending.length - 1; p >= 0; p--) {
+          const q = pending[p];
+          if (t < q.t || (t === q.t && m < q.m)) continue;
+          let px = null;
+          if (q.mode === 'cost') {
+            const a = data.optionDay(q.c, day);
+            if (!a || a[m * 4] <= 0) continue;
+            const lo = a[m * 4 + 2] / 100;
+            const hi = a[m * 4 + 1] / 100;
+            if (q.origPx < lo || q.origPx > hi) continue;
+            px = q.origPx;
+          }
+          pending.splice(p, 1);
+          try {
+            const leg = await openLeg(q.def, q.li, t, m, q.strike, sp[m * 4], q.reCount, q.origPx);
+            if (px != null) { leg.entryPx = px; leg.entryFill = fill(px, leg.dir > 0); setLevels(leg); }
+            legs.push(leg);
+          } catch (e) {
+            if (!(e instanceof Skip)) throw e;
+          }
+        }
+
+        // Leg stop-loss / target / trailing
+        const shi = sp[m * 4 + 1];
+        const slo = sp[m * 4 + 2];
+        let legSlHit = false;
+        for (const leg of legs) {
+          if (!leg.open) continue;
+          const a = arrOf(leg, day);
+          if (!a) continue;
+          const i = m * 4;
+          const o = a[i] / 100;
+          const h = a[i + 1] / 100;
+          const l = a[i + 2] / 100;
+          const c = a[i + 3] / 100;
+          let hit = null;
+          let px = 0;
+          if (leg.dir < 0) {
+            if (leg.slPx != null && h >= leg.slPx) { hit = 'sl'; px = o > leg.slPx ? o : leg.slPx; }
+            else if (leg.tgtPx != null && l <= leg.tgtPx) { hit = 'tgt'; px = o < leg.tgtPx ? o : leg.tgtPx; }
+          } else {
+            if (leg.slPx != null && l <= leg.slPx) { hit = 'sl'; px = o < leg.slPx ? o : leg.slPx; }
+            else if (leg.tgtPx != null && h >= leg.tgtPx) { hit = 'tgt'; px = o > leg.tgtPx ? o : leg.tgtPx; }
+          }
+          if (!hit && (leg.uSl != null || leg.uTgt != null)) {
+            const advMove = leg.adv > 0 ? shi - leg.spotIn : leg.spotIn - slo;
+            const favMove = leg.adv > 0 ? leg.spotIn - slo : shi - leg.spotIn;
+            if (leg.uSl != null && advMove >= leg.uSl) { hit = 'sl'; px = c; }
+            else if (leg.uTgt != null && favMove >= leg.uTgt) { hit = 'tgt'; px = c; }
+          }
+          if (!hit && (leg.srSl != null || leg.srTgt != null)) {
+            const sc = sp[m * 4 + 3];
+            if (leg.srSl != null && (leg.adv > 0 ? sc >= leg.srSl : sc <= leg.srSl)) { hit = 'sl'; px = c; }
+            else if (leg.srTgt != null && (leg.adv > 0 ? sc <= leg.srTgt : sc >= leg.srTgt)) { hit = 'tgt'; px = c; }
+          }
+          if (hit) {
+            close(leg, t, m, px, hit);
+            if (hit === 'sl') legSlHit = true;
+            continue;
+          }
+          // Trail the stop after this candle.
+          if (leg.def.trail && leg.slInit != null) {
+            const { x, y } = leg.def.trail;
+            const pct = leg.def.sl.type === 'pct';
+            if (leg.dir < 0) {
+              if (l < leg.best) leg.best = l;
+              const fav = leg.entryPx - leg.best;
+              const steps = Math.floor((pct ? (fav / leg.entryPx) * 100 : fav) / x);
+              if (steps > 0) leg.slPx = Math.min(leg.slPx, leg.slInit - steps * (pct ? (y / 100) * leg.entryPx : y));
+            } else {
+              if (h > leg.best) leg.best = h;
+              const fav = leg.best - leg.entryPx;
+              const steps = Math.floor((pct ? (fav / leg.entryPx) * 100 : fav) / x);
+              if (steps > 0) leg.slPx = Math.max(leg.slPx, leg.slInit + steps * (pct ? (y / 100) * leg.entryPx : y));
+            }
+          }
+        }
+        if (legSlHit) {
+          if (strat.risk.onLegSl === 'all') {
+            closeAll(t, m, false, 'leg-sl-all');
+            spotOut = sp[m * 4 + 3];
+            mtm.push(Math.round(realized));
+            spotPath.push(spotOut);
+            break outer;
+          }
+          if (strat.risk.slToCost) for (const leg of legs) if (leg.open) { leg.slPx = leg.entryPx; leg.slInit = null; }
+        }
+
+        // Expiry settlement of legs whose expiry comes before the position's exit.
+        if (m === MPD - 1) {
+          for (const leg of legs) if (leg.open && leg.lastDay === day) close(leg, t, m, arrOf(leg, day)?.[m * 4 + 3] / 100 || 0.05, 'expiry');
+        }
+
+        // Mark to market on the close
+        let open = 0;
+        let nOpen = 0;
+        for (const leg of legs) {
+          if (!leg.open) continue;
+          const a = arrOf(leg, day);
+          const c = a ? a[m * 4 + 3] / 100 : leg.entryPx;
+          open += (c - leg.entryFill) * leg.dir * leg.qty;
+          nOpen++;
+        }
+        const pnl = realized + open;
+        mtm.push(Math.round(pnl));
+        spotPath.push(sp[m * 4 + 3]);
+        if (pnl > maxP) maxP = pnl;
+        if (pnl < minP) minP = pnl;
+
+        const r = strat.risk;
+        if (isLast) { closeAll(t, m, false, 'exit-time'); spotOut = sp[m * 4 + 3]; break outer; }
+        if (r.sl && pnl <= -r.sl) { closeAll(t, m, false, 'mtm-sl'); spotOut = sp[m * 4 + 3]; break outer; }
+        if (r.tgt && pnl >= r.tgt) { closeAll(t, m, false, 'mtm-tgt'); spotOut = sp[m * 4 + 3]; break outer; }
+        if (r.lockAt && pnl >= r.lockAt) {
+          let floor = r.lockTo;
+          if (r.trailEvery && r.trailBy) floor += Math.floor((pnl - r.lockAt) / r.trailEvery) * r.trailBy;
+          lockFloor = lockFloor == null ? floor : Math.max(lockFloor, floor);
+        }
+        if (lockFloor != null && pnl <= lockFloor) { closeAll(t, m, false, 'lock-trail'); spotOut = sp[m * 4 + 3]; break outer; }
+        if (!nOpen && !pending.length) { reason = 'legs-closed'; done = true; exitT = t; exitM = m; spotOut = sp[m * 4 + 3]; break outer; }
+      }
+    }
+    if (!done) closeAll(tl.length - 1, xm, false, 'exit-time');
+
+    const gross = execs.reduce((s, x) => s + x.pnl, 0);
+    return {
+      trade: {
+        entryDay: pos.entryDay, exitDay: tl[exitT], entryTime: hhmm(e0), exitTime: hhmm(exitM),
+        ref: pos.ref, dte: pos.dte, weekday: weekday(pos.entryDay), spotIn: r2(spotIn), spotOut: spotOut != null ? r2(spotOut) : null,
+        vix: vix != null ? r2(vix) : null,
+        gross: Math.round(gross), costs: Math.round(costs), net: Math.round(gross - costs),
+        maxProfit: Math.round(Math.max(0, maxP)), maxLoss: Math.round(Math.min(0, minP)),
+        reason, legs: execs, margin: Math.round(estimateMargin(entryLegs, spotIn)),
+        ...(pos.sigText ? { signal: pos.sigText } : {}),
+      },
+      path: { days: tl.slice(0, exitT + 1), em: e0, mtm, spot: spotPath },
+      exitT,
+      exitM,
+    };
+  }
+
+  // ---- signal entries: first minute in [from, to] of `day` where every condition holds ----
+  async function findTrigger(day, from, to) {
+    const sp = data.spotDay(day);
+    if (!sp) return { skip: 'no Nifty data' };
+    const di = dayIdx.get(day);
+    const prevClose = di > 0 ? data.spotDay(days[di - 1])?.[MPD * 4 - 1] ?? null : null;
+    const lv = levelsOf(day);
+    let st = null;
+    if (needChain) {
+      const ei = cal.all.findIndex((e) => e >= day);
+      const exp = cal.all[ei];
+      if (!exp || !cal.expiredSet.has(exp)) return { skip: `expiry ${exp || '?'} has no data yet` };
+      const nxt = cal.all[ei + 1];
+      const withNext = conds.some((c) => A.BY_ID.get(c.type)?.needsNext) && nxt && cal.expiredSet.has(nxt) ? nxt : null;
+      try { st = await ext.hist.load(exp, day, { withNext }); } catch (e) { return { skip: e.message }; }
+      if (!st) return { skip: 'no option data' };
+    }
+    let hi = -Infinity;
+    let lo = Infinity;
+    for (let m = 0; m <= to; m++) {
+      hi = Math.max(hi, sp[m * 4 + 1]);
+      lo = Math.min(lo, sp[m * 4 + 2]);
+      if (m < from) continue;
+      const r = evaluate(conds, {
+        spot: sp[m * 4 + 3], prevSpot: m > 0 ? sp[(m - 1) * 4 + 3] : prevClose, open: sp[0], prevClose, high: hi, low: lo,
+        levels: lv, ctx: () => (st ? ext.hist.ctxAt(st, m) : null),
+      });
+      if (r.ok) return { m, hit: r.hit, text: r.notes.join(' · ') };
+    }
+    return {};
+  }
+
+  // ---- run all positions with a small worker pool ----
+  const trades = [];
+  const paths = [];
+  const skipped = [];
+  let done = 0;
+  let next = 0;
+  onProgress({ phase: 'Simulating', done, total: positions.length });
+  let noSignal = 0;
+  async function worker() {
+    while (next < positions.length) {
+      const pos = positions[next++];
+      if (!sigMode) {
+        const r = await simulate(pos);
+        if (r.skip) { if (!r.silent) skipped.push({ day: pos.entryDay, ref: pos.ref, reason: r.skip }); } else { trades.push(r.trade); paths.push(r.path); }
+      } else {
+        // Scan the entry day for the conditions; after a trade closes the same day, keep scanning.
+        let from = em;
+        for (let n = 0; n < strat.entry.maxTrades; n++) {
+          const trig = await findTrigger(pos.entryDay, from, um);
+          if (trig.skip) { skipped.push({ day: pos.entryDay, ref: pos.ref, reason: trig.skip }); break; }
+          if (trig.m == null) { if (!n) noSignal++; break; }
+          const r = await simulate({ ...pos, em: trig.m + 1, hit: trig.hit, sigText: `${hhmm(trig.m)} ${trig.text}` });
+          if (r.skip) { if (!r.silent) skipped.push({ day: pos.entryDay, ref: pos.ref, reason: r.skip }); break; }
+          trades.push(r.trade);
+          paths.push(r.path);
+          if (strat.mode !== 'intraday' || r.exitT > 0) break;
+          from = r.exitM + 1;
+          if (from > um) break;
+        }
+      }
+      done++;
+      if (done % 4 === 0 || done === positions.length) onProgress({ phase: 'Simulating', done, total: positions.length, api: data.apiStats() });
+    }
+  }
+  await Promise.all(Array.from({ length: 6 }, worker));
+  const order = trades.map((_, i) => i).sort((a, b) => (trades[a].entryDay + trades[a].entryTime).localeCompare(trades[b].entryDay + trades[b].entryTime));
+  return {
+    strategy: strat,
+    noSignal,
+    opts: { ...opts, expiries: opts.expiries ? [...opts.expiries] : null },
+    trades: order.map((i) => trades[i]),
+    paths: order.map((i) => paths[i]),
+    skipped,
+    considered: positions.length,
+  };
+}
+
+class Skip extends Error {}
+
+// Rough margin for selling options (≈ SPAN + exposure): about 9% of notional per naked short lot,
+// capped by the defined-risk loss when the short side is covered by long options of the same type.
+// Straddles/strangles get partial offset (the larger side plus 30% of the smaller). Long premium is added.
+function estimateMargin(legs, spot) {
+  const side = (type) => {
+    const ls = legs.filter((l) => l.type === type);
+    const shortQty = ls.filter((l) => l.dir < 0).reduce((s, l) => s + l.qty, 0);
+    if (!shortQty) return 0;
+    let worst = 0;
+    for (let k = 0.6; k <= 1.4001; k += 0.01) {
+      const S = spot * k;
+      const v = ls.reduce((s, l) => s + l.dir * l.qty * (Math.max(0, type === 'CE' ? S - l.strike : l.strike - S) - l.px), 0);
+      if (v < worst) worst = v;
+    }
+    return Math.min(0.09 * spot * shortQty, -worst);
+  };
+  const ce = side('CE');
+  const pe = side('PE');
+  const debit = legs.filter((l) => l.dir > 0).reduce((s, l) => s + l.px * l.qty, 0);
+  return Math.max(ce, pe) + 0.3 * Math.min(ce, pe) + debit;
+}
+
+module.exports = { runBacktest, normalizeStrategy, estimateMargin, bs, impliedVol, delta, yearsTo, hhmm, MIN_OF };

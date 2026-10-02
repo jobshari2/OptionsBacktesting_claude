@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Nifty Options Lab</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="bt.css" />
+  <link rel="stylesheet" href="themes.css" />
+  <script>try { document.documentElement.dataset.theme = localStorage.getItem("nifty-theme") || "night"; } catch (e) {}</script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">NIFTY 50 <span id="source" class="source hidden"></span></div>
+    <nav class="tabs" id="tabs">
+      <button data-view="chain" class="on" title="Live option chain with support and resistance">Chain</button>
+      <button data-view="an" title="Option-pricing anomalies: live scanner and history scan">Anomalies</button>
+      <button data-view="sb" title="Build and trade a position on a historical replay or the live chain, with payoff and adjustment suggestions">Builder</button>
+      <button data-view="bt" title="Backtest a strategy on historical 1-minute option data">Backtest</button>
+      <button data-view="cmp" title="Backtest several strategies on the same period and rank them">Compare</button>
+      <button data-view="lib" title="Ready-made and saved strategies; deploy one on the live chain">Strategies</button>
+      <button data-view="data" title="Historical data availability and cache">Data</button>
+    </nav>
+    <div class="stat"><span class="label">Spot</span><span id="spot" class="value big">—</span></div>
+    <div class="stat chain-only"><span class="label">ATM</span><span id="atm" class="value">—</span></div>
+    <div class="stat chain-only"><span class="label">PCR (OI)</span><span id="pcr" class="value">—</span></div>
+    <div class="stat chain-only">
+      <span class="label">Expiry</span>
+      <select id="expiry"></select>
+    </div>
+    <div class="stat chain-only">
+      <span class="label">Strikes</span>
+      <select id="range">
+        <option value="auto" selected>Fit screen</option>
+        <option value="8">ATM ± 8</option>
+        <option value="12">ATM ± 12</option>
+        <option value="20">ATM ± 20</option>
+        <option value="999">All</option>
+      </select>
+    </div>
+    <div class="spacer"></div>
+    <div class="theme-sw" id="themeSw" title="Colour theme">
+      <button data-theme="night" title="Night: dark, compact. Best for younger eyes and long sessions">🌙 Night</button>
+      <button data-theme="day" title="Day: light background, normal size">☀ Day</button>
+      <button data-theme="large" title="Large: highest contrast and ~20% bigger text for easy reading">A+ Large</button>
+    </div>
+    <div class="stat clock">
+      <span class="label">Time (IST)</span>
+      <span id="clock" class="value mono">—</span>
+    </div>
+    <div class="stat clock chain-only">
+      <span class="label">Last update</span>
+      <span id="fetchedAt" class="value mono">—</span>
+    </div>
+    <div id="status" class="status"><span class="dot"></span><span id="statusText">Connecting…</span></div>
+  </header>
+
+  <div id="login" class="login hidden">
+    <h2>Connect to Upstox</h2>
+    <p id="loginMsg">Log in once per day to stream the Nifty option chain and download historical data.</p>
+    <a class="btn" href="/login">Login with Upstox</a>
+  </div>
+
+  <div id="errorBar" class="error-bar hidden"></div>
+
+  <main id="app" class="layout hidden">
+    <div class="main-col">
+    <section class="panel chain-panel">
+      <div class="panel-head">
+        <h3>Option Chain</h3>
+        <div class="legend">
+          <span><i class="sw itm"></i>ITM</span>
+          <span><i class="sw maxoi"></i>Highest OI</span>
+          <span><i class="sw book-buy"></i>/<i class="sw book-sell"></i>Order book: buyers / sellers waiting</span>
+          <span><i class="sw lv-r"></i>/<i class="sw lv-s"></i>Resistance / support (bold = major)</span>
+          <span>Vol Δ over <span class="seg sm" id="windowSeg"></span></span>
+        </div>
+      </div>
+      <div class="table-wrap" id="tableWrap">
+        <table class="chain">
+          <thead>
+            <tr class="side-head">
+              <th colspan="7" class="ce-h">CALLS</th>
+              <th></th>
+              <th colspan="7" class="pe-h">PUTS</th>
+            </tr>
+            <tr>
+              <th>OI</th><th>OI Chg</th><th>Volume</th><th>Vol Δ</th><th>IV</th><th title="Best bid / best ask. Tint = order-book pressure: green = more quantity waiting to buy, red = more waiting to sell. Hover for depth.">Bid / Ask</th><th>LTP</th>
+              <th class="strike-h">Strike</th>
+              <th>LTP</th><th title="Best bid / best ask. Tint = order-book pressure: green = more quantity waiting to buy, red = more waiting to sell. Hover for depth.">Bid / Ask</th><th>IV</th><th>Vol Δ</th><th>Volume</th><th>OI Chg</th><th>OI</th>
+            </tr>
+          </thead>
+          <tbody id="chainBody"></tbody>
+        </table>
+      </div>
+    </section>
+
+    </div>
+    <aside class="side">
+    <section class="panel levels-panel" id="levelsPanel">
+      <div class="panel-head">
+        <h3>Support &amp; resistance</h3>
+        <span class="muted small" id="lvAsOf"></span>
+      </div>
+      <div id="lvNearest" class="lv-nearest"></div>
+      <div id="lvLadder" class="lv-ladder"></div>
+      <div class="muted small pad">Major: clustered daily swing highs/lows (last ~120 sessions). Minor: 15-minute swings of the last 5 sessions, previous day's high/low/close and floor pivots. OI: strikes with the most open interest on this expiry. Levels below spot act as support, above as resistance.</div>
+    </section>
+    </aside>
+  </main>
+
+  <!-- ===== Anomalies ===== -->
+  <main id="an" class="an-screen hidden">
+    <aside class="panel an-types">
+      <div class="bt-edit-head">
+        <div class="cmp-head"><b>Anomaly types</b>
+          <span><button class="btn-sm ghost" id="anAll">All</button> <button class="btn-sm ghost" id="anNone">None</button></span></div>
+        <div class="muted small">Tick the types to scan, tune thresholds, then scan live or across history.</div>
+      </div>
+      <div id="anTypes" class="an-type-list"></div>
+      <div class="an-types-foot"><button class="btn-sm ghost" id="anSaveCfg" title="Use these types and thresholds for the live scanner (saved on the server)">Use for live scanner</button> <span id="anCfgMsg" class="muted small"></span></div>
+    </aside>
+    <section class="bt-main">
+      <div class="panel an-bar">
+        <div class="seg" id="anMode"><button data-m="live">Live</button><button data-m="hist">History scan</button></div>
+        <span class="muted small" id="anModeHint"></span>
+      </div>
+      <div id="anLive" class="bt-results"></div>
+      <div id="anHist" class="bt-results hidden">
+        <div class="panel bt-settings" id="anSettings"></div>
+        <div class="panel an-scan-opts" id="anScanOpts"></div>
+        <div id="anHistRes" class="bt-results"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ===== Strategy Builder ===== -->
+  <main id="sb" class="sb-screen hidden">
+    <section class="panel sb-top" id="sbTop"></section>
+    <section class="panel sb-replay" id="sbReplay"></section>
+    <div class="sb-grid" id="sbGrid">
+      <section class="panel sb-chain">
+        <div class="panel-head"><h3>Option chain <span class="muted small" id="sbChainInfo"></span></h3>
+          <span class="small"><label class="mini" title="Lots for the B / S buttons in this chain. Overrides the Lots at the top; leave empty to use that one.">Lots <input class="num xs" type="number" id="sbChainLots" min="1" step="1"></label> <select id="sbChainExp" title="Expiry shown in the chain: pick a different one to add legs of another expiry (calendar / diagonal spreads)"></select> <button class="btn-sm ghost" id="sbChainToggle" title="Minimize / restore the option chain">▾ Minimize</button> <select id="sbWidth"><option value="6">ATM ± 6</option><option value="10" selected>ATM ± 10</option><option value="15">ATM ± 15</option></select></span></div>
+        <div class="tbl-wrap sb-chain-wrap" id="sbChain"></div>
+      </section>
+      <section class="panel sb-payoff">
+        <div class="panel-head"><h3>Payoff</h3><span class="muted small" id="sbPayInfo"></span></div>
+        <div class="dep-kpis" id="sbKpis"></div>
+        <div class="chart-box sb-pay-chart"><canvas id="sbPayChart"></canvas></div>
+      </section>
+      <section class="panel sb-pos">
+        <div class="panel-head"><h3>Positions &amp; P&amp;L</h3><span id="sbPnlHead" class="small"></span></div>
+        <div class="sb-pos-body">
+          <div id="sbPos"></div>
+          <div class="chart-box sb-mtm-chart"><canvas id="sbMtmChart"></canvas></div>
+          <div id="sbLog" class="sb-log"></div>
+        </div>
+      </section>
+      <section class="panel sb-arbp">
+        <div class="panel-head"><h3>Vertical spread arbitrage <span class="muted small">for the expiry shown in the option chain</span></h3></div>
+        <div class="sb-arb" id="sbArb"></div>
+      </section>
+      <section class="panel sb-sugg">
+        <div class="panel-head"><h3>Adjustment suggestions</h3>
+          <button class="btn-sm ghost" id="sbResearch" title="Search the web (via Claude) for the best adjustments for this exact position">🔎 Research online</button></div>
+        <div id="sbSugg" class="sb-sugg-list"></div>
+        <div id="sbResearchOut" class="sb-research hidden"></div>
+      </section>
+    </div>
+  </main>
+
+  <!-- ===== Backtest ===== -->
+  <main id="bt" class="bt-screen hidden">
+    <aside class="panel bt-edit">
+      <div class="bt-edit-head">
+        <div class="bt-pick-row">
+          <select id="btPick" title="Load a ready-made or saved strategy"></select>
+          <button class="btn-sm ghost" id="btNew" title="Start a blank strategy">New</button>
+        </div>
+        <div class="bt-edit-actions">
+          <button class="btn-sm ghost" id="btSave" title="Save changes to this strategy">Save</button>
+          <button class="btn-sm ghost" id="btSaveAs" title="Save as a new strategy">Save as…</button>
+          <button class="btn-sm ghost danger" id="btDelete" title="Delete this saved strategy">Delete</button>
+          <button class="btn-sm ghost hidden" id="btReset" title="Throw away your edits and restore the original built-in strategy">Reset to original</button>
+          <button class="btn-sm ghost" id="btDeploy" title="See this strategy on the live chain for an upcoming expiry">Deploy live ▸</button>
+          <span id="btSaveMsg" class="muted small"></span>
+        </div>
+      </div>
+      <div id="btEditor" class="bt-editor"></div>
+    </aside>
+    <section class="bt-main">
+      <div class="panel bt-settings" id="btSettings"></div>
+      <div id="btResults" class="bt-results"></div>
+    </section>
+  </main>
+
+  <!-- ===== Compare ===== -->
+  <main id="cmp" class="bt-screen hidden">
+    <aside class="panel bt-edit">
+      <div class="bt-edit-head">
+        <div class="cmp-head"><b>Strategies to compare</b>
+          <span><button class="btn-sm ghost" id="cmpAll">All</button> <button class="btn-sm ghost" id="cmpNone">None</button></span></div>
+        <input id="cmpSearch" class="txt" type="search" placeholder="Filter…">
+      </div>
+      <div id="cmpList" class="cmp-list"></div>
+    </aside>
+    <section class="bt-main">
+      <div class="panel bt-settings" id="cmpSettings"></div>
+      <div id="cmpResults" class="bt-results"></div>
+    </section>
+  </main>
+
+  <!-- ===== Strategies (library + live deploy) ===== -->
+  <main id="lib" class="lib-screen hidden">
+    <section class="lib-left">
+      <div class="lib-bar">
+        <div class="seg" id="libCats"></div>
+        <input id="libSearch" class="txt" type="search" placeholder="Search strategies…">
+        <button class="btn-sm" id="libNew" title="Build a strategy from scratch in the editor">+ New strategy</button>
+      </div>
+      <div id="libCards" class="lib-cards"></div>
+    </section>
+    <aside class="panel lib-deploy" id="libDeploy"></aside>
+  </main>
+
+  <!-- ===== Data ===== -->
+  <main id="data" class="data-screen hidden">
+    <div id="dataBody" class="data-grid"></div>
+  </main>
+
+  <script src="/vendor/chart.js"></script>
+  <script src="app.js"></script>
+  <script src="bt-common.js"></script>
+  <script src="bt-view.js"></script>
+  <script src="cmp-view.js"></script>
+  <script src="lib-view.js"></script>
+  <script src="data-view.js"></script>
+  <script src="an-view.js"></script>
+  <script src="sb-adjust.js"></script>
+  <script src="sb-view.js"></script>
+  <script src="theme.js"></script>
+</body>
+</html>

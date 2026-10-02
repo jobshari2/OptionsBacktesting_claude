@@ -1,0 +1,131 @@
+[
+ {
+  "id": "my-muqbuhof",
+  "name": "My strategy",
+  "desc": "",
+  "category": "Custom",
+  "mode": "intraday",
+  "expiry": "weekly",
+  "entry": {
+   "time": "09:20",
+   "days": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "dte": [],
+   "dteDays": 3,
+   "when": "time",
+   "until": "14:30",
+   "maxTrades": 1,
+   "conditions": []
+  },
+  "exit": {
+   "time": "15:15",
+   "dteDays": 0
+  },
+  "legs": [
+   {
+    "action": "S",
+    "type": "CE",
+    "lots": 1,
+    "expiry": "cur",
+    "strike": {
+     "by": "atm",
+     "value": 5,
+     "match": "closest"
+    },
+    "sl": {
+     "type": "none",
+     "value": 0
+    },
+    "tgt": {
+     "type": "none",
+     "value": 0
+    },
+    "trail": null,
+    "re": null
+   },
+   {
+    "action": "S",
+    "type": "CE",
+    "lots": 1,
+    "expiry": "cur",
+    "strike": {
+     "by": "atm",
+     "value": -4,
+     "match": "closest"
+    },
+    "sl": {
+     "type": "none",
+     "value": 0
+    },
+    "tgt": {
+     "type": "none",
+     "value": 0
+    },
+    "trail": null,
+    "re": null
+   },
+   {
+    "action": "B",
+    "type": "CE",
+    "lots": 1,
+    "expiry": "cur",
+    "strike": {
+     "by": "premium",
+     "value": 50,
+     "match": "closest"
+    },
+    "sl": {
+     "type": "none",
+     "value": 0
+    },
+    "tgt": {
+     "type": "none",
+     "value": 0
+    },
+    "trail": null,
+    "re": null
+   },
+   {
+    "action": "B",
+    "type": "PE",
+    "lots": 1,
+    "expiry": "cur",
+    "strike": {
+     "by": "atm",
+     "value": 6,
+     "match": "closest"
+    },
+    "sl": {
+     "type": "none",
+     "value": 0
+    },
+    "tgt": {
+     "type": "none",
+     "value": 0
+    },
+    "trail": null,
+    "re": null
+   }
+  ],
+  "risk": {
+   "sl": null,
+   "tgt": null,
+   "lockAt": null,
+   "lockTo": 0,
+   "trailEvery": null,
+   "trailBy": null,
+   "onLegSl": "leg",
+   "slToCost": false
+  },
+  "filters": {
+   "vixMin": null,
+   "vixMax": null
+  },
+  "updatedAt": 1790907099135
+ }
+]

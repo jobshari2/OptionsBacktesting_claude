@@ -1,0 +1,63 @@
+/* ---------- Themes: pick with the buttons in the top bar (stored in localStorage) ----------
+   Night  (default) dark, compact          - younger users / long screen sessions
+   Day              light, clean, normal    - comfortable daytime reading
+   Large            very high contrast, text enlarged ~20 %, thicker borders - easiest to read for older eyes */
+.theme-sw { display: flex; gap: 2px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 2px; }
+.theme-sw button { background: transparent; color: var(--muted); border: 0; border-radius: 6px; padding: 3px 9px; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.theme-sw button:hover { color: var(--text); }
+.theme-sw button.on { background: var(--accent); color: var(--on-accent, #0b1220); font-weight: 600; }
+
+:root { --on-accent: #0b1220; }
+
+/* ----- Day: mid-tone, high-contrast "paper": tinted (not white) surfaces, dark text, strong borders ----- */
+:root[data-theme="day"] {
+  color-scheme: light;
+  --bg: #c5cfdf; --panel: #e6ecf5; --panel-2: #d3dcea; --line: #8393ab;
+  --text: #0a111d; --muted: #2c3a50;
+  --ce: #b3261e; --ce-soft: rgba(179, 38, 30, 0.2);
+  --pe: #0f6b4b; --pe-soft: rgba(15, 107, 75, 0.2);
+  --itm: rgba(196, 140, 10, 0.25); --atm: #f5c542;
+  --up: #0f6b4b; --down: #b3261e; --accent: #0f4aa8; --on-accent: #ffffff;
+  --ce-mark: #b3261e; --pe-mark: #0f6b4b; --seq-hi: #0f4aa8;
+}
+:root[data-theme="day"] body { font-weight: 500; }
+:root[data-theme="day"] .topbar, :root[data-theme="day"] .panel { box-shadow: 0 1px 3px rgba(10, 17, 29, .25); }
+:root[data-theme="day"] .label, :root[data-theme="day"] .muted, :root[data-theme="day"] .dep-kpis span { color: var(--muted); }
+/* ----- Large: maximum legibility ----- */
+:root[data-theme="large"] {
+  color-scheme: light;
+  --bg: #ffffff; --panel: #ffffff; --panel-2: #f1f1f1; --line: #7d7d7d;
+  --text: #000000; --muted: #2b2b2b;
+  --ce: #b00020; --ce-soft: rgba(176, 0, 32, 0.14);
+  --pe: #006b3c; --pe-soft: rgba(0, 107, 60, 0.14);
+  --itm: rgba(255, 214, 0, 0.22); --atm: #ffd600;
+  --up: #006b3c; --down: #b00020; --accent: #0036a3; --on-accent: #ffffff;
+  --ce-mark: #b00020; --pe-mark: #006b3c; --seq-hi: #0036a3;
+}
+:root[data-theme="large"] body { zoom: 1.2; }
+:root[data-theme="large"] .panel, :root[data-theme="large"] .topbar { border-width: 2px; }
+:root[data-theme="large"] .label { text-transform: none; font-weight: 600; }
+:root[data-theme="large"] body, :root[data-theme="large"] td, :root[data-theme="large"] th { font-weight: 500; }
+
+/* things that were hard-coded for the dark theme */
+:root[data-theme="day"] input.num, :root[data-theme="day"] input.txt, :root[data-theme="day"] textarea.txt,
+:root[data-theme="day"] input[type="time"], :root[data-theme="day"] input[type="date"],
+:root[data-theme="large"] input.num, :root[data-theme="large"] input.txt, :root[data-theme="large"] textarea.txt,
+:root[data-theme="large"] input[type="time"], :root[data-theme="large"] input[type="date"] { color-scheme: light; }
+:root[data-theme="day"] .btn-sm, :root[data-theme="large"] .btn-sm,
+:root[data-theme="day"] .tabs button.on, :root[data-theme="large"] .tabs button.on,
+:root[data-theme="day"] .seg button.on, :root[data-theme="large"] .seg button.on { color: var(--on-accent); }
+:root[data-theme="day"] .btn-sm.ghost, :root[data-theme="large"] .btn-sm.ghost { color: var(--text); }
+:root[data-theme="day"] .sb-bs button[data-add]:hover, :root[data-theme="large"] .sb-bs button[data-add]:hover { color: #fff; }
+:root[data-theme="day"] .chain tr.atm td.strike, :root[data-theme="large"] .chain tr.atm td.strike,
+:root[data-theme="day"] .col.atm .k, :root[data-theme="large"] .col.atm .k { color: #000; }
+:root[data-theme="day"] .leg-chip, :root[data-theme="large"] .leg-chip { color: var(--down); }
+:root[data-theme="day"] .leg-chip.buy, :root[data-theme="large"] .leg-chip.buy { color: var(--up); }
+:root[data-theme="day"] .pill.premium-spike, :root[data-theme="large"] .pill.premium-spike,
+:root[data-theme="day"] .cat-pill.c-volatility, :root[data-theme="large"] .cat-pill.c-volatility { color: #5b2db0; }
+:root[data-theme="day"] .cat-pill.c-calendar, :root[data-theme="large"] .cat-pill.c-calendar { color: #0b6b73; }
+:root[data-theme="day"] .pill.spot-move, :root[data-theme="large"] .pill.spot-move { background: rgba(0,0,0,.08); }
+:root[data-theme="day"] .chain tbody tr, :root[data-theme="day"] .grid-tbl th, :root[data-theme="day"] .grid-tbl td, :root[data-theme="day"] .events li,
+:root[data-theme="large"] .chain tbody tr, :root[data-theme="large"] .grid-tbl th, :root[data-theme="large"] .grid-tbl td, :root[data-theme="large"] .events li { border-bottom-color: var(--line); }
+:root[data-theme="day"] .modal-ov, :root[data-theme="large"] .modal-ov { background: rgba(20,30,50,.45); }
+:root[data-theme="day"] .lib-card:hover, :root[data-theme="large"] .lib-card:hover { border-color: var(--accent); }

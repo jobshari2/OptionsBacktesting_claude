@@ -1,0 +1,20 @@
+{
+  "name": "option-live-data",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Nifty options strategy backtester and live option chain using the Upstox API",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test",
+    "demo": "node -e \"process.env.DEMO='1';require('./server.js')\""
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.131.0",
+    "chart.js": "^4.5.1",
+    "protobufjs": "^7.6.6"
+  }
+}
