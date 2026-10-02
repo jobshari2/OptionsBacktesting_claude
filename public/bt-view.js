@@ -330,7 +330,7 @@
     if (tradeSort === 'best') idx.sort((a, b) => result.trades[b].net - result.trades[a].net);
     if (tradeSort === 'worst') idx.sort((a, b) => result.trades[a].net - result.trades[b].net);
     if (tradeSort === 'recent') idx.reverse();
-    const legTxt = (x) => `<span class="lx ${x.action === 'B' ? 'buy' : 'sell'}" title="${esc(`${x.action === 'B' ? 'Buy' : 'Sell'} ${x.qty} × ${x.strike} ${x.type} (${x.expiry}) · ${x.entryDay} ${x.entryTime} @ ${x.entryPx} → ${x.exitDay} ${x.exitTime} @ ${x.exitPx} · ${REASON[x.reason] || x.reason} · ${inrS(x.pnl)}`)}">${x.action}${x.re ? '↻' : ''} ${x.strike}${x.type} ${x.entryPx}→${x.exitPx}${x.reason === 'sl' ? ' <b class="neg">SL</b>' : x.reason === 'tgt' ? ' <b class="pos">TG</b>' : ''}</span>`;
+    const legTxt = (x) => `<span class="lx ${x.action === 'B' ? 'buy' : 'sell'}" title="${esc(`${x.action === 'B' ? 'Buy' : 'Sell'} ${x.qty} × ${x.strike} ${x.type} (${x.expiry}) · ${x.entryDay} ${x.entryTime} @ ${x.entryPx} → ${x.exitDay} ${x.exitTime} @ ${x.exitPx} · ${REASON[x.reason] || x.reason} · ${inrS(x.pnl)}`)}>${x.action}${x.re ? '↻' : ''}${x.rolled ? '⟳' : ''} ${x.strike}${x.type} ${x.entryPx}→${x.exitPx}${x.reason === 'sl' ? ' <b class="neg">SL</b>' : x.reason === 'tgt' ? ' <b class="pos">TG</b>' : x.reason === 'roll' ? ' <b class="muted">⟳</b>' : x.reason === 'partial' ? ` <b class="pos" title="Partial booking: ${x.qty} closed">½</b>` : ''}</span>`;
     el.innerHTML = `<div class="trade-tools">
         <div class="seg sm">${[['all', 'All'], ['wins', 'Winners'], ['losses', 'Losers']].map(([v, l]) => `<button data-f="${v}" class="${tradeFilter === v ? 'on' : ''}">${l}</button>`).join('')}</div>
         <select id="btSort">${[['date', 'Oldest first'], ['recent', 'Newest first'], ['best', 'Best first'], ['worst', 'Worst first']].map(([v, l]) => `<option value="${v}" ${tradeSort === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
@@ -364,7 +364,8 @@
   function replayTrade(i) {
     const t = result.trades[i];
     const s = result.strategy;
-    const legs = t.legs.filter((x) => !x.re && x.entryDay === t.entryDay && x.entryTime === t.entryTime).map((x) => ({
+    const seen = new Set(); // a partial booking splits a leg into two executions with the same entry
+    const legs = t.legs.filter((x) => !x.re && !x.rolled && x.entryDay === t.entryDay && x.entryTime === t.entryTime && !seen.has(x.leg) && seen.add(x.leg)).map((x) => ({
       action: x.action, type: x.type, strike: x.strike, expiry: x.expiry, lots: s.legs[x.leg]?.lots, qty: x.qty, px: x.entryPx,
       rule: s.legs[x.leg], ruleStrike: x.strike,
     }));
@@ -388,10 +389,12 @@
       <div class="modal-head"><h3>Trade ${i + 1} · ${dayLabel(t.entryDay)} ${t.entryTime} → ${t.exitDay !== t.entryDay ? dayLabel(t.exitDay) + ' ' : ''}${t.exitTime}</h3>
         <span class="${cls(t.net)} big">${inrS(t.net)}</span><button class="btn-sm" data-replay="${i}" title="Open this trade in the Builder at its entry minute, to step through it and try adjustments">▶ Replay in Builder</button><button class="icon close">✕</button></div>
       ${t.signal ? `<div class="sig-txt pad">⚡ Entry signal: ${esc(t.signal)}</div>` : ''}
+      ${t.credit != null ? `<div class="muted small pad">Net credit at entry ${t.credit} pts per lot${t.partial ? ' · part of the lots booked early (partial booking)' : ''}</div>` : ''}
+      ${t.notes?.length ? `<div class="dep-warn pad">${t.notes.map(esc).join('<br>')}</div>` : ''}
       <div class="muted small pad">Expiry ${dayLabel(t.ref)} · DTE ${t.dte} · Nifty ${t.spotIn} → ${t.spotOut ?? '—'}${t.vix != null ? ' · VIX ' + t.vix : ''} · gross ${inrS(t.gross)} · costs ${inr(t.costs)} · max profit ${inr(t.maxProfit)} · max loss ${inr(t.maxLoss)} · est. margin ${kinr(t.margin)}</div>
       <div class="chart-box trade-chart"><canvas id="btTradeChart"></canvas></div>
       <div class="tbl-wrap"><table class="grid-tbl"><thead><tr><th>Leg</th><th>Action</th><th>Contract</th><th>Qty</th><th>Entry</th><th>Price</th><th>Exit</th><th>Price</th><th>Reason</th><th>Costs</th><th>P&amp;L</th></tr></thead><tbody>
-        ${t.legs.map((x) => `<tr><td>${x.leg + 1}${x.re ? ' ↻' + x.re : ''}</td><td class="${x.action === 'B' ? 'pos' : 'neg'}">${x.action === 'B' ? 'BUY' : 'SELL'}</td><td>${x.strike} ${x.type} <span class="muted">${dayShort(x.expiry)}</span></td><td>${x.qty}</td>
+        ${t.legs.map((x) => `<tr><td>${x.leg + 1}${x.re ? ' ↻' + x.re : ''}${x.rolled ? ' ⟳' : ''}</td><td class="${x.action === 'B' ? 'pos' : 'neg'}">${x.action === 'B' ? 'BUY' : 'SELL'}</td><td>${x.strike} ${x.type} <span class="muted">${dayShort(x.expiry)}</span></td><td>${x.qty}</td>
           <td>${x.entryDay !== t.entryDay ? dayShort(x.entryDay) + ' ' : ''}${x.entryTime}</td><td>${x.entryPx}</td><td>${x.exitDay !== x.entryDay ? dayShort(x.exitDay) + ' ' : ''}${x.exitTime}</td><td>${x.exitPx}</td>
           <td>${REASON[x.reason] || x.reason}</td><td class="muted">${inr(x.cost)}</td><td class="${cls(x.pnl)} b">${inrS(x.pnl)}</td></tr>`).join('')}
       </tbody></table></div></div>`;

@@ -127,5 +127,152 @@
    "vixMax": null
   },
   "updatedAt": 1790907099135
+ },
+ {
+  "id": "my-biweekly-hari",
+  "name": "BiWeekly Hedge-Hari",
+  "desc": "Playbook version: 2-week short strangle with a 100-pt put wing and a near-week 100-pt call wing rolled the day before it expires (15:15). Exit at +2.5% of capital or on the 2-week expiry at 15:15. Set capital ₹5 L (₹1 L/lot).",
+  "category": "Calendar",
+  "mode": "positional",
+  "expiry": "weekly",
+  "entry": {
+   "time": "09:20",
+   "days": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "dte": [],
+   "dteDays": 0,
+   "after": 2,
+   "noOverlap": true,
+   "when": "time",
+   "until": "14:30",
+   "maxTrades": 1,
+   "conditions": []
+  },
+  "exit": {
+   "time": "15:15",
+   "dteDays": 0
+  },
+  "legs": [
+   {
+    "action": "S",
+    "type": "CE",
+    "lots": 5,
+    "expiry": "next",
+    "strike": {
+     "by": "premium",
+     "value": 105,
+     "match": "closest"
+    },
+    "sl": {
+     "type": "none",
+     "value": 0
+    },
+    "tgt": {
+     "type": "none",
+     "value": 0
+    },
+    "trail": null,
+    "re": null,
+    "roll": null
+   },
+   {
+    "action": "S",
+    "type": "PE",
+    "lots": 5,
+    "expiry": "next",
+    "strike": {
+     "by": "premium",
+     "value": 120,
+     "match": "closest"
+    },
+    "sl": {
+     "type": "none",
+     "value": 0
+    },
+    "tgt": {
+     "type": "none",
+     "value": 0
+    },
+    "trail": null,
+    "re": null,
+    "roll": null
+   },
+   {
+    "action": "B",
+    "type": "PE",
+    "lots": 5,
+    "expiry": "next",
+    "strike": {
+     "by": "leg",
+     "value": -100,
+     "match": "closest",
+     "ref": 1
+    },
+    "sl": {
+     "type": "none",
+     "value": 0
+    },
+    "tgt": {
+     "type": "none",
+     "value": 0
+    },
+    "trail": null,
+    "re": null,
+    "roll": null
+   },
+   {
+    "action": "B",
+    "type": "CE",
+    "lots": 5,
+    "expiry": "cur",
+    "strike": {
+     "by": "leg",
+     "value": 100,
+     "match": "closest",
+     "ref": 0
+    },
+    "sl": {
+     "type": "none",
+     "value": 0
+    },
+    "tgt": {
+     "type": "none",
+     "value": 0
+    },
+    "trail": null,
+    "re": null,
+    "roll": {
+     "dteDays": 1,
+     "time": "15:15"
+    }
+   }
+  ],
+  "risk": {
+   "sl": null,
+   "tgt": 2.5,
+   "lockAt": null,
+   "lockTo": 0,
+   "trailEvery": null,
+   "trailBy": null,
+   "onLegSl": "leg",
+   "slToCost": false,
+   "unit": "pct",
+   "partialAt": null,
+   "partialPct": 60,
+   "partialFloor": null
+  },
+  "filters": {
+   "vixMin": null,
+   "vixMax": null,
+   "minCredit": 90,
+   "maxLossDown": 10,
+   "maxLossUp": null
+  },
+  "updatedAt": 1790948247184
  }
 ]

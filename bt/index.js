@@ -298,6 +298,10 @@ function createBacktester({ getToken, upstoxGet, cacheDir, storeFile, logError }
       else if (def.strike.by === 'signal') {
         const b = def.strike.ref === 'ref' && hit?.ref != null ? hit.ref : hit?.strike;
         idx = b == null ? ai : near(b) + Math.round(v);
+      } else if (def.strike.by === 'leg') { // another leg's strike ± points
+        const b = legs[def.strike.ref]?.strikeValue;
+        idx = b == null ? ai : near(b + v);
+        if (b == null) warnings.push(`Leg ${legs.length + 1}: "from leg ${def.strike.ref + 1}" not resolved yet — shown at ATM`);
       } else if (def.strike.by === 'sr') {
         const n = nearestLevels(lv, ch.spot);
         const l = (def.type === 'CE' ? n.resistance : n.support)[def.strike.lv || 'any'];
@@ -312,6 +316,20 @@ function createBacktester({ getToken, upstoxGet, cacheDir, storeFile, logError }
       }
       idx = Math.max(0, Math.min(rows.length - 1, idx));
       legs.push({ ...def, expiryDate: expiry, strikeValue: ks[idx], quote: sideOf(rows[idx]) });
+    }
+    // Rules the deploy view does not automate: scheduled rolls, and the entry checks (evaluated at today's LTPs).
+    strat.legs.forEach((d, i) => {
+      if (d.roll) warnings.push(`Leg ${i + 1} (${legs[i].strikeValue} ${d.type}, ${legs[i].expiryDate}) rolls into the next weekly expiry ${d.roll.dteDays} trading day${d.roll.dteDays === 1 ? '' : 's'} before it expires, at ${d.roll.time}: do it by hand (Builder: change its expiry).`);
+    });
+    const F = strat.filters;
+    if (F.minCredit != null || F.maxLossDown != null || F.maxLossUp != null) {
+      const q = legs.map((l) => ({ dir: l.action === 'B' ? 1 : -1, n: l.lots, type: l.type, k: l.strikeValue, px: l.quote?.ltp || 0 }));
+      const unit = Math.min(...q.map((l) => l.n));
+      const at = (S) => q.reduce((a, l) => a + l.dir * l.n * (Math.max(0, l.type === 'CE' ? S - l.k : l.k - S) - l.px), 0) / unit;
+      const credit = -q.reduce((a, l) => a + l.dir * l.n * l.px, 0) / unit;
+      if (F.minCredit != null && credit < F.minCredit) warnings.push(`Entry check: net credit ${credit.toFixed(1)} pts is below ${F.minCredit} — the backtest would skip this week.`);
+      if (F.maxLossDown != null && at(spot * 0.5) < -F.maxLossDown) warnings.push(`Entry check: downside not covered (${at(spot * 0.5).toFixed(1)} pts far below; limit −${F.maxLossDown}).`);
+      if (F.maxLossUp != null && at(spot * 1.5) < -F.maxLossUp) warnings.push(`Entry check: upside not covered (${at(spot * 1.5).toFixed(1)} pts far above; limit −${F.maxLossUp}).`);
     }
     return {
       strategy: strat,

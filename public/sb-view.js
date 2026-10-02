@@ -224,7 +224,8 @@
     const lv = levels.get(S.src === 'hist' ? S.day : 'live');
     const warn = [];
     const out = [];
-    for (const l of s.legs) {
+    const placed = []; // strike of each strategy leg, for "from another leg"
+    for (const [li, l] of s.legs.entries()) {
       let exp = expiryFor(l.expiry);
       if (exp && exp !== primary()) {
         try { await ensureExp(exp); } catch { exp = null; }
@@ -251,6 +252,12 @@
           break;
         }
         case 'signal': i = ai + Math.round(v); warn.push('"signal" strikes placed relative to ATM (no anomaly in the builder)'); break;
+        case 'leg': {
+          const b = placed[l.strike.ref];
+          i = b == null ? ai : near(b + v);
+          if (b == null) warn.push(`leg ${li + 1}: "from leg ${l.strike.ref + 1}" not placed yet — used ATM`);
+          break;
+        }
         default: { // premium / delta
           const order = ks.map((_, j) => j).filter((j) => (j - ai) * otm >= -4);
           const val = (j) => { const px = M.px(ks[j], l.type); if (!px) return null; if (l.strike.by === 'premium') return px; const iv = ivOf(px, M.spot, ks[j], M.T, l.type === 'CE'); return iv ? Math.abs(greeks(M.spot, ks[j], M.T, iv, l.type === 'CE').delta) : null; };
@@ -258,7 +265,9 @@
           i = order.reduce((b, j) => { const x = val(j); return x != null && (b == null || Math.abs(x - target) < Math.abs(val(b) - target)) ? j : b; }, null) ?? ai;
         }
       }
-      out.push({ action: l.action, type: l.type, strike: ks[Math.max(0, Math.min(ks.length - 1, i))], lots: l.lots, M, rule: l });
+      placed[li] = ks[Math.max(0, Math.min(ks.length - 1, i))];
+      out.push({ action: l.action, type: l.type, strike: placed[li], lots: l.lots, M, rule: l });
+      if (l.roll) warn.push(`leg ${li + 1} (${placed[li]} ${l.type}) is set to roll into the next expiry ${l.roll.dteDays} day(s) before it expires at ${l.roll.time}: do it here by changing its expiry in Positions`);
     }
     return { legs: out, warn: [...new Set(warn)] };
   }

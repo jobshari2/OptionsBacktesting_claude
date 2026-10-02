@@ -57,7 +57,8 @@
       for (let i = 0; i < 40; i++) { const mid = (lo + hi) / 2; if (f(mid) > 0) lo = mid; else hi = mid; }
       return (lo + hi) / 2;
     };
-    const legs = s.legs.map((l) => {
+    const legs = [];
+    for (const l of s.legs) legs.push((() => {
       const call = l.type === 'CE';
       const otm = call ? 1 : -1;
       const val = l.strike.value;
@@ -68,6 +69,7 @@
         case 'pts': K = S0 + (otm * val) / 250; break;
         case 'straddle': K = S0 + otm * (val || 1) * 2 * bs(S0, S0, T, v, true); break;
         case 'premium': K = solveK(call, (k) => bs(S0, k, T, v, call) - val / 250); break;
+        case 'leg': K = (legs[l.strike.ref]?.K ?? S0) + val / 250; break; // legs listed before it (refs to later legs fall back to ATM)
         case 'delta': {
           const d = Math.abs(val > 1 ? val / 100 : val);
           K = solveK(call, (k) => Math.abs(ncdf((Math.log(S0 / k) + (v * v / 2) * T) / (v * Math.sqrt(T))) - (call ? 0 : 1)) - d);
@@ -78,7 +80,7 @@
       const far = l.expiry === 'next' || l.expiry === 'mnext' || (s.expiry === 'weekly' && l.expiry === 'mcur');
       const Tl = far ? T + 7 / 365 : T;
       return { call, K, q: (l.action === 'B' ? 1 : -1) * l.lots, p: bs(S0, K, Tl, v, call), far };
-    });
+    })());
     const xs = Array.from({ length: 61 }, (_, i) => S0 * (0.96 + (0.08 * i) / 60));
     const ys = xs.map((x) => legs.reduce((sum, l) => sum + l.q * ((l.far ? bs(x, l.K, 7 / 365, v, l.call) : Math.max(0, l.call ? x - l.K : l.K - x)) - l.p), 0));
     const lo = Math.min(0, ...ys);

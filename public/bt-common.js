@@ -28,7 +28,7 @@
   const dayShort = (d) => new Date(d + 'T00:00:00Z').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', timeZone: 'UTC' });
   const WD = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  const REASON = { sl: 'Stop-loss', tgt: 'Target', 'exit-time': 'Exit time', 'mtm-sl': 'Overall SL', 'mtm-tgt': 'Overall target', 'lock-trail': 'Locked profit', 'leg-sl-all': 'Leg SL → exit all', expiry: 'Expired', 'legs-closed': 'All legs closed' };
+  const REASON = { sl: 'Stop-loss', tgt: 'Target', 'exit-time': 'Exit time', 'mtm-sl': 'Overall SL', 'mtm-tgt': 'Overall target', 'lock-trail': 'Locked profit', 'leg-sl-all': 'Leg SL → exit all', expiry: 'Expired', 'legs-closed': 'All legs closed', roll: 'Rolled', partial: 'Partial booking' };
 
   // ---------- API ----------
   async function api(path, body) {
@@ -100,10 +100,11 @@
       case 'straddle': return `${v || 1}× straddle`;
       case 'signal': return `${st.ref === 'ref' ? 'pair' : 'signal'} strike${v ? (v > 0 ? ' +' : ' ') + v : ''}`;
       case 'sr': return `at ${st.lv && st.lv !== 'any' ? st.lv + ' ' : ''}S/R${v ? ' +' + v : ''}`;
+      case 'leg': return `leg ${(st.ref ?? 0) + 1} ${v >= 0 ? '+' : '−'}${Math.abs(v)}`;
       default: return '?';
     }
   }
-  const legLabel = (l) => `${l.action === 'B' ? 'Buy' : 'Sell'}${l.lots > 1 ? ' ' + l.lots + '×' : ''} ${l.type} ${strikeLabel(l.strike)}${EXP_SHORT[l.expiry] || ''}`;
+  const legLabel = (l) => `${l.action === 'B' ? 'Buy' : 'Sell'}${l.lots > 1 ? ' ' + l.lots + '×' : ''} ${l.type} ${strikeLabel(l.strike)}${EXP_SHORT[l.expiry] || ''}${l.roll ? ' ⟳' : ''}`;
   const legChips = (s) => s.legs.map((l) => `<span class="leg-chip ${l.action === 'B' ? 'buy' : 'sell'}">${esc(legLabel(l))}</span>`).join('');
   const CLS_TXT = { any: '', major: 'major ', minor: 'minor ' };
   function condLabel(c) {
@@ -130,17 +131,18 @@
       const dte = s.entry.dte?.length ? ` · DTE ${s.entry.dte.join(',')}` : '';
       return `Intraday ${s.entry.time}–${s.exit.time} · ${days}${dte} · ${s.expiry}`;
     }
-    return `Positional · enter ${s.entry.dteDays}d before ${s.expiry} expiry ${s.entry.time} → exit ${s.exit.dteDays ? s.exit.dteDays + 'd before' : 'expiry day'} ${s.exit.time}`;
+    const enter = s.entry.after ? `enter the day after the expiry ${s.entry.after} week${s.entry.after > 1 ? 's' : ''} before` : `enter ${s.entry.dteDays}d before`;
+    return `Positional · ${enter} ${s.expiry} expiry ${s.entry.time} → exit ${s.exit.dteDays ? s.exit.dteDays + 'd before' : 'expiry day'} ${s.exit.time}${s.entry.noOverlap ? ' · one at a time' : ''}`;
   }
 
   // ---------- strategy editor ----------
-  const blankLeg = (o = {}) => ({ action: 'S', type: 'CE', lots: 1, expiry: 'cur', strike: { by: 'atm', value: 0, match: 'closest' }, sl: { type: 'none', value: 0 }, tgt: { type: 'none', value: 0 }, trail: null, re: null, ...o });
+  const blankLeg = (o = {}) => ({ action: 'S', type: 'CE', lots: 1, expiry: 'cur', strike: { by: 'atm', value: 0, match: 'closest' }, sl: { type: 'none', value: 0 }, tgt: { type: 'none', value: 0 }, trail: null, re: null, roll: null, ...o });
   const blankStrategy = () => ({
     id: null, name: 'My strategy', desc: '', category: 'Custom', mode: 'intraday', expiry: 'weekly',
-    entry: { time: '09:20', days: [1, 2, 3, 4, 5], dte: [], dteDays: 3, when: 'time', until: '14:30', maxTrades: 1, conditions: [] }, exit: { time: '15:15', dteDays: 0 },
+    entry: { time: '09:20', days: [1, 2, 3, 4, 5], dte: [], dteDays: 3, after: 0, noOverlap: false, when: 'time', until: '14:30', maxTrades: 1, conditions: [] }, exit: { time: '15:15', dteDays: 0 },
     legs: [blankLeg({ type: 'CE' }), blankLeg({ type: 'PE' })],
-    risk: { sl: null, tgt: null, lockAt: null, lockTo: 0, trailEvery: null, trailBy: null, onLegSl: 'leg', slToCost: false },
-    filters: { vixMin: null, vixMax: null },
+    risk: { sl: null, tgt: null, lockAt: null, lockTo: 0, trailEvery: null, trailBy: null, onLegSl: 'leg', slToCost: false, unit: 'inr', partialAt: null, partialPct: 60, partialFloor: null },
+    filters: { vixMin: null, vixMax: null, minCredit: null, maxLossDown: null, maxLossUp: null },
   });
   // Fill any missing fields (older saves, library entries).
   function complete(s) {
@@ -184,6 +186,9 @@
         } else if (st.by === 'sr') {
           strikeCtl = `<select data-path="${p}.strike.lv" title="Calls: nearest resistance above spot · puts: nearest support below">${opt('any', 'nearest level', st.lv || 'any')}${opt('major', 'nearest major', st.lv)}${opt('minor', 'nearest minor', st.lv)}</select>
             <select data-path="${p}.strike.value" data-type="num">${Array.from({ length: 9 }, (_, j) => j - 2).map((v) => opt(v, v === 0 ? 'at the level' : v > 0 ? `+${v} beyond` : `${-v} inside`, st.value)).join('')}</select>`;
+        } else if (st.by === 'leg') {
+          strikeCtl = `<select data-path="${p}.strike.ref" data-type="num" title="The leg whose strike this one is measured from">${s.legs.map((_, j) => (j === i ? '' : opt(j, `leg ${j + 1}`, st.ref ?? 0))).join('')}</select>
+            ${numIn(`${p}.strike.value`, st.value, 'step="50"')} <span class="muted">pts (+ above, − below)</span>`;
         } else if (st.by === 'premium') {
           strikeCtl = `<select data-path="${p}.strike.match">${opt('closest', 'closest to', st.match)}${opt('gte', 'at least', st.match)}${opt('lte', 'at most', st.match)}</select> ₹${numIn(`${p}.strike.value`, st.value, 'min="0.5" step="1"')}`;
         } else {
@@ -206,7 +211,7 @@
             <span class="leg-tools"><button type="button" class="icon" data-act="dup" data-i="${i}" title="Duplicate leg">⧉</button><button type="button" class="icon" data-act="del" data-i="${i}" title="Remove leg">✕</button></span>
           </div>
           <div class="leg-row"><span class="lbl">Strike</span>
-            <select data-path="${p}.strike.by" data-rerender>${opt('atm', 'ATM ± strikes', st.by)}${opt('premium', 'Premium ₹', st.by)}${opt('delta', 'Delta', st.by)}${opt('pct', '% from spot', st.by)}${opt('pts', 'Points from spot', st.by)}${opt('straddle', 'Straddle width', st.by)}${opt('signal', 'Anomaly strike', st.by)}${opt('sr', 'Support / resistance', st.by)}</select>
+            <select data-path="${p}.strike.by" data-rerender>${opt('atm', 'ATM ± strikes', st.by)}${opt('premium', 'Premium ₹', st.by)}${opt('delta', 'Delta', st.by)}${opt('pct', '% from spot', st.by)}${opt('pts', 'Points from spot', st.by)}${opt('straddle', 'Straddle width', st.by)}${opt('signal', 'Anomaly strike', st.by)}${opt('sr', 'Support / resistance', st.by)}${s.legs.length > 1 ? opt('leg', 'From another leg', st.by) : ''}</select>
             ${strikeCtl}</div>
           <div class="leg-row"><span class="lbl">Stop-loss</span>${lvlSel('sl', l.sl)}</div>
           <div class="leg-row"><span class="lbl">Target</span>${lvlSel('tgt', l.tgt)}</div>
@@ -218,6 +223,10 @@
             <select data-act="re-on" data-i="${i}">${opt('off', 'Off', re.on)}${opt('sl', 'After SL', re.on)}${opt('tgt', 'After target', re.on)}${opt('both', 'After SL or target', re.on)}</select>
             ${l.re ? `<select data-path="${p}.re.mode">${opt('asap', 'Immediately, same strike', re.mode)}${opt('cost', 'When price returns to entry', re.mode)}${opt('atm', 'Immediately, fresh strike', re.mode)}</select> <label class="mini">max ${numIn(`${p}.re.max`, re.max, 'min="1" max="10" step="1"')}</label>` : ''}
           </div>
+          ${s.mode === 'positional' ? `<div class="leg-row"><span class="lbl">Roll</span>
+            <label class="chk" title="Close this leg and open the same strike in the next weekly expiry before it expires (e.g. a near-week hedge moved into the main expiry)"><input type="checkbox" data-act="roll" data-i="${i}" ${l.roll ? 'checked' : ''}> into the next expiry</label>
+            ${l.roll ? `${numIn(`${p}.roll.dteDays`, l.roll.dteDays, 'min="0" max="5" step="1"')} <span class="muted">trading days before its expiry at</span> <input type="time" data-path="${p}.roll.time" value="${l.roll.time}" step="60">` : ''}
+          </div>` : ''}
         </div>`;
       }).join('');
 
@@ -241,9 +250,12 @@
             <div class="ed-row"><span class="lbl">Days to expiry</span><div class="chips">${dtes.map((d) => `<button type="button" class="chip${s.entry.dte.includes(d) ? ' on' : ''}" data-act="dte" data-v="${d}" title="${d === 0 ? 'Expiry day' : d + ' trading day(s) before expiry'}">${d === 0 ? 'Expiry' : d}</button>`).join('')}</div>
               <span class="muted small">${s.entry.dte.length ? '' : 'none selected = all days'}</span></div>`
           : `
-            <div class="ed-row"><span class="lbl">Enter</span>${numIn('entry.dteDays', s.entry.dteDays, 'min="0" max="40" step="1"')}<span class="muted">trading days before expiry at</span><input type="time" data-path="entry.time" value="${s.entry.time}" step="60"></div>
+            <div class="ed-row"><span class="lbl">Enter on</span>${seg('entry.after', s.entry.after ? 2 : 0, [[0, 'Days before expiry'], [2, 'Start of a series']])}</div>
+            ${s.entry.after ? `<div class="ed-row wrap"><span class="lbl">Enter</span><span class="muted">the trading day after the expiry</span>${numIn('entry.after', s.entry.after, 'min="1" max="6" step="1"')}<span class="muted">weeks before this one, at</span><input type="time" data-path="entry.time" value="${s.entry.time}" step="60"></div>`
+              : `<div class="ed-row"><span class="lbl">Enter</span>${numIn('entry.dteDays', s.entry.dteDays, 'min="0" max="40" step="1"')}<span class="muted">trading days before expiry at</span><input type="time" data-path="entry.time" value="${s.entry.time}" step="60"></div>`}
             <div class="ed-row"><span class="lbl">Exit</span>${numIn('exit.dteDays', s.exit.dteDays, 'min="0" max="40" step="1"')}<span class="muted">days before expiry (0 = expiry day) at</span><input type="time" data-path="exit.time" value="${s.exit.time}" step="60"></div>
-            <div class="muted small ed-hint">Held overnight. With a ${s.expiry} cycle this places one trade per ${s.expiry === 'weekly' ? 'week' : 'month'}; ${s.entry.dteDays >= 5 ? 'spanning multiple weeks' : 'within the expiry week'}.</div>`}
+            <div class="ed-row"><span class="lbl"></span><label class="chk" title="Skip a trade whose entry falls while the previous trade is still open"><input type="checkbox" data-path="entry.noOverlap" data-type="bool" ${s.entry.noOverlap ? 'checked' : ''}> One position at a time</label></div>
+            <div class="muted small ed-hint">Held overnight. With a ${s.expiry} cycle this places one trade per ${s.expiry === 'weekly' ? 'week' : 'month'}; ${s.entry.after > 1 || s.entry.dteDays >= 5 ? 'spanning multiple weeks' : 'within the expiry week'}.${s.entry.after ? ' "This week" legs then trade the first expiry after entry, "next week" the one after.' : ''}</div>`}
         </div>
         ${triggerHtml(s)}
         <div class="ed-sec">
@@ -256,9 +268,13 @@
           </div>
         </div>
         <div class="ed-sec">
-          <h4>Overall position (₹)</h4>
-          <div class="ed-row"><span class="lbl">Stop-loss</span>${numIn('risk.sl', r.sl, 'min="0" step="500" placeholder="none"')}
-            <span class="lbl r">Target</span>${numIn('risk.tgt', r.tgt, 'min="0" step="500" placeholder="none"')}</div>
+          <h4>Overall position</h4>
+          <div class="ed-row"><span class="lbl">Amounts in</span>${seg('risk.unit', r.unit || 'inr', [['inr', '₹'], ['pct', '% of capital']])}
+            <span class="muted small">${r.unit === 'pct' ? 'capital = the Capital box in the settings, else the trade\'s estimated margin' : ''}</span></div>
+          <div class="ed-row"><span class="lbl">Stop-loss</span>${numIn('risk.sl', r.sl, `min="0" step="${r.unit === 'pct' ? '0.5' : '500'}" placeholder="none"`)}
+            <span class="lbl r">Target</span>${numIn('risk.tgt', r.tgt, `min="0" step="${r.unit === 'pct' ? '0.5' : '500'}" placeholder="none"`)}</div>
+          <div class="ed-row wrap"><span class="lbl">Partial booking</span><span class="muted">when MTM reaches</span>${numIn('risk.partialAt', r.partialAt, `min="0" step="${r.unit === 'pct' ? '0.1' : '500'}" placeholder="—"`)}
+            <span class="muted">book</span>${numIn('risk.partialPct', r.partialPct ?? 60, 'min="1" max="99" step="5"')}<span class="muted">% of the lots, then keep a floor of</span>${numIn('risk.partialFloor', r.partialFloor, `step="${r.unit === 'pct' ? '0.1' : '500'}" placeholder="—"`)}</div>
           <div class="ed-row wrap"><span class="lbl">Lock profit</span><span class="muted">when MTM reaches</span>${numIn('risk.lockAt', r.lockAt, 'min="0" step="500" placeholder="—"')}
             <span class="muted">lock</span>${numIn('risk.lockTo', r.lockTo || null, 'step="500" placeholder="0"')}</div>
           <div class="ed-row wrap"><span class="lbl">Then trail</span><span class="muted">every</span>${numIn('risk.trailEvery', r.trailEvery, 'min="0" step="500" placeholder="—"')}
@@ -269,6 +285,8 @@
         <div class="ed-sec">
           <h4>Filters</h4>
           <div class="ed-row"><span class="lbl">India VIX</span><span class="muted">from</span>${numIn('filters.vixMin', s.filters.vixMin, 'min="0" step="0.5" placeholder="any"')}<span class="muted">to</span>${numIn('filters.vixMax', s.filters.vixMax, 'min="0" step="0.5" placeholder="any"')}<span class="muted small">at entry</span></div>
+          <div class="ed-row wrap"><span class="lbl">Net credit</span><span class="muted">at least</span>${numIn('filters.minCredit', s.filters.minCredit, 'min="0" step="5" placeholder="any"')}<span class="muted">pts per lot at entry</span></div>
+          <div class="ed-row wrap"><span class="lbl">Max loss far</span><span class="muted">below</span>${numIn('filters.maxLossDown', s.filters.maxLossDown, 'min="0" step="5" placeholder="any"')}<span class="muted">above</span>${numIn('filters.maxLossUp', s.filters.maxLossUp, 'min="0" step="5" placeholder="any"')}<span class="muted small">pts per lot at expiry (every leg at intrinsic): skip the trade otherwise</span></div>
         </div>`;
     }
 
@@ -346,7 +364,8 @@
         }
         if (t.dataset.path.endsWith('.strike.by')) {
           const leg = getPath(S, t.dataset.path.replace(/\.strike\.by$/, ''));
-          leg.strike.value = { atm: 0, premium: 50, delta: 0.25, pct: 1, pts: 200, straddle: 1, signal: 0, sr: 0 }[t.value];
+          leg.strike.value = { atm: 0, premium: 50, delta: 0.25, pct: 1, pts: 200, straddle: 1, signal: 0, sr: 0, leg: 100 }[t.value];
+          if (t.value === 'leg') { const i = Number(t.dataset.path.split('.')[1]); leg.strike.ref = i > 0 ? i - 1 : 1; leg.strike.value = leg.type === 'CE' ? 100 : -100; }
           if (t.value === 'signal') leg.strike.ref = 'hit';
           if (t.value === 'sr') leg.strike.lv = 'any';
         }
@@ -363,6 +382,12 @@
       if (t.dataset.act === 're-on') {
         const leg = S.legs[Number(t.dataset.i)];
         leg.re = t.value === 'off' ? null : { mode: 'asap', max: 1, ...(leg.re || {}), on: t.value };
+        render();
+        changed();
+      }
+      if (t.dataset.act === 'roll') {
+        const leg = S.legs[Number(t.dataset.i)];
+        leg.roll = t.checked ? { dteDays: 1, time: '15:15' } : null;
         render();
         changed();
       }
