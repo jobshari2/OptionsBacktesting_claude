@@ -55,7 +55,17 @@
       "Bash(python \"C:/Users/Admin/AppData/Local/Temp/claude/D--Claude-OptionsBacktesting/f53ef720-7cc0-49cd-8087-a9b7da922a5f/scratchpad/edit7.py\")",
       "Bash(grep -n \"<td>\\\\${l.lots}</td>\\\\|S.lots\\\\|data-close=\\\\|\\\\$\\('sbPos'\\).addEventListener\\('change'\\\\|if \\(b.dataset.close\\)\\\\|\\\\$\\('sbPos'\\).innerHTML\" sb-view.js)",
       "Bash(python \"C:/Users/Admin/AppData/Local/Temp/claude/D--Claude-OptionsBacktesting/f53ef720-7cc0-49cd-8087-a9b7da922a5f/scratchpad/edit8.py\")",
-      "Bash(node --test)"
+      "Bash(node --test)",
+      "Bash(grep -v -E \"node_modules|\\\\.lock$\")",
+      "Bash(python \"C:/Users/Admin/AppData/Local/Temp/claude/D--Claude-new-OptionsBacktesting-claude/b65d4c9a-dca5-4c2a-a290-014e919c9736/scratchpad/sb_edit.py\")",
+      "Bash(node --check public/sb-view.js)",
+      "Bash(node --check public/payoff.js)",
+      "Bash(python \"C:/Users/Admin/AppData/Local/Temp/claude/D--Claude-new-OptionsBacktesting-claude/b65d4c9a-dca5-4c2a-a290-014e919c9736/scratchpad/lib_edit.py\")",
+      "Bash(node --check public/lib-view.js)",
+      "Bash(awk -F: '{print $1}')",
+      "Bash(python \"C:/Users/Admin/AppData/Local/Temp/claude/D--Claude-new-OptionsBacktesting-claude/b65d4c9a-dca5-4c2a-a290-014e919c9736/scratchpad/bt_edit.py\")",
+      "Bash(node --check public/bt-view.js)",
+      "Bash(PYTHONIOENCODING=utf-8 python -c ' *)"
     ]
   }
 }

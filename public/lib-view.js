@@ -1,10 +1,11 @@
 // Strategies screen: ready-made + saved strategies as cards, and "Deploy" — the strategy resolved on the
 // live option chain for an upcoming expiry, with payoff, greeks and breakevens. Strikes can be nudged and
-// the result saved back as a relative strategy (ATM offsets), so it applies to every future expiry.
+// the result saved back as a relative strategy (ATM offsets), so it applies to every future expiry, or handed to
+// the Builder ("Customise in Builder") with the same strikes, lots, prices and what-if settings.
 (() => {
   const { $, esc, inr, inrS, kinr, num, cls, dayShort, bs, ncdf } = BT;
   let cat = BT.store.get('libCat', 'All');
-  let dep = null; // { strategy, live, legs, shift, pricing, daysAhead }
+  let dep = null; // { strategy, live, legs, shift, pricing, daysAhead, ivShift }
   let inited = false;
 
   function init() {
@@ -36,6 +37,7 @@
           <button class="btn-sm" data-act="bt">Backtest</button>
           <button class="btn-sm ghost" data-act="edit">${mine ? 'Edit' : 'Customise'}</button>
           <button class="btn-sm ghost" data-act="deploy">Deploy live</button>
+          <button class="btn-sm ghost" data-act="builder" title="Open in the Builder on the live chain: paper trade it with payoff, adjustments and P&amp;L">Builder ▸</button>
           ${mine ? '<button class="btn-sm ghost danger" data-act="del" title="Delete">✕</button>' : ''}
           ${s.edited ? '<button class="btn-sm ghost" data-act="reset" title="Restore the original built-in strategy">Reset</button>' : ''}
         </div>
@@ -108,6 +110,7 @@
     if (b.dataset.act === 'bt') BT.emit('open-backtest', { strategy: s, run: true });
     if (b.dataset.act === 'edit') BT.emit('open-backtest', { strategy: s, run: false });
     if (b.dataset.act === 'deploy') deploy(s, 0);
+    if (b.dataset.act === 'builder') BT.emit('open-builder', { strategy: s, src: 'live' });
     if (b.dataset.act === 'del' && confirm(`Delete "${s.name}"?`)) await BT.deleteStrategy(s.id);
     if (b.dataset.act === 'reset' && confirm(`Restore the original "${s.name}"? Your edits will be discarded.`)) await BT.resetStrategy(s.id);
   });
@@ -125,10 +128,17 @@
     try {
       const live = await BT.api('/api/bt/resolve', { strategy, shift, hit });
       dep = {
-        strategy: live.strategy, live, shift, hit, pricing: dep?.pricing || 'ltp', daysAhead: 0,
+        strategy: live.strategy, live, shift, hit, pricing: dep?.pricing || 'ltp', daysAhead: 0, ivShift: dep?.ivShift || 0,
         legs: live.legs.map((l) => ({ ...l, orig: l.strikeValue })),
       };
       dep.strategy.id = strategy.id;
+      if (!live.levels) { // only sent when the strategy uses S/R; fetched anyway for the payoff chart's S / R marks
+        try {
+          const lv = (await BT.api('/api/bt/levels')).levels || [];
+          const by = (f) => lv.filter(f).sort((a, b) => Math.abs(a.price - live.spot) - Math.abs(b.price - live.spot))[0] || null;
+          dep.chartLevels = { resistance: by((x) => x.price > live.spot), support: by((x) => x.price < live.spot) };
+        } catch { /* optional */ }
+      }
       renderDeploy();
     } catch (e) {
       $('libDeploy').innerHTML = `<div class="empty-in err"><b>Could not deploy:</b> ${esc(e.message)}<p class="muted small">Deploy needs the live option chain from Upstox.</p></div>`;
@@ -155,57 +165,25 @@
     return q.ltp || 0;
   };
 
+  // ATM IV of an expiry's chain (average of the call and put IV at the strike nearest spot).
+  function atmIv(exp) {
+    const rows = dep.live.chains[exp] || [];
+    if (!rows.length) return null;
+    const S0 = dep.live.spot;
+    const r = rows.reduce((b, x) => (Math.abs(x.strike - S0) < Math.abs(b.strike - S0) ? x : b), rows[0]);
+    const ivs = [r.ce?.iv, r.pe?.iv].filter((v) => v > 0);
+    return ivs.length ? ivs.reduce((a, b) => a + b, 0) / ivs.length / 100 : null;
+  }
+  // The shared payoff engine (payoff.js), the same one the Builder uses.
   function analyse() {
     const lot = dep.live.lot;
-    const S0 = dep.live.spot;
-    const legs = dep.legs.map((l) => ({ ...l, q: (l.action === 'B' ? 1 : -1) * l.lots * lot, px: entryPx(l), iv: ivOf(l), call: l.type === 'CE' }));
+    const legs = dep.legs.map((l) => ({
+      action: l.action, type: l.type, strike: l.strikeValue, lots: l.lots, lot, expiryDate: l.expiryDate,
+      entryPx: entryPx(l), px: l.quote?.ltp || entryPx(l), iv: ivOf(l), T: Math.max(1e-6, yearsTo(l.expiryDate)),
+    }));
     const near = legs.reduce((m, l) => (l.expiryDate < m ? l.expiryDate : m), legs[0].expiryDate);
-    const daysToNear = Math.max(0, (Date.parse(near + 'T15:30:00+05:30') - now()) / 86400_000);
-    const value = (S, plusDays) => legs.reduce((sum, l) => sum + l.q * (bs(S, l.strikeValue, yearsTo(l.expiryDate, plusDays), l.iv, l.call) - l.px), 0);
-    const atExpiry = (S) => value(S, daysToNear);
-    const atmIv = legs.reduce((s, l) => s + l.iv, 0) / legs.length;
-    const sd = S0 * atmIv * Math.sqrt(Math.max(daysToNear, 0.3) / 365);
-    const lo = S0 - Math.max(4 * sd, S0 * 0.03);
-    const hi = S0 + Math.max(4 * sd, S0 * 0.03);
-    const N = 241;
-    const xs = Array.from({ length: N }, (_, i) => lo + ((hi - lo) * i) / (N - 1));
-    const exp = xs.map(atExpiry);
-    const t0 = xs.map((x) => value(x, 0));
-    const tN = dep.daysAhead > 0 ? xs.map((x) => value(x, Math.min(dep.daysAhead, daysToNear))) : null;
-    // Wide grid for max profit / loss and unlimited detection
-    const wide = Array.from({ length: 401 }, (_, i) => S0 * (0.5 + i / 400));
-    const wv = wide.map(atExpiry);
-    const maxP = Math.max(...wv);
-    const maxL = Math.min(...wv);
-    const edge = (a, b) => Math.abs(a - b) > Math.abs(maxP - maxL) * 0.002;
-    const unlimitedP = (wv[400] === maxP && edge(wv[400], wv[399])) || (wv[0] === maxP && edge(wv[0], wv[1]));
-    const unlimitedL = (wv[400] === maxL && edge(wv[400], wv[399])) || (wv[0] === maxL && edge(wv[0], wv[1]));
-    const be = [];
-    for (let i = 1; i < N; i++) if ((exp[i - 1] < 0) !== (exp[i] < 0)) be.push(xs[i - 1] + ((xs[i] - xs[i - 1]) * -exp[i - 1]) / (exp[i] - exp[i - 1]));
-    // Probability of finishing in profit (lognormal at the average IV)
-    const T = Math.max(daysToNear, 0.3) / 365;
-    const cdf = (x) => ncdf(Math.log(x / S0) / (atmIv * Math.sqrt(T)) + (atmIv * Math.sqrt(T)) / 2);
-    let pop = 0;
-    for (let i = 1; i < wide.length; i++) if ((wv[i] + wv[i - 1]) / 2 > 0) pop += cdf(wide[i]) - cdf(wide[i - 1]);
-    const premium = legs.reduce((s, l) => s - l.q * l.px, 0);
-    const g = (k) => legs.reduce((s, l) => s + l.q * (l.quote?.[k] ?? 0), 0);
-    // Margin estimate (same rule as the backtester)
-    const side = (type) => {
-      const ls = legs.filter((l) => l.type === type);
-      const shortQty = ls.filter((l) => l.q < 0).reduce((s, l) => s - l.q, 0);
-      if (!shortQty) return 0;
-      let worst = 0;
-      for (let k = 0.6; k <= 1.4001; k += 0.01) {
-        const S = S0 * k;
-        worst = Math.min(worst, ls.reduce((s, l) => s + l.q * (Math.max(0, type === 'CE' ? S - l.strikeValue : l.strikeValue - S) - l.px), 0));
-      }
-      return Math.min(0.09 * S0 * shortQty, -worst);
-    };
-    const ce = side('CE');
-    const pe = side('PE');
-    const margin = Math.max(ce, pe) + 0.3 * Math.min(ce, pe) + legs.filter((l) => l.q > 0).reduce((s, l) => s + l.q * l.px, 0);
-    return { legs, xs, exp, t0, tN, maxP, maxL, unlimitedP, unlimitedL, be, pop, premium, margin, daysToNear, near, sd,
-      greeks: { delta: g('delta'), gamma: g('gamma'), theta: g('theta'), vega: g('vega') } };
+    const A = BT.payoff.analyse(legs, { spot: dep.live.spot, atmIv: atmIv(near), daysAhead: dep.daysAhead, ivShift: dep.ivShift });
+    return { ...A, near };
   }
 
   function renderDeploy() {
@@ -237,28 +215,18 @@
             <td>${dayShort(l.expiryDate)}</td><td><b>${num(entryPx(l))}</b></td><td class="muted">${num(q.bid)} / ${num(q.ask)}</td>
             <td>${num(q.iv, 1)}</td><td>${num(q.delta)}</td></tr>`;
         }).join('')}</tbody></table></div>
-      <div class="dep-kpis">
-        <div><span>${a.premium >= 0 ? 'Net credit' : 'Net debit'}</span><b class="${cls(a.premium)}">${inr(Math.abs(a.premium))}</b></div>
-        <div><span>Max profit</span><b class="pos">${a.unlimitedP ? 'Unlimited' : inr(a.maxP)}</b></div>
-        <div><span>Max loss</span><b class="neg">${a.unlimitedL ? 'Unlimited' : inr(a.maxL)}</b></div>
-        <div><span>Breakeven</span><b>${a.be.length ? a.be.map((x) => Math.round(x)).join(' · ') : '—'}</b></div>
-        <div><span>Chance of profit</span><b>${(a.pop * 100).toFixed(0)}%</b></div>
-        <div><span>Est. margin</span><b>${kinr(a.margin)}</b></div>
-        <div><span>Delta</span><b>${num(a.greeks.delta, 1)}</b></div>
-        <div><span>Theta / day</span><b class="${cls(a.greeks.theta)}">${inrS(a.greeks.theta)}</b></div>
-        <div><span>Vega</span><b>${num(a.greeks.vega, 0)}</b></div>
-        <div><span>Gamma</span><b>${num(a.greeks.gamma, 3)}</b></div>
-      </div>
-      <div class="dep-chart-head"><b>Payoff</b>
-        <label class="muted small">Day ahead <input type="range" id="depDays" min="0" max="${Math.max(0, Math.floor(a.daysToNear))}" step="1" value="${Math.min(dep.daysAhead, Math.floor(a.daysToNear))}"> <span id="depDaysV">${dep.daysAhead ? '+' + dep.daysAhead + 'd' : 'today'}</span></label></div>
+      <div class="dep-kpis" id="depKpis"></div>
+      <div class="dep-chart-head"><span><b>Payoff</b> <span class="muted small">${esc(SBAdjust.structure(a.legs).name)}</span></span><div class="pay-ctl" id="depCtl"></div></div>
       <div class="chart-box dep-chart"><canvas id="depChart"></canvas></div>
       <div class="dep-actions">
-        <button class="btn-sm" data-act="save" title="Save as a strategy defined relative to ATM, reusable on any expiry">Save as my strategy</button>
+        <button class="btn-sm" data-act="builder" title="Open these exact legs (strikes, lots, entry prices, what-if settings) in the Builder on the live chain, to paper trade, adjust and roll them">Customise in Builder ▸</button>
+        <button class="btn-sm ghost" data-act="save" title="Save as a strategy defined relative to ATM, reusable on any expiry">Save as my strategy</button>
         <button class="btn-sm ghost" data-act="bt">Backtest it</button>
         <span class="muted small">* = strike changed from the rule; it is saved as an ATM offset.</span>
       </div>
-      <div class="muted small pad">Chance of profit uses a lognormal model at the legs' average IV. Margin is a rough estimate — check with your broker. Not investment advice.</div>`;
-    drawPayoff(a);
+      <div class="muted small pad">Chance of profit uses a lognormal model at ATM IV. Greeks are Black-Scholes at each leg's IV. Margin is a rough estimate: check with your broker. Not investment advice.</div>`;
+    BT.payoff.controls($('depCtl'), a, dep, drawPayoff);
+    drawPayoff();
   }
 
   // Live entry conditions, the anomaly behind "signal" strikes, and the nearest S/R levels.
@@ -277,47 +245,12 @@
     return parts.length ? `<div class="dep-ctx">${parts.join('')}</div>` : '';
   }
 
-  const vline = {
-    id: 'vline',
-    afterDatasetsDraw(chart, _, o) {
-      const { ctx, chartArea: ca, scales } = chart;
-      for (const m of o.marks || []) {
-        const x = scales.x.getPixelForValue(m.x);
-        if (x < ca.left || x > ca.right) continue;
-        ctx.save();
-        ctx.strokeStyle = m.color;
-        ctx.setLineDash(m.dash || []);
-        ctx.beginPath(); ctx.moveTo(x, ca.top); ctx.lineTo(x, ca.bottom); ctx.stroke();
-        ctx.fillStyle = m.color; ctx.font = '10px system-ui'; ctx.fillText(m.label, x + 3, ca.top + 10);
-        ctx.restore();
-      }
-    },
-  };
-
-  function drawPayoff(a) {
-    const pts = (ys) => a.xs.map((x, i) => ({ x, y: ys[i] }));
-    const S0 = dep.live.spot;
-    const ds = [
-      { label: `At expiry (${dayShort(a.near)})`, data: pts(a.exp), borderColor: '#e6edf3', borderWidth: 1.8, pointRadius: 0,
-        fill: { target: 'origin', above: 'rgba(63,182,139,.18)', below: 'rgba(240,113,107,.18)' } },
-      { label: 'Today (T+0)', data: pts(a.t0), borderColor: '#58a6ff', borderWidth: 1.4, pointRadius: 0, borderDash: [4, 3] },
-    ];
-    if (a.tN) ds.push({ label: `+${dep.daysAhead} day${dep.daysAhead > 1 ? 's' : ''}`, data: pts(a.tN), borderColor: '#d6af4c', borderWidth: 1.4, pointRadius: 0 });
-    BT.chart($('depChart'), {
-      type: 'line',
-      data: { datasets: ds },
-      plugins: [vline],
-      options: {
-        parsing: false,
-        interaction: { mode: 'nearest', axis: 'x', intersect: false },
-        plugins: {
-          legend: { position: 'bottom' },
-          tooltip: { callbacks: { title: (c) => `Nifty ${Math.round(c[0].raw.x)} (${(((c[0].raw.x - S0) / S0) * 100).toFixed(1)}%)`, label: (c) => `${c.dataset.label}: ${inrS(c.raw.y)}` } },
-          vline: { marks: [{ x: S0, label: 'spot', color: '#d6af4c' }, { x: S0 - a.sd, label: '−1σ', color: '#8b949e', dash: [2, 3] }, { x: S0 + a.sd, label: '+1σ', color: '#8b949e', dash: [2, 3] }] },
-        },
-        scales: { x: { type: 'linear', ticks: { callback: (v) => Math.round(v) } }, y: { ticks: { callback: (v) => kinr(v) } } },
-      },
-    });
+  // KPIs and chart only (the what-if controls redraw these while they are dragged).
+  function drawPayoff() {
+    const a = analyse();
+    $('depKpis').innerHTML = BT.payoff.kpis(a);
+    const lv = dep.live.levels;
+    BT.payoff.draw($('depChart'), a, { expiryLabel: dayShort(a.near), nowLabel: 'today', levels: lv ? { resistance: lv.resistance.any, support: lv.support.any } : dep.chartLevels });
   }
 
   // Convert the deployed legs back into a relative strategy: changed strikes become ATM offsets.
@@ -326,11 +259,8 @@
     s.legs = dep.legs.map((l) => {
       const def = { action: l.action, type: l.type, lots: l.lots, expiry: l.expiry, strike: l.strike, sl: l.sl, tgt: l.tgt, trail: l.trail, re: l.re };
       if (l.strikeValue !== l.orig) {
-        const rows = dep.live.chains[l.expiryDate];
-        const ks = rows.map((r) => r.strike);
-        const atmI = ks.reduce((b, k, j) => (Math.abs(k - dep.live.spot) < Math.abs(ks[b] - dep.live.spot) ? j : b), 0);
-        const off = (ks.indexOf(l.strikeValue) - atmI) * (l.type === 'CE' ? 1 : -1);
-        def.strike = { by: 'atm', value: off, match: 'closest' };
+        const ks = dep.live.chains[l.expiryDate].map((r) => r.strike);
+        def.strike = { by: 'atm', value: BT.atmOffset(l.strikeValue, dep.live.spot, BT.strikeStep(ks), l.type), match: 'closest' };
       }
       return def;
     });
@@ -349,6 +279,21 @@
     else if (b.dataset.act === 'refresh') deploy(asStrategy(), dep.shift);
     else if (b.dataset.act === 'close') { dep = null; renderDeployEmpty(); }
     else if (b.dataset.act === 'bt') BT.emit('open-backtest', { strategy: asStrategy(), run: false });
+    else if (b.dataset.act === 'builder') {
+      // Hand the exact position over: strikes, lots, expiries and the entry prices shown here (LTP or bid / ask),
+      // each leg tagged with its strategy rule so saving from the Builder keeps the rule, SL and target.
+      BT.emit('open-builder', {
+        strategy: { ...dep.strategy, id: dep.strategy.id },
+        src: 'live',
+        expiry: dep.live.base,
+        legs: dep.legs.map((l) => ({
+          action: l.action, type: l.type, strike: l.strikeValue, lots: l.lots, expiry: l.expiryDate, px: entryPx(l),
+          rule: { action: l.action, type: l.type, lots: l.lots, expiry: l.expiry, strike: l.strike, sl: l.sl, tgt: l.tgt, trail: l.trail, re: l.re }, ruleStrike: l.orig,
+        })),
+        pay: { daysAhead: dep.daysAhead, ivShift: dep.ivShift },
+        note: `deployed for ${dayShort(dep.live.base)} at ${dep.pricing === 'market' ? 'bid / ask' : 'LTP'}`,
+      });
+    }
     else if (b.dataset.act === 'save') {
       const s = asStrategy();
       const name = prompt('Save as', s.id?.startsWith('my-') ? s.name : s.name + ' (mine)');
@@ -362,12 +307,6 @@
     if (!dep) return;
     if (e.target.id === 'depShift') deploy(asStrategy(), Number(e.target.value));
     if (e.target.dataset.lots != null) { dep.legs[Number(e.target.dataset.lots)].lots = Math.max(1, Number(e.target.value) || 1); renderDeploy(); }
-  });
-  $('libDeploy').addEventListener('input', (e) => {
-    if (e.target.id !== 'depDays' || !dep) return;
-    dep.daysAhead = Number(e.target.value);
-    $('depDaysV').textContent = dep.daysAhead ? '+' + dep.daysAhead + 'd' : 'today';
-    drawPayoff(analyse());
   });
 
   window.addEventListener('viewchange', (e) => { if (e.detail === 'lib') init(); });

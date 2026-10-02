@@ -15,10 +15,10 @@
     <nav class="tabs" id="tabs">
       <button data-view="chain" class="on" title="Live option chain with support and resistance">Chain</button>
       <button data-view="an" title="Option-pricing anomalies: live scanner and history scan">Anomalies</button>
-      <button data-view="sb" title="Build and trade a position on a historical replay or the live chain, with payoff and adjustment suggestions">Builder</button>
+      <button data-view="lib" title="Ready-made and saved strategies; deploy one on the live chain">Strategies</button>
       <button data-view="bt" title="Backtest a strategy on historical 1-minute option data">Backtest</button>
       <button data-view="cmp" title="Backtest several strategies on the same period and rank them">Compare</button>
-      <button data-view="lib" title="Ready-made and saved strategies; deploy one on the live chain">Strategies</button>
+      <button data-view="sb" title="Build and trade a position on a historical replay or the live chain, with payoff and adjustment suggestions">Builder</button>
       <button data-view="data" title="Historical data availability and cache">Data</button>
     </nav>
     <div class="stat"><span class="label">Spot</span><span id="spot" class="value big">—</span></div>
@@ -147,6 +147,7 @@
       <section class="panel sb-payoff">
         <div class="panel-head"><h3>Payoff</h3><span class="muted small" id="sbPayInfo"></span></div>
         <div class="dep-kpis" id="sbKpis"></div>
+        <div class="pay-ctl" id="sbPayCtl"></div>
         <div class="chart-box sb-pay-chart"><canvas id="sbPayChart"></canvas></div>
       </section>
       <section class="panel sb-pos">
@@ -184,6 +185,7 @@
           <button class="btn-sm ghost danger" id="btDelete" title="Delete this saved strategy">Delete</button>
           <button class="btn-sm ghost hidden" id="btReset" title="Throw away your edits and restore the original built-in strategy">Reset to original</button>
           <button class="btn-sm ghost" id="btDeploy" title="See this strategy on the live chain for an upcoming expiry">Deploy live ▸</button>
+          <button class="btn-sm ghost" id="btBuilder" title="Open this strategy in the Builder on the live chain (paper trading, with payoff and adjustments)">Builder ▸</button>
           <span id="btSaveMsg" class="muted small"></span>
         </div>
       </div>
@@ -232,6 +234,7 @@
   <script src="/vendor/chart.js"></script>
   <script src="app.js"></script>
   <script src="bt-common.js"></script>
+  <script src="payoff.js"></script>
   <script src="bt-view.js"></script>
   <script src="cmp-view.js"></script>
   <script src="lib-view.js"></script>

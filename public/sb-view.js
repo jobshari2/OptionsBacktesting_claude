@@ -4,8 +4,10 @@
 // sb-adjust.js, plus online research through Claude + web search). The replay steps 1 minute to 1 day,
 // manually or automatically, within the day (intraday) or across days up to expiry (multi-day).
 // Live mode is paper trading: entries and exits are recorded at the chain's prices; no orders are sent.
+// Other screens open a position here through BT.emit('open-builder', …) (a backtest trade to replay, a deployed
+// strategy to customise); the position can be saved back as a strategy or sent to the Backtest.
 (() => {
-  const { $, esc, inr, inrS, kinr, num, cls, dayShort, dayLabel, WD, bs, ncdf } = BT;
+  const { $, esc, inr, inrS, kinr, num, cls, dayShort, dayLabel, WD, bs } = BT;
   const MPD = 375;
   const STEPS = [[1, '1m'], [3, '3m'], [5, '5m'], [10, '10m'], [15, '15m'], [30, '30m'], [60, '1h'], [120, '2h'], ['1d', '1 day']];
   const SPEEDS = [[500, '0.5 s'], [1000, '1 s'], [2000, '2 s'], [4000, '4 s']];
@@ -15,6 +17,7 @@
   const def = { src: 'hist', expiry: null, liveExpiry: null, day: null, startTime: '09:20', chainExp: null, chainLots: null, m: 5, session: 'intraday', step: 5, speed: 1000, lots: 1, width: 10, legs: [], log: [], mtm: [], atmIvEntry: null, spotEntry: null, seq: 0 };
   let S = { ...def, ...BT.store.get('sb', {}) };
   if (!Array.isArray(S.legs)) S.legs = [];
+  if (!S.pay) S.pay = { daysAhead: 0, ivShift: 0 }; // payoff what-if controls
   const save = () => BT.store.set('sb', S);
 
   let inited = false;
@@ -28,6 +31,7 @@
   let levels = new Map(); // day -> levels
   let research = null;
   let busy = false;
+  let pending = null; // position handed over by another screen, placed once the chain is loaded (see 'open-builder')
 
   // ---------- data ----------
   // Lots used by the chain's B / S buttons and the arbitrage list: the chain's own box wins over the global Lots on top.
@@ -48,7 +52,7 @@
   const viewedExp = () => (S.chainExp && chainExpiries().includes(S.chainExp) ? S.chainExp : primary());
   async function loadDay(day, force, exp = S.expiry) {
     const key = `${exp}|${day}`;
-    const need = [...new Set(S.legs.filter((l) => legExp(l) === exp).map((l) => l.strike))];
+    const need = [...new Set([...S.legs, ...(pending?.legs || [])].filter((l) => (l.expiry || primary()) === exp).map((l) => l.strike))];
     const have = dayCache.get(key);
     if (have && !force && need.every((k) => have.ks.includes(k))) return have;
     const d = await BT.api(`/api/sb/day?expiry=${exp}&day=${day}&width=15&extra=${need.join(',')}`);
@@ -58,14 +62,20 @@
   }
   // Other expiries needed besides the main one: those held in legs and the one viewed in the chain.
   const extraExps = () => [...new Set([...S.legs.filter((l) => l.open).map(legExp), viewedExp()])].filter((e) => e && e !== primary());
+  async function fetchLive(exp) {
+    const c = await BT.api('/api/bt/chain?expiry=' + exp);
+    liveMap.set(exp, { at: Date.now(), spot: c.spot, rows: c.rows.filter((r) => r.ce.ltp || r.pe.ltp) });
+  }
   async function loadLive() {
     if (!S.liveExpiry) return;
     for (const exp of [S.liveExpiry, ...extraExps()]) {
-      try {
-        const c = await BT.api('/api/bt/chain?expiry=' + exp);
-        liveMap.set(exp, { at: Date.now(), spot: c.spot, rows: c.rows.filter((r) => r.ce.ltp || r.pe.ltp) });
-      } catch (e) { liveMap.set(exp, { error: e.message, at: Date.now(), rows: [] }); }
+      try { await fetchLive(exp); } catch (e) { liveMap.set(exp, { error: e.message, at: Date.now(), rows: [] }); }
     }
+  }
+  // Make sure an expiry's prices are loaded at the current replay time / live (for legs of another expiry).
+  async function ensureExp(exp) {
+    if (S.src === 'hist') await loadDay(S.day, false, exp);
+    else if (!liveMap.get(exp)?.rows?.length) await fetchLive(exp);
   }
   // Load whatever the viewed expiry needs, then redraw (guards against repeated loads of the same thing).
   function ensureView() {
@@ -123,19 +133,7 @@
     for (let i = 0; i < 30; i++) { const mid = (lo + hi) / 2; if (bs(Sx, K, T, mid, call) > price) hi = mid; else lo = mid; }
     return (lo + hi) / 2;
   }
-  const d1 = (Sx, K, T, v) => (Math.log(Sx / K) + (0.065 + (v * v) / 2) * T) / (v * Math.sqrt(T));
-  function greeks(Sx, K, T, v, call) {
-    if (!v || T <= 1e-6) return { delta: call ? (Sx > K ? 1 : 0) : (Sx < K ? -1 : 0), gamma: 0, theta: 0, vega: 0 };
-    const x = d1(Sx, K, T, v);
-    const pdf = Math.exp(-x * x / 2) / Math.sqrt(2 * Math.PI);
-    const p0 = bs(Sx, K, T, v, call);
-    return {
-      delta: call ? ncdf(x) : ncdf(x) - 1,
-      gamma: pdf / (Sx * v * Math.sqrt(T)),
-      theta: bs(Sx, K, Math.max(1e-6, T - 1 / 365), v, call) - p0, // per calendar day
-      vega: (bs(Sx, K, T, v + 0.01, call) - p0), // per 1 vol point
-    };
-  }
+  const { greeks } = BT.payoff;
   const atmOf = (M) => M.ks.reduce((b, k) => (Math.abs(k - M.spot) < Math.abs(b - M.spot) ? k : b), M.ks[0]);
   function atmIv(M) {
     const k = atmOf(M);
@@ -156,11 +154,14 @@
     const iv = ivOf(px, M.spot, l.strike, Ml.T, l.type === 'CE') ?? atmIv(Ml) ?? 0.12;
     return { px, iv, T: Ml.T, lot: Ml.lot, g: greeks(M.spot, l.strike, Ml.T, iv, l.type === 'CE') };
   }
-  function addLeg(action, type, strike, lots, M, why) {
-    const px = M.px(strike, type);
+  // extra: { px (fill price instead of the chain's, e.g. a backtest fill), rule / ruleStrike / ruleExpiry (the strategy
+  // leg it came from and where that rule put it, kept so "Save as strategy" can keep the rule and its SL / target) }
+  function addLeg(action, type, strike, lots, M, why, extra = {}) {
+    const px = extra.px > 0 ? extra.px : M.px(strike, type);
     if (px == null) { flash(`${strike} ${type} has no price at ${M.label}`); return false; }
     if (!openLegs().length) { S.atmIvEntry = atmIv(M); S.spotEntry = M.spot; }
-    S.legs.push({ id: ++S.seq, action, type, strike, lots, expiry: M.expiry, entryPx: px, entryAt: M.label, open: true });
+    const rule = extra.rule ? { rule: BT.clone(extra.rule), ruleStrike: extra.ruleStrike ?? strike, ruleExpiry: extra.ruleExpiry ?? M.expiry } : {};
+    S.legs.push({ id: ++S.seq, action, type, strike, lots, expiry: M.expiry, entryPx: px, entryAt: M.label, entryDay: M.day, entryMin: M.minute, spotIn: M.spot, open: true, ...rule });
     log(`${action === 'B' ? 'Buy' : 'Sell'} ${lots} × ${strike} ${type} @ ${px.toFixed(2)}${why ? ' — ' + why : ''}`, M);
     return true;
   }
@@ -201,71 +202,39 @@
     return { realised, open, total: realised + open, credit, by };
   }
 
-  // Capital needed to put the position on: margin blocked for the short legs + premium paid for the long legs.
-  // Same rough rule as the backtester (about 9% of notional per naked short lot, capped by the defined-risk loss
-  // when longs of the same type cover it; straddles / strangles get partial offset). It is an estimate: check with the broker.
-  function capitalNeeded(legs, spot, oneLot) {
-    const q = (l) => (oneLot ? 1 : l.lots) * l.lot;
-    const side = (type) => {
-      const ls = legs.filter((l) => l.type === type);
-      const shortQty = ls.filter((l) => l.action === 'S').reduce((a, l) => a + q(l), 0);
-      if (!shortQty) return 0;
-      let worst = 0;
-      for (let k = 0.6; k <= 1.4001; k += 0.01) {
-        const x = spot * k;
-        worst = Math.min(worst, ls.reduce((a, l) => a + dir(l) * q(l) * (Math.max(0, type === 'CE' ? x - l.strike : l.strike - x) - l.entryPx), 0));
-      }
-      return Math.min(0.09 * spot * shortQty, -worst);
-    };
-    const ce = side('CE');
-    const pe = side('PE');
-    const margin = Math.max(ce, pe) + 0.3 * Math.min(ce, pe);
-    const premium = legs.filter((l) => l.action === 'B').reduce((a, l) => a + l.entryPx * q(l), 0);
-    return { margin, premium, total: margin + premium };
-  }
-  function analyse(M) {
+  // Payoff, Greeks, capital and risk numbers from the shared engine (payoff.js). whatIf applies the payoff panel's
+  // days-ahead / IV controls; the positions table and the suggestions always use the market as it is.
+  function analyse(M, whatIf) {
     const legs = openLegs().filter(picked).map((l) => ({ ...l, ...legNow(l, M) }));
     const P = pnl(M);
-    const g = { delta: 0, gamma: 0, theta: 0, vega: 0 };
-    for (const l of legs) { const q = dir(l) * l.lots * l.lot; g.delta += q * l.g.delta; g.gamma += q * l.g.gamma; g.theta += q * l.g.theta; g.vega += q * l.g.vega; }
-    const iv0 = atmIv(M) || 0.12;
-    const Th = legs.length ? Math.min(...legs.map((l) => l.T)) : M.T; // payoff horizon: the nearest expiry among the legs
-    const sd = M.spot * iv0 * Math.sqrt(Math.max(Th, 0.5 / 365));
-    const lo = M.spot - Math.max(4 * sd, M.spot * 0.03);
-    const hi = M.spot + Math.max(4 * sd, M.spot * 0.03);
-    const N = 201;
-    const xs = Array.from({ length: N }, (_, i) => lo + ((hi - lo) * i) / (N - 1));
-    // Value of a leg at the horizon: intrinsic if it expires then, otherwise Black-Scholes on its remaining time.
-    const atH = (l, x) => (l.T - Th < 1e-6 ? Math.max(0, l.type === 'CE' ? x - l.strike : l.strike - x) : bs(x, l.strike, l.T - Th, l.iv, l.type === 'CE'));
-    const exp = xs.map((x) => P.realised + legs.reduce((s, l) => s + dir(l) * l.lots * l.lot * (atH(l, x) - l.entryPx), 0));
-    const t0 = xs.map((x) => P.realised + legs.reduce((s, l) => s + dir(l) * l.lots * l.lot * (bs(x, l.strike, l.T, l.iv, l.type === 'CE') - l.entryPx), 0));
-    const wide = Array.from({ length: 301 }, (_, i) => M.spot * (0.6 + (0.8 * i) / 300));
-    const wv = wide.map((x) => P.realised + legs.reduce((s, l) => s + dir(l) * l.lots * l.lot * (atH(l, x) - l.entryPx), 0));
-    const maxP = Math.max(...wv);
-    const maxL = Math.min(...wv);
-    const slope = (a, b) => Math.abs(a - b) > 1;
-    const unlimP = legs.length && ((wv[300] === maxP && slope(wv[300], wv[299])) || (wv[0] === maxP && slope(wv[0], wv[1])));
-    const unlimL = legs.length && ((wv[300] === maxL && slope(wv[300], wv[299])) || (wv[0] === maxL && slope(wv[0], wv[1])));
-    const be = [];
-    for (let i = 1; i < N; i++) if ((exp[i - 1] < 0) !== (exp[i] < 0)) be.push(xs[i - 1] + ((xs[i] - xs[i - 1]) * -exp[i - 1]) / (exp[i] - exp[i - 1]));
-    // Chance of profit at expiry (lognormal at ATM IV).
-    const T = Math.max(Th, 0.3 / 365);
-    const cdf = (x) => ncdf(Math.log(x / M.spot) / (iv0 * Math.sqrt(T)) + (iv0 * Math.sqrt(T)) / 2);
-    let pop = 0;
-    for (let i = 1; i < wide.length; i++) if ((wv[i] + wv[i - 1]) / 2 > 0) pop += cdf(wide[i]) - cdf(wide[i - 1]);
-    const capLot = capitalNeeded(legs, M.spot, true);
-    const capSel = capitalNeeded(legs, M.spot, false);
-    return { capLot, capSel, legs, P, g, xs, exp, t0, maxP, maxL, unlimP, unlimL, be, pop, sd, iv0 };
+    const A = BT.payoff.analyse(legs, { spot: M.spot, atmIv: atmIv(M) || 0.12, realised: P.realised, daysAhead: whatIf ? S.pay.daysAhead : 0, ivShift: whatIf ? S.pay.ivShift : 0 });
+    return { ...A, P };
   }
 
   // ---------- strategy resolution on the current chain ----------
-  function resolveStrategy(s, M) {
-    const ks = M.ks.filter((k) => M.px(k, 'CE') || M.px(k, 'PE'));
-    const near = (x) => ks.reduce((b, k, j) => (Math.abs(k - x) < Math.abs(ks[b] - x) ? j : b), 0);
-    const ai = near(M.spot);
+  // Concrete expiry for a strategy expiry code, counted from the Builder's main expiry.
+  function expiryFor(code) {
+    const c = BT.meta.calendar || {};
+    const later = (S.src === 'hist' ? c.expired || [] : c.live || []).filter((e) => e >= primary());
+    const ms = later.filter((e) => (c.monthly || []).includes(e));
+    return code === 'next' ? later[1] : code === 'mcur' ? ms[0] : code === 'mnext' ? ms[1] : primary();
+  }
+  // Each leg is placed on its own expiry's chain (so calendars / diagonals keep their shape).
+  async function resolveStrategy(s) {
     const lv = levels.get(S.src === 'hist' ? S.day : 'live');
     const warn = [];
-    const legs = s.legs.map((l) => {
+    const out = [];
+    for (const l of s.legs) {
+      let exp = expiryFor(l.expiry);
+      if (exp && exp !== primary()) {
+        try { await ensureExp(exp); } catch { exp = null; }
+      }
+      if (!exp || !market(exp)) { warn.push(`${l.type} leg: no ${(BT.EXP_LABEL[l.expiry] || l.expiry).toLowerCase()} expiry with prices, placed on this expiry`); exp = primary(); }
+      const M = market(exp);
+      if (!M) continue;
+      const ks = M.ks.filter((k) => M.px(k, 'CE') || M.px(k, 'PE'));
+      const near = (x) => ks.reduce((b, k, j) => (Math.abs(k - x) < Math.abs(ks[b] - x) ? j : b), 0);
+      const ai = near(M.spot);
       const otm = l.type === 'CE' ? 1 : -1;
       const v = l.strike.value;
       let i;
@@ -278,7 +247,7 @@
           const list = (lv?.levels || []).filter((x) => (l.strike.lv && l.strike.lv !== 'any' ? x.cls === l.strike.lv : true) && (l.type === 'CE' ? x.price > M.spot : x.price < M.spot));
           const best = list.sort((a, b) => Math.abs(a.price - M.spot) - Math.abs(b.price - M.spot))[0];
           i = (best ? near(best.price) : ai) + otm * Math.round(v);
-          if (!best) warn.push('no S/R level found — used ATM');
+          if (!best) warn.push('no S/R level found, used ATM');
           break;
         }
         case 'signal': i = ai + Math.round(v); warn.push('"signal" strikes placed relative to ATM (no anomaly in the builder)'); break;
@@ -289,10 +258,123 @@
           i = order.reduce((b, j) => { const x = val(j); return x != null && (b == null || Math.abs(x - target) < Math.abs(val(b) - target)) ? j : b; }, null) ?? ai;
         }
       }
-      if (l.expiry !== 'cur' && l.expiry !== 'mcur') warn.push(`${l.type} leg uses the ${l.expiry === 'next' ? 'next week' : 'next month'} expiry — placed on this expiry instead`);
-      return { action: l.action, type: l.type, strike: ks[Math.max(0, Math.min(ks.length - 1, i))], lots: l.lots };
+      out.push({ action: l.action, type: l.type, strike: ks[Math.max(0, Math.min(ks.length - 1, i))], lots: l.lots, M, rule: l });
+    }
+    return { legs: out, warn: [...new Set(warn)] };
+  }
+  async function placeStrategy(s, note) {
+    const r = await resolveStrategy(s);
+    setFrom(s, note);
+    for (const l of r.legs) addLeg(l.action, l.type, l.strike, l.lots * S.lots, l.M, s.name, { rule: l.rule });
+    if (s.mode === 'positional' && S.src === 'hist') S.session = 'multi';
+    record(); save(); renderTop(); render();
+    if (r.warn.length) flash(r.warn.join(' · '));
+  }
+  function setFrom(s, note) { S.from = s ? { strategy: BT.clone(s), note: note || null } : null; }
+
+  // ---------- position -> strategy ----------
+  // Open, ticked legs as a relative strategy (ATM offsets + expiry codes), reusable on any expiry. Legs that came
+  // from a strategy and still sit where its rule put them keep the rule (premium / delta / S/R…) and their SL /
+  // target; moved or hand-picked legs become ATM offsets measured at the spot when they were entered. Timing and
+  // risk rules come from the strategy the position was loaded from, if any.
+  function toStrategy() {
+    const legs = openLegs().filter(picked);
+    if (!legs.length) { flash('Open a position first: its open, ticked legs become the strategy'); return null; }
+    const M = market();
+    if (!M) return null;
+    const c = BT.meta.calendar || {};
+    const list = S.src === 'hist' ? c.expired || [] : c.live || [];
+    const from = S.from?.strategy;
+    const s = from ? BT.complete(from) : BT.blankStrategy();
+    const warn = [];
+    if (!from) {
+      const key = (l) => `${l.entryDay || ''}|${String(l.entryMin ?? 0).padStart(3, '0')}`;
+      const first = legs.reduce((a, l) => (key(l) < key(a) ? l : a));
+      s.name = `${SBAdjust.structure(legs).name} (builder)`;
+      s.desc = 'Built in the Strategy Builder';
+      if (first.entryMin != null) s.entry.time = hhmm(first.entryMin);
+      if (S.src === 'hist' && S.session === 'multi') {
+        s.mode = 'positional';
+        const di = cal?.days.indexOf(first.entryDay) ?? -1;
+        s.entry.dteDays = di >= 0 ? cal.days.length - 1 - di : 2;
+      }
+    }
+    s.legs = legs.map((l) => {
+      const Ml = mk(l, M);
+      const def = l.rule ? BT.clone(l.rule) : {};
+      Object.assign(def, { action: l.action, type: l.type, lots: l.lots });
+      if (!l.rule || l.strike !== l.ruleStrike) def.strike = { by: 'atm', value: BT.atmOffset(l.strike, l.spotIn ?? M.spot, BT.strikeStep(Ml.ks), l.type), match: 'closest' };
+      if (!l.rule || legExp(l) !== l.ruleExpiry) {
+        const code = BT.expiryCode(legExp(l), primary(), list, c.monthly || [], s.expiry === 'monthly');
+        if (!code) warn.push(`${l.strike} ${l.type} (${dayShort(legExp(l))}) has no relative expiry code, saved as this week`);
+        def.expiry = code || 'cur';
+      }
+      return def;
     });
-    return { legs, warn: [...new Set(warn)] };
+    return { s: BT.complete(s), warn };
+  }
+  async function saveAsStrategy() {
+    const r = toStrategy();
+    if (!r) return;
+    const { s, warn } = r;
+    const mine = s.id?.startsWith('my-');
+    const name = prompt(`Save the open position as a strategy (strikes relative to ATM, so it works on any expiry).${warn.length ? '\n\n⚠ ' + warn.join('\n⚠ ') : ''}\n\nName:`, mine || s.name.endsWith('(builder)') ? s.name : s.name + ' (mine)');
+    if (!name) return;
+    if (!mine || name !== s.name) s.id = null; // a new strategy, unless it is one of yours kept under the same name
+    s.name = name;
+    try {
+      const saved = await BT.saveStrategy(s);
+      setFrom(saved, S.from?.note);
+      save(); renderTop();
+      flash(`Saved "${saved.name}" ✓ in Strategies › My strategies`);
+    } catch (e) { alert('Could not save: ' + e.message); }
+  }
+  function backtestPosition() {
+    const r = toStrategy();
+    if (!r) return;
+    if (r.warn.length) alert(r.warn.join('\n'));
+    BT.emit('open-backtest', { strategy: r.s, run: false });
+  }
+
+  // ---------- opened from another screen ----------
+  // o: { strategy, src: 'hist' | 'live', expiry, day, time, session, note, pay: { daysAhead, ivShift },
+  //      legs?: [{ action, type, strike, expiry, lots | qty, px?, rule?, ruleStrike? }] }. Without legs the strategy
+  //      is resolved on the chain at that moment, like Apply.
+  BT.on('open-builder', (o) => {
+    pause();
+    clearPosition();
+    S.src = o.src === 'hist' ? 'hist' : 'live';
+    if (S.src === 'hist') {
+      if (o.expiry) S.expiry = o.expiry;
+      S.day = o.day || null;
+      if (o.time) S.startTime = o.time;
+      S.m = minOf(S.startTime);
+      if (o.session) S.session = o.session;
+    } else if (o.expiry) S.liveExpiry = o.expiry;
+    S.chainExp = null;
+    S.pay = { daysAhead: o.pay?.daysAhead || 0, ivShift: o.pay?.ivShift || 0 }; // a new position starts from today's market unless the sender had a what-if
+    pending = o;
+    save();
+    window.app.setView('sb'); // fires 'viewchange' -> init() -> activate(), which places the pending position
+  });
+  async function placePending() {
+    const o = pending;
+    if (!o) return;
+    if (!o.legs?.length) { pending = null; if (o.strategy) await placeStrategy(o.strategy, o.note); return; }
+    setFrom(o.strategy, o.note);
+    const warn = [];
+    for (const l of o.legs) {
+      const exp = l.expiry || primary();
+      try { await ensureExp(exp); } catch { /* reported below */ }
+      const M = market(exp);
+      if (!M) { warn.push(`${l.strike} ${l.type}: no prices for ${dayShort(exp)}`); continue; }
+      const lots = l.lots || Math.max(1, Math.round((l.qty || M.lot) / M.lot));
+      if (!addLeg(l.action, l.type, l.strike, lots, M, o.note || o.strategy?.name, { px: l.px, rule: l.rule, ruleStrike: l.ruleStrike, ruleExpiry: exp })) warn.push(`${l.strike} ${l.type} has no price`);
+    }
+    pending = null; // kept until here so loadDay() also fetches the handed-over strikes outside the usual window
+    if (o.strategy?.mode === 'positional' && S.src === 'hist') S.session = 'multi';
+    record(); save(); renderTop(); render();
+    if (warn.length) flash(warn.join(' · '));
   }
 
   // ---------- replay ----------
@@ -417,6 +499,7 @@
       record();
     }
     render();
+    if (pending) await placePending();
   }
   function renderEmpty(msg) {
     $('sbChain').innerHTML = `<div class="err pad">${esc(msg)}</div>`;
@@ -437,14 +520,18 @@
         <input type="time" id="sbTime" value="${S.startTime}" step="60" title="Start time">
         <button class="btn-sm ghost" id="sbGo" title="Jump to this day and time (keeps the position)">Go</button>
         <span class="lbl">Session</span><div class="seg sm" id="sbSession"><button data-s="intraday" class="${S.session === 'intraday' ? 'on' : ''}">Intraday</button><button data-s="multi" class="${S.session === 'multi' ? 'on' : ''}">Multi-day</button></div>`
-      : `<span class="lbl">Expiry</span><select id="sbLiveExpiry">${lv.slice(0, 8).map((e) => `<option value="${e}" ${e === S.liveExpiry ? 'selected' : ''}>${dayLabel(e)}</option>`).join('')}</select>
+      : `<span class="lbl">Expiry</span><select id="sbLiveExpiry">${lv.slice(0, 10).map((e) => `<option value="${e}" ${e === S.liveExpiry ? 'selected' : ''}>${dayLabel(e)}</option>`).join('')}</select>
         <span class="muted small">Paper trading on the live chain (LTP fills); refreshes every 5 s. No orders are sent.</span>`}
       <span class="spacer"></span>
       <span class="lbl">Strategy</span><select id="sbStrat"><option value="">— custom (click B / S in the chain) —</option>${Object.entries(groups).map(([g, list]) => `<optgroup label="${esc(g)}">${list.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</optgroup>`).join('')}</select>
       <button class="btn-sm" id="sbApply" title="Place this strategy's legs on the chain at the current time">Apply</button>
       <label class="mini">Lots <input class="num xs" type="number" id="sbLots" min="1" max="100" value="${S.lots}"></label>
+      <button class="btn-sm ghost" id="sbSaveStrat" title="Save the open, ticked legs as a strategy (strikes relative to ATM, so it works on any expiry)">💾 Save as strategy</button>
+      <button class="btn-sm ghost" id="sbBacktest" title="Open the open, ticked legs as a strategy in the Backtest">Backtest ▸</button>
       <button class="btn-sm ghost danger" id="sbClear" title="Close the position view and start again">Reset</button>
-    </div>`;
+    </div>${S.from ? `<div class="sb-from"><span>Loaded from <b>${esc(S.from.strategy.name)}</b>${S.from.note ? ` · ${esc(S.from.note)}` : ''}</span>
+      <span class="muted">${esc(BT.timingLabel(BT.complete(S.from.strategy)))} · its stop-loss / target / exit-time rules are not automated here: step the replay and manage the legs by hand.</span>
+      <button class="icon" id="sbFromClose" title="Hide this note (the legs stay)">✕</button></div>` : ''}`;
     void strategies;
     renderReplay();
   }
@@ -478,12 +565,13 @@
     const M = market();
     if (!M) { const le = liveMap.get(S.liveExpiry); if (S.src === 'live' && le?.error) renderEmpty(le.error); return; }
     const A = analyse(M);
+    const Aw = S.pay.daysAhead || S.pay.ivShift ? analyse(M, true) : A;
     renderChainExp();
     const Mv = market(viewedExp());
     if (Mv) renderChain(Mv);
     else if (failedKeys.has(`${S.src}|${viewedExp()}|${S.day}`)) $('sbChain').innerHTML = '<div class="muted pad">No price data for this expiry on this day. Pick another expiry.</div>';
     else { $('sbChain').innerHTML = '<div class="muted pad">Loading this expiry\'s prices…</div>'; ensureView(); }
-    renderPayoff(M, A);
+    renderPayoff(M, Aw);
     renderPositions(M, A);
     renderSuggestions(M, A);
   }
@@ -621,54 +709,20 @@
     $('sbChainInfo').textContent = `· ${dayShort(M.expiry)} · lot ${M.lot} · ATM IV ${((atmIv(M) || 0) * 100).toFixed(1)}%`;
   }
 
-  const vline = {
-    id: 'sbv',
-    afterDatasetsDraw(chart, _, o) {
-      const { ctx, chartArea: ca, scales } = chart;
-      for (const m of o.marks || []) {
-        const x = scales.x.getPixelForValue(m.x);
-        if (x < ca.left || x > ca.right) continue;
-        ctx.save(); ctx.strokeStyle = m.color; ctx.setLineDash(m.dash || []);
-        ctx.beginPath(); ctx.moveTo(x, ca.top); ctx.lineTo(x, ca.bottom); ctx.stroke();
-        ctx.fillStyle = m.color; ctx.font = '10px system-ui'; ctx.fillText(m.label, x + 3, ca.top + 10); ctx.restore();
-      }
-    },
-  };
+  // Nearest support / resistance at the current spot, marked on the payoff chart.
+  function nearLevels(M) {
+    const lv = levels.get(S.src === 'hist' ? S.day : 'live')?.levels || [];
+    const by = (f) => lv.filter(f).sort((a, b) => Math.abs(a.price - M.spot) - Math.abs(b.price - M.spot))[0] || null;
+    return { resistance: by((x) => x.price > M.spot), support: by((x) => x.price < M.spot) };
+  }
   function renderPayoff(M, A) {
     const has = A.legs.length;
-    $('sbKpis').innerHTML = has ? `
-      <div><span>${A.P.credit >= 0 ? 'Net credit' : 'Net debit'}</span><b class="${cls(A.P.credit)}">${inr(Math.abs(A.P.credit))}</b></div>
-      <div title="Margin blocked for the short legs + premium paid for the long legs, with each leg at 1 lot. Rough estimate (about 9% of notional per naked short, less when covered): check with your broker.&#10;Margin ${inr(A.capLot.margin)} + premium paid ${inr(A.capLot.premium)}"><span>Capital / lot</span><b>${inr(A.capLot.total)}</b></div>
-      <div title="Same, at the lots you have added.&#10;Margin ${inr(A.capSel.margin)} + premium paid ${inr(A.capSel.premium)}"><span>Capital for ${[...new Set(A.legs.map((l) => l.lots))].length === 1 ? A.legs[0].lots + ' lot' + (A.legs[0].lots > 1 ? 's' : '') : 'your lots'}</span><b>${inr(A.capSel.total)}</b></div>
-      <div><span>Max profit</span><b class="pos">${A.unlimP ? 'Unlimited' : inr(A.maxP)}</b></div>
-      <div><span>Max loss</span><b class="neg">${A.unlimL ? 'Unlimited' : inr(A.maxL)}</b></div>
-      <div><span>Breakeven</span><b>${A.be.length ? A.be.map((x) => Math.round(x)).join(' · ') : '—'}</b></div>
-      <div><span>Chance of profit</span><b>${(A.pop * 100).toFixed(0)}%</b></div>
-      <div><span>Delta</span><b>${num(A.g.delta, 1)}</b></div>
-      <div><span>Theta / day</span><b class="${cls(A.g.theta)}">${inrS(A.g.theta)}</b></div>
-      <div><span>Vega / vol pt</span><b>${inrS(A.g.vega)}</b></div>
-      <div><span>Gamma</span><b>${num(A.g.gamma, 3)}</b></div>
-      <div><span>P&amp;L now</span><b class="${cls(A.P.total)}">${inrS(A.P.total)}</b></div>` : '';
+    $('sbKpis').innerHTML = BT.payoff.kpis(A, { pnl: A.P.total });
     $('sbPayInfo').textContent = has ? `${SBAdjust.structure(A.legs).name} · ${M.label}` : 'add legs to see the payoff';
-    const pts = (ys) => A.xs.map((x, i) => ({ x, y: ys[i] }));
-    BT.chart($('sbPayChart'), {
-      type: 'line',
-      data: { datasets: has ? [
-        { label: 'At expiry', data: pts(A.exp), borderColor: '#e6edf3', borderWidth: 1.8, pointRadius: 0, fill: { target: 'origin', above: 'rgba(63,182,139,.18)', below: 'rgba(240,113,107,.18)' } },
-        { label: `Now (T+0, ${M.label})`, data: pts(A.t0), borderColor: '#58a6ff', borderWidth: 1.4, pointRadius: 0, borderDash: [4, 3] },
-      ] : [] },
-      plugins: [vline],
-      options: {
-        parsing: false,
-        interaction: { mode: 'nearest', axis: 'x', intersect: false },
-        plugins: {
-          legend: { position: 'bottom' },
-          tooltip: { callbacks: { title: (c) => `Nifty ${Math.round(c[0].raw.x)} (${(((c[0].raw.x - M.spot) / M.spot) * 100).toFixed(1)}%)`, label: (c) => `${c.dataset.label}: ${inrS(c.raw.y)}` } },
-          sbv: { marks: [{ x: M.spot, label: 'spot', color: '#d6af4c' }, { x: M.spot - A.sd, label: '−1σ', color: '#8b949e', dash: [2, 3] }, { x: M.spot + A.sd, label: '+1σ', color: '#8b949e', dash: [2, 3] }, ...A.be.map((b) => ({ x: b, label: 'BE', color: '#b392f0', dash: [3, 3] }))] },
-        },
-        scales: { x: { type: 'linear', min: A.xs[0], max: A.xs[A.xs.length - 1], ticks: { callback: (v) => Math.round(v) } }, y: { ticks: { callback: (v) => kinr(v) } } },
-      },
-    });
+    $('sbPayCtl').classList.toggle('hidden', !has);
+    BT.payoff.controls($('sbPayCtl'), A, S.pay, () => { save(); const Mn = market(); if (Mn) renderPayoff(Mn, analyse(Mn, true)); });
+    const near = has ? A.legs.map(legExp).sort()[0] : null;
+    BT.payoff.draw($('sbPayChart'), A, { expiryLabel: near ? dayShort(near) : '', nowLabel: M.label, levels: nearLevels(M) });
   }
 
   function renderPositions(M, A) {
@@ -680,16 +734,17 @@
       const g = l.open ? A.legs.find((x) => x.id === l.id)?.g : null;
       return `<tr class="${l.open ? '' : 'closed'}${picked(l) ? '' : ' unpicked'}" ${picked(l) ? '' : 'style="opacity:.45"'}>
         <td><input type="checkbox" data-pick="${l.id}" ${picked(l) ? 'checked' : ''} title="Include this leg in the payoff, Greeks, P&amp;L and suggestions"></td>
-        <td class="${l.action === 'B' ? 'pos' : 'neg'}"><b>${l.action === 'B' ? 'BUY' : 'SELL'}</b></td><td>${l.open ? `<input class="num xs" type="number" min="1" step="1" data-lots="${l.id}" value="${l.lots}" title="Change the number of lots of this leg">` : l.lots}</td><td><b>${l.strike} ${l.type}</b> <span class="muted small" title="Expiry">${dayShort(legExp(l))}</span></td>
+        <td class="${l.action === 'B' ? 'pos' : 'neg'}"><b>${l.action === 'B' ? 'BUY' : 'SELL'}</b></td><td>${l.open ? `<input class="num xs" type="number" min="1" step="1" data-lots="${l.id}" value="${l.lots}" title="Change the number of lots of this leg">` : l.lots}</td><td class="nowrap">${l.open ? `<button class="icon sb-kbtn" data-shift="${l.id}" data-d="-1" ${nextStrike(l, -1, M) == null ? 'disabled' : ''} title="Change to the next lower strike (edits this leg as if entered there; no exit trade)">−</button>` : ''}<b>${l.strike} ${l.type}</b>${l.open ? `<button class="icon sb-kbtn" data-shift="${l.id}" data-d="1" ${nextStrike(l, 1, M) == null ? 'disabled' : ''} title="Change to the next higher strike (edits this leg as if entered there; no exit trade)">+</button>` : ''}</td>
+        <td>${l.open ? expirySelect(l) : `<span class="muted small">${dayShort(legExp(l))}</span>`}</td>
         <td class="muted small">${esc(l.entryAt)}</td><td>${num(l.entryPx)}</td>
         <td>${l.open ? num(now) : `${num(l.exitPx)} <span class="muted small">${esc(l.exitAt)}</span>`}</td>
         <td>${g ? g.delta.toFixed(2) : ''}</td>
         <td class="${cls(p)} b">${p == null ? '—' : inrS(p)}</td>
-        <td class="nowrap">${l.open ? `<button class="icon" data-roll="${l.id}" data-d="-1" title="Roll one strike down">◀</button><button class="icon" data-roll="${l.id}" data-d="1" title="Roll one strike up">▶</button><input class="num xs" type="number" min="1" step="1" data-lots="${l.id}" value="${l.lots}" title="Lots of this leg — change it to resize the position (payoff, Greeks and P&amp;L update)"><button class="btn-sm ghost" data-close="${l.id}" title="Exit this leg (asks how many lots when more than one)">Exit</button>` : `<span class="muted small">closed</span> <button class="btn-sm ghost" data-reopen="${l.id}" title="Undo the exit: the leg becomes open again at its original entry price">Re-open</button>`} <button class="icon" data-remove="${l.id}" title="Remove this strike from the position (deletes the entry as if never added; not an exit)">✕</button></td></tr>`;
+        <td class="nowrap">${l.open ? `<button class="icon" data-roll="${l.id}" data-d="-1" title="Roll one strike down: exits this leg at the current price (booking its P&amp;L) and opens the next lower strike">◀</button><button class="icon" data-roll="${l.id}" data-d="1" title="Roll one strike up: exits this leg at the current price (booking its P&amp;L) and opens the next higher strike">▶</button><input class="num xs" type="number" min="1" step="1" data-lots="${l.id}" value="${l.lots}" title="Lots of this leg — change it to resize the position (payoff, Greeks and P&amp;L update)"><button class="btn-sm ghost" data-close="${l.id}" title="Exit this leg (asks how many lots when more than one)">Exit</button>` : `<span class="muted small">closed</span> <button class="btn-sm ghost" data-reopen="${l.id}" title="Undo the exit: the leg becomes open again at its original entry price">Re-open</button>`} <button class="icon" data-remove="${l.id}" title="Remove this strike from the position (deletes the entry as if never added; not an exit)">✕</button></td></tr>`;
     }).join('');
     $('sbPnlHead').innerHTML = S.legs.length ? `Realised <b class="${cls(A.P.realised)}">${inrS(A.P.realised)}</b> · Open <b class="${cls(A.P.open)}">${inrS(A.P.open)}</b> · Total <b class="${cls(A.P.total)}">${inrS(A.P.total)}</b> ${openLegs().length ? '<button class="btn-sm ghost" id="sbExitAll">Exit all</button>' : ''}` : '';
-    const typing = !forceRebuild && document.activeElement?.closest?.('#sbPos') && document.activeElement.tagName === 'INPUT';
-    if (!typing) $('sbPos').innerHTML = S.legs.length ? `<div class="tbl-wrap"><table class="grid-tbl sb-pos-tbl"><thead><tr><th></th><th>Side</th><th>Lots</th><th>Contract</th><th>Entered</th><th>Entry</th><th>Now / exit</th><th>Δ</th><th>P&amp;L</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
+    const typing = !forceRebuild && document.activeElement?.closest?.('#sbPos') && ['INPUT', 'SELECT'].includes(document.activeElement.tagName);
+    if (!typing) $('sbPos').innerHTML = S.legs.length ? `<div class="tbl-wrap"><table class="grid-tbl sb-pos-tbl"><thead><tr><th></th><th>Side</th><th>Lots</th><th>Strike</th><th>Expiry</th><th>Entered</th><th>Entry</th><th>Now / exit</th><th>Δ</th><th>P&amp;L</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
       : '<div class="muted pad">No trades yet. Click <b>B</b> or <b>S</b> next to a price in the chain, or pick a strategy and press <b>Apply</b>. Then step the replay to see the P&amp;L evolve.</div>';
     // MTM over the replay
     const onIds = new Set(S.legs.filter(picked).map((l) => String(l.id)));
@@ -832,21 +887,19 @@
     else if (b.id === 'sbGo') { S.startTime = $('sbTime').value || '09:20'; pause(); await setDay($('sbDay').value, minOf(S.startTime)); record(); save(); render(); }
     else if (b.id === 'sbApply') {
       const s = BT.findStrategy($('sbStrat').value);
-      const M = market();
-      if (!s || !M) return;
-      const r = resolveStrategy(s, M);
-      for (const l of r.legs) addLeg(l.action, l.type, l.strike, l.lots * S.lots, M, s.name);
-      if (r.warn.length) flash(r.warn.join(' · '));
-      if (s.mode === 'positional' && S.src === 'hist') S.session = 'multi';
-      record(); save(); renderTop(); render();
-    } else if (b.id === 'sbClear') {
+      if (!s || !market()) return;
+      await placeStrategy(s);
+    } else if (b.id === 'sbSaveStrat') saveAsStrategy();
+    else if (b.id === 'sbBacktest') backtestPosition();
+    else if (b.id === 'sbFromClose') { S.from = null; save(); renderTop(); }
+    else if (b.id === 'sbClear') {
       if (S.legs.length && !confirm('Clear the position, P&L and log?')) return;
       clearPosition();
       S.chainMin = false; applyChainMin();
       record(); save(); render();
     }
   });
-  function clearPosition() { pause(); S.legs = []; S.log = []; S.mtm = []; S.atmIvEntry = null; S.spotEntry = null; research = null; $('sbResearchOut').classList.add('hidden'); }
+  function clearPosition() { pause(); S.legs = []; S.log = []; S.mtm = []; S.atmIvEntry = null; S.spotEntry = null; S.from = null; research = null; $('sbResearchOut').classList.add('hidden'); }
   $('sbTop').addEventListener('change', async (e) => {
     const t = e.target;
     if (t.id === 'sbExpiry') {
@@ -969,14 +1022,83 @@
       }
       if (closeLeg(l, M, n)) { record(); save(); render(); }
     }
+    if (b.dataset.shift) {
+      const l = S.legs.find((x) => x.id === Number(b.dataset.shift) && x.open);
+      if (l) await shiftStrike(l, Number(b.dataset.d), M);
+    }
     if (b.dataset.roll) {
       const l = S.legs.find((x) => x.id === Number(b.dataset.roll));
       const Ml = l && mk(l, M);
       const i = l ? Ml.ks.indexOf(l.strike) + Number(b.dataset.d) : -1;
-      if (l && Ml.ks[i] != null && closeLeg(l, M, null, 'roll')) { addLeg(l.action, l.type, Ml.ks[i], l.lots, Ml, 'roll'); record(); save(); render(); }
+      if (l && Ml.ks[i] != null && closeLeg(l, M, null, 'roll')) { addLeg(l.action, l.type, Ml.ks[i], l.lots, Ml, 'roll', { rule: l.rule, ruleStrike: l.ruleStrike, ruleExpiry: l.ruleExpiry }); record(); save(); render(); }
     }
   });
-  $('sbPos').addEventListener('change', (e) => {
+  // Expiry picker of an open leg: the expiries of the chain's picker (plus the leg's own).
+  function expirySelect(l) {
+    const cur = legExp(l);
+    const list = [...new Set([cur, ...chainExpiries()])].sort();
+    const mo = BT.meta.calendar?.monthly || [];
+    return `<select class="sb-exp-sel" data-exp="${l.id}" title="Change the expiry of this leg (same strike, or the nearest one with a price; edits the leg as if entered there; no exit trade)">${list.map((e) => `<option value="${e}" ${e === cur ? 'selected' : ''}>${dayShort(e)}${mo.includes(e) ? ' (M)' : ''}</option>`).join('')}</select>`;
+  }
+  // Neighbouring strike of an open leg that has a price now (d = -1 below, +1 above), or null.
+  function nextStrike(l, d, M) {
+    const Ml = mk(l, M);
+    const ks = Ml.ks.filter((k) => k === l.strike || Ml.px(k, l.type) != null);
+    const k = ks[ks.indexOf(l.strike) + d];
+    return k ?? null;
+  }
+  // − / + and the expiry picker in Positions: move an open leg to another strike / expiry in place, as if it had been
+  // entered there (no exit trade, unlike roll). In the replay it is re-priced at its original entry minute when that
+  // minute's prices are available; otherwise (and live) it is re-entered at the current price.
+  async function shiftStrike(l, d, M) {
+    const to = nextStrike(l, d, M);
+    if (to == null) { flash(`No ${d < 0 ? 'lower' : 'higher'} ${l.type} strike with a price`); return; }
+    await moveLeg(l, to, legExp(l), M);
+  }
+  async function changeExpiry(l, exp, M) {
+    if (exp === legExp(l)) return;
+    try { await ensureExp(exp); } catch { /* checked below */ }
+    const Me = market(exp);
+    const ks = Me ? Me.ks.filter((k) => Me.px(k, l.type) != null) : [];
+    if (!ks.length) { flash(`No ${l.type} prices for ${dayShort(exp)} at ${M.label}`); render(); return; }
+    const to = ks.reduce((b, k) => (Math.abs(k - l.strike) < Math.abs(b - l.strike) ? k : b), ks[0]); // same strike, or the nearest
+    await moveLeg(l, to, exp, M);
+  }
+  async function moveLeg(l, to, exp, M) {
+    const from = { strike: l.strike, expiry: legExp(l) };
+    l.strike = to;
+    l.expiry = exp;
+    let px = null;
+    if (S.src === 'hist' && l.entryDay && l.entryMin != null) {
+      try {
+        const d0 = await loadDay(l.entryDay, false, exp); // fetches the new strike for the entry day if it is missing
+        const i = d0.ks.indexOf(to);
+        const v = i >= 0 ? (l.type === 'CE' ? d0.ce : d0.pe)[i][l.entryMin] : null;
+        if (v > 0) px = v;
+      } catch { /* fall back to the current price */ }
+    }
+    if (px == null) {
+      const Ml = market(exp);
+      px = Ml?.px(to, l.type) ?? null;
+      if (px == null) { Object.assign(l, from); flash(`${to} ${l.type} ${dayShort(exp)} has no price now`); render(); return; }
+      Object.assign(l, { entryAt: Ml.label, entryDay: Ml.day, entryMin: Ml.minute, spotIn: Ml.spot });
+    }
+    l.entryPx = px;
+    const what = [from.strike !== to ? `${from.strike} → ${to}` : `${to}`, from.expiry !== exp ? `${dayShort(from.expiry)} → ${dayShort(exp)}` : dayShort(exp)];
+    log(`Moved ${l.action === 'B' ? 'long' : 'short'} ${l.lots} × ${what[0]} ${l.type} (${what[1]}) @ ${px.toFixed(2)}, entry ${l.entryAt}; no exit trade`, M);
+    record(); save();
+    forceRebuild = true;
+    try { render(); } finally { forceRebuild = false; }
+  }
+  $('sbPos').addEventListener('change', async (e) => {
+    const expId = e.target.dataset?.exp;
+    if (expId) {
+      const l = S.legs.find((x) => x.id === Number(expId) && x.open);
+      const M = market();
+      e.target.blur(); // let the table redraw
+      if (l && M) await changeExpiry(l, e.target.value, M);
+      return;
+    }
     const lotsId = e.target.dataset?.lots;
     if (lotsId) { commitLots(Number(lotsId), e.target.value); return; }
     const id = e.target.dataset?.pick;

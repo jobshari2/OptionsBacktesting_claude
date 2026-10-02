@@ -121,6 +121,7 @@
     BT.emit('deploy', editor.get());
     window.app.setView('lib');
   });
+  $('btBuilder').addEventListener('click', () => BT.emit('open-builder', { strategy: { ...editor.get(), id: currentId }, src: 'live', note: 'from the Backtest editor' }));
   BT.on('open-backtest', ({ strategy, run: autoRun }) => {
     init();
     load(strategy);
@@ -333,10 +334,10 @@
     el.innerHTML = `<div class="trade-tools">
         <div class="seg sm">${[['all', 'All'], ['wins', 'Winners'], ['losses', 'Losers']].map(([v, l]) => `<button data-f="${v}" class="${tradeFilter === v ? 'on' : ''}">${l}</button>`).join('')}</div>
         <select id="btSort">${[['date', 'Oldest first'], ['recent', 'Newest first'], ['best', 'Best first'], ['worst', 'Worst first']].map(([v, l]) => `<option value="${v}" ${tradeSort === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
-        <span class="muted small">Click a trade for its minute-by-minute P&amp;L.</span>
+        <span class="muted small">Click a trade for its minute-by-minute P&amp;L; <b>▶ Replay</b> opens it in the Builder at its entry minute to step through and try adjustments.</span>
       </div>
       <div class="tbl-wrap trades-wrap"><table class="grid-tbl trades-tbl">
-        <thead><tr><th>#</th><th>Entry</th><th>Exit</th><th>Expiry</th><th>DTE</th><th>Nifty</th><th class="l">Legs (entry → exit)</th><th>Max profit</th><th>Max loss</th><th>Exit</th><th>Net P&amp;L</th></tr></thead>
+        <thead><tr><th>#</th><th>Entry</th><th>Exit</th><th>Expiry</th><th>DTE</th><th>Nifty</th><th class="l">Legs (entry → exit)</th><th>Max profit</th><th>Max loss</th><th>Exit</th><th>Net P&amp;L</th><th></th></tr></thead>
         <tbody>${idx.map((i) => {
           const t = result.trades[i];
           return `<tr data-i="${i}"><td class="muted">${i + 1}</td><td>${dayShort(t.entryDay)} <span class="muted">${WD[t.weekday]} ${t.entryTime}</span></td>
@@ -344,11 +345,35 @@
             <td>${Math.round(t.spotIn)} <span class="${cls(t.spotOut - t.spotIn)}">${t.spotOut != null ? (t.spotOut >= t.spotIn ? '+' : '') + Math.round(t.spotOut - t.spotIn) : ''}</span></td>
             <td class="l legs-cell">${t.legs.map(legTxt).join('')}${t.signal ? `<div class="sig-txt" title="${esc(t.signal)}">⚡ ${esc(t.signal)}</div>` : ''}</td>
             <td class="pos">${inr(t.maxProfit)}</td><td class="neg">${inr(t.maxLoss)}</td><td class="muted">${REASON[t.reason] || t.reason}</td>
-            <td class="${cls(t.net)} b">${inrS(t.net)}</td></tr>`;
+            <td class="${cls(t.net)} b">${inrS(t.net)}</td>
+            <td class="replay-cell"><button class="btn-sm ghost" data-replay="${i}" title="Replay this trade in the Builder: same expiry, day, entry minute, strikes and fill prices">▶ Replay</button></td></tr>`;
         }).join('')}</tbody></table></div>`;
     el.querySelector('.seg').addEventListener('click', (e) => { if (e.target.dataset.f) { tradeFilter = e.target.dataset.f; renderTrades(); } });
     $('btSort').addEventListener('change', (e) => { tradeSort = e.target.value; renderTrades(); });
-    el.querySelector('tbody').addEventListener('click', (e) => { const tr = e.target.closest('tr[data-i]'); if (tr) openTrade(Number(tr.dataset.i)); });
+    el.querySelector('tbody').addEventListener('click', (e) => {
+      const rb = e.target.closest('button[data-replay]');
+      if (rb) { replayTrade(Number(rb.dataset.replay)); return; }
+      const tr = e.target.closest('tr[data-i]');
+      if (tr) openTrade(Number(tr.dataset.i));
+    });
+  }
+
+  // ---------- replay in the Builder ----------
+  // The trade's original legs (not re-entries) at their backtest fills, on the trade's expiry and entry minute. Each
+  // leg carries its strategy rule, so saving from the Builder keeps the rule, SL and target of legs left in place.
+  function replayTrade(i) {
+    const t = result.trades[i];
+    const s = result.strategy;
+    const legs = t.legs.filter((x) => !x.re && x.entryDay === t.entryDay && x.entryTime === t.entryTime).map((x) => ({
+      action: x.action, type: x.type, strike: x.strike, expiry: x.expiry, lots: s.legs[x.leg]?.lots, qty: x.qty, px: x.entryPx,
+      rule: s.legs[x.leg], ruleStrike: x.strike,
+    }));
+    document.querySelector('.modal-ov')?.remove();
+    BT.emit('open-builder', {
+      strategy: s, src: 'hist', expiry: t.ref, day: t.entryDay, time: t.entryTime,
+      session: t.exitDay !== t.entryDay || s.mode === 'positional' ? 'multi' : 'intraday',
+      legs, note: `backtest trade #${i + 1} · ${dayShort(t.entryDay)} ${t.entryTime} · ended ${inrS(t.net)} (${REASON[t.reason] || t.reason})`,
+    });
   }
 
   // ---------- trade detail ----------
@@ -361,7 +386,7 @@
     ov.className = 'modal-ov';
     ov.innerHTML = `<div class="modal panel">
       <div class="modal-head"><h3>Trade ${i + 1} · ${dayLabel(t.entryDay)} ${t.entryTime} → ${t.exitDay !== t.entryDay ? dayLabel(t.exitDay) + ' ' : ''}${t.exitTime}</h3>
-        <span class="${cls(t.net)} big">${inrS(t.net)}</span><button class="icon close">✕</button></div>
+        <span class="${cls(t.net)} big">${inrS(t.net)}</span><button class="btn-sm" data-replay="${i}" title="Open this trade in the Builder at its entry minute, to step through it and try adjustments">▶ Replay in Builder</button><button class="icon close">✕</button></div>
       ${t.signal ? `<div class="sig-txt pad">⚡ Entry signal: ${esc(t.signal)}</div>` : ''}
       <div class="muted small pad">Expiry ${dayLabel(t.ref)} · DTE ${t.dte} · Nifty ${t.spotIn} → ${t.spotOut ?? '—'}${t.vix != null ? ' · VIX ' + t.vix : ''} · gross ${inrS(t.gross)} · costs ${inr(t.costs)} · max profit ${inr(t.maxProfit)} · max loss ${inr(t.maxLoss)} · est. margin ${kinr(t.margin)}</div>
       <div class="chart-box trade-chart"><canvas id="btTradeChart"></canvas></div>
@@ -372,7 +397,10 @@
       </tbody></table></div></div>`;
     document.body.appendChild(ov);
     const close = () => ov.remove();
-    ov.addEventListener('click', (e) => { if (e.target === ov || e.target.classList.contains('close')) close(); });
+    ov.addEventListener('click', (e) => {
+      if (e.target.dataset.replay != null) { replayTrade(i); return; }
+      if (e.target === ov || e.target.classList.contains('close')) close();
+    });
     document.addEventListener('keydown', function k(e) { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', k); } });
     // x labels: minutes across the days of the trade
     const labels = [];

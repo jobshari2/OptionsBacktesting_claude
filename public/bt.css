@@ -201,6 +201,12 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .dep-chart-head input { vertical-align: middle; accent-color: var(--accent); }
 .dep-chart { height: 300px; }
 .dep-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 4px 14px; }
+.pay-ctl { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; padding: 0 14px 4px; }
+.pay-ctl input[type="range"] { vertical-align: middle; accent-color: var(--accent); width: 110px; }
+.pay-ctl span[data-pv] { display: inline-block; min-width: 38px; color: var(--text); }
+.dep-chart-head .pay-ctl { padding: 0; }
+.sb-from { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 12px; margin-top: 6px; padding: 5px 9px; border-radius: 6px; background: var(--panel-2); border-left: 3px solid var(--accent); }
+.trades-tbl td.replay-cell { white-space: nowrap; }
 
 /* ---------- data ---------- */
 .data-screen { flex: 1; min-height: 0; overflow: auto; padding: 12px; }
@@ -338,7 +344,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .sb-bs button[data-add="B"]:hover { color: #0b1220; background: var(--up); border-color: var(--up); }
 .sb-bs button[data-add="S"]:hover { color: #0b1220; background: var(--down); border-color: var(--down); }
 .sb-held { margin-left: 4px; font-size: 10px; padding: 0 4px; border-radius: 6px; background: var(--panel-2); border: 1px solid currentColor; }
-.sb-payoff .dep-kpis { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.sb-payoff .dep-kpis { grid-template-columns: repeat(7, minmax(0, 1fr)); }
 .sb-pay-chart { height: 380px; }
 .sb-mtm-chart { height: 170px; }
 .sb-pos-tbl tr.closed td { opacity: .55; }
@@ -376,3 +382,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .arb-depth { flex-basis: 100%; color: var(--muted); }
 .arb-fit { font-size: 11.5px; padding: 1px 8px; border-radius: 10px; border: 1px solid currentColor; white-space: nowrap; }
 .arb-fit.ok { color: var(--up); } .arb-fit.thin { color: #d9a000; } .arb-fit.none { color: var(--down); } .arb-fit.na { color: var(--muted); }
+.sb-pos-tbl button.sb-kbtn { border-color: var(--line); background: var(--panel-2); padding: 0 6px; margin: 0 4px; line-height: 16px; font-weight: 700; }
+.sb-pos-tbl button.sb-kbtn:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+.sb-pos-tbl button.sb-kbtn:disabled { opacity: .35; cursor: default; }
+.sb-pos-tbl select.sb-exp-sel { font-size: 11.5px; padding: 1px 4px; }
