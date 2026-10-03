@@ -40,11 +40,12 @@
   const primary = () => (S.src === 'hist' ? S.expiry : S.liveExpiry);
   const legExp = (l) => l.expiry || primary();
   const dd = (exp = S.expiry) => (S.src === 'hist' ? dayCache.get(`${exp}|${S.day}`) : null);
-  // Expiries shown in the chain's picker (the replay/live expiry and every later one), and the one currently viewed.
+  // Expiries shown in the chain's picker, and the one currently viewed. Replay: every expiry still trading on the
+  // replay day (nearer or farther than the main one); live: the next ones on the live calendar.
   function chainExpiries() {
     if (S.src === 'hist') {
       const all = BT.meta.calendar?.expired || [];
-      const list = all.filter((e) => e >= (S.day || S.expiry) && e >= S.expiry).slice(0, 8);
+      const list = all.filter((e) => e >= (S.day || S.expiry));
       return list.length ? list : [S.expiry].filter(Boolean);
     }
     return (BT.meta.calendar?.live || []).slice(0, 8);
@@ -53,9 +54,10 @@
   async function loadDay(day, force, exp = S.expiry) {
     const key = `${exp}|${day}`;
     const need = [...new Set([...S.legs, ...(pending?.legs || [])].filter((l) => (l.expiry || primary()) === exp).map((l) => l.strike))];
+    const width = Math.max(15, S.width); // strikes beyond the day's Nifty range: enough for the chain's ATM ± width
     const have = dayCache.get(key);
-    if (have && !force && need.every((k) => have.ks.includes(k))) return have;
-    const d = await BT.api(`/api/sb/day?expiry=${exp}&day=${day}&width=15&extra=${need.join(',')}`);
+    if (have && !force && have.width >= width && need.every((k) => have.ks.includes(k))) return have;
+    const d = { ...(await BT.api(`/api/sb/day?expiry=${exp}&day=${day}&width=${width}&extra=${need.join(',')}`)), width };
     dayCache.set(key, d);
     if (dayCache.size > 30) dayCache.delete(dayCache.keys().next().value);
     return d;
@@ -207,8 +209,45 @@
   function analyse(M, whatIf) {
     const legs = openLegs().filter(picked).map((l) => ({ ...l, ...legNow(l, M) }));
     const P = pnl(M);
-    const A = BT.payoff.analyse(legs, { spot: M.spot, atmIv: atmIv(M) || 0.12, realised: P.realised, daysAhead: whatIf ? S.pay.daysAhead : 0, ivShift: whatIf ? S.pay.ivShift : 0 });
+    const on = whatIf ? payOn(M) : null;
+    const A = BT.payoff.analyse(legs, { spot: M.spot, atmIv: atmIv(M) || 0.12, realised: P.realised, daysAhead: whatIf ? S.pay.daysAhead : 0, ivShift: whatIf ? S.pay.ivShift : 0, horizon: on ? horizonOf(on, M) : null });
     return { ...A, P };
+  }
+
+  // ---------- "Payoff on" date ----------
+  // Trading days from the start of the trade (first entry of the open, ticked legs) to the farthest expiry among
+  // them: the replay's own trading days where known, weekdays beyond (e.g. a far leg past the main expiry).
+  function payDates(M) {
+    const legs = openLegs().filter(picked);
+    if (!legs.length) return [];
+    const start = legs.map((l) => l.entryDay || M.day).sort()[0];
+    const end = legs.map(legExp).sort().pop();
+    const known = S.src === 'hist' ? cal?.days || [] : [];
+    const out = [];
+    for (let t = Date.parse(start + 'T00:00:00Z'); t <= Date.parse(end + 'T00:00:00Z'); t += 86400000) {
+      const d = new Date(t).toISOString().slice(0, 10);
+      const wd = new Date(t).getUTCDay();
+      if (known.length && d >= known[0] && d <= known[known.length - 1] ? known.includes(d) : wd > 0 && wd < 6) out.push(d);
+    }
+    for (const e of legs.map(legExp)) if (!out.includes(e)) out.push(e); // an expiry always counts
+    return out.sort();
+  }
+  const nearExp = () => openLegs().filter(picked).map(legExp).sort()[0] || null;
+  // The chosen date, or null for the default (the nearest expiry, as before).
+  const payOn = (M) => (S.pay.onDate && S.pay.onDate !== nearExp() && payDates(M).includes(S.pay.onDate) ? S.pay.onDate : null);
+  // Years from the market's moment to the end of that day (15:30 IST); negative for a day already behind.
+  function horizonOf(date, M) {
+    const now = S.src === 'hist' ? Date.parse(`${M.day}T${hhmm(M.minute)}:00+05:30`) : Date.now();
+    return (Date.parse(date + 'T15:30:00+05:30') - now) / (365 * 86400_000);
+  }
+  function renderPayOn(M) {
+    const sel = $('sbPayOn');
+    const list = payDates(M);
+    $('sbPayOnBox').classList.toggle('hidden', !list.length);
+    if (!list.length || document.activeElement === sel) return;
+    const exps = new Set(openLegs().filter(picked).map(legExp));
+    const v = payOn(M) || nearExp();
+    sel.innerHTML = list.map((d) => `<option value="${d}" ${d === v ? 'selected' : ''}>${WD[new Date(d + 'T00:00:00Z').getUTCDay()]} ${dayShort(d)}${exps.has(d) ? ' · expiry' : ''}${d === M.day ? ' · today' : d < M.day ? ' · past' : ''}</option>`).join('');
   }
 
   // ---------- strategy resolution on the current chain ----------
@@ -398,22 +437,33 @@
     loadLevels(day).then(render);
   }
   function lastMinute() { return MPD - 1; }
+  // Why the replay cannot leave the current day, or null: an intraday session, the main expiry, or an open leg
+  // expiring today (its prices end here). The replay stops at the day's last minute; positions are never closed for
+  // you, so the payoff stays and you can step back. Exit the expiring legs to carry on with the later ones.
+  function dayBlock() {
+    if (S.src !== 'hist' || !cal) return null;
+    if (S.session === 'intraday') return 'End of the trading day';
+    if (cal.days.indexOf(S.day) >= cal.days.length - 1) return 'Expiry reached (15:30)';
+    const due = [...new Set(openLegs().filter((l) => legExp(l) <= S.day).map(legExp))];
+    return due.length ? `Expiry of the ${due.map(dayShort).join(', ')} legs reached (15:30): exit them to step further` : null;
+  }
+  const atEnd = () => S.src === 'hist' && !!cal && S.m >= lastMinute() && !!dayBlock();
   async function step(n = S.step) {
     if (S.src !== 'hist' || busy || !cal) return;
+    if (atEnd()) return endOfRun(dayBlock());
     const di = cal.days.indexOf(S.day);
+    const block = dayBlock();
     let day = S.day;
     let m = S.m;
-    if (n === '1d') {
-      if (S.session === 'intraday' || di >= cal.days.length - 1) return endOfRun('No further day in this session');
-      day = cal.days[di + 1];
-    } else {
-      m += n;
-      if (m > lastMinute()) {
-        if (S.session === 'intraday' || di >= cal.days.length - 1) { S.m = lastMinute(); return endOfRun(S.session === 'intraday' ? 'End of the trading day' : 'Expiry reached'); }
-        day = cal.days[di + 1];
-        m = 0;
+    if (n === '1d' || m + n > lastMinute()) {
+      if (block) { // go to the day's close and stop there
+        await setDay(S.day, lastMinute());
+        record();
+        return endOfRun(block);
       }
-    }
+      day = cal.days[di + 1];
+      m = n === '1d' ? m : 0;
+    } else m += n;
     await setDay(day, m);
     record();
     render();
@@ -442,14 +492,9 @@
     record();
     render();
   }
+  // End of the replay (or of what it can show): stop, keeping every leg open.
   function endOfRun(why) {
     pause();
-    const M = market();
-    if (M && openLegs().length) {
-      const isExpiry = S.day === S.expiry;
-      for (const l of openLegs()) closeLeg(l, M, null, isExpiry ? 'settled at expiry' : 'session end');
-      if (isExpiry) log('Expiry: open legs closed at the last traded price', M);
-    }
     flash(why);
     record();
     save();
@@ -490,7 +535,7 @@
       if (!S.expiry || !exp.includes(S.expiry)) S.expiry = exp[exp.length - 1] || null;
       if (!S.expiry) { renderEmpty('No expired expiries — log in to Upstox to load the calendar.'); return; }
       try {
-        cal = await BT.api('/api/sb/days?expiry=' + S.expiry);
+        cal = await BT.api('/api/sb/days?expiry=' + S.expiry + (S.day && openLegs().length ? '&from=' + S.day : ''));
         if (!S.day || !cal.days.includes(S.day)) S.day = cal.days[Math.max(0, cal.days.length - 5)] || cal.days[0];
         renderTop();
         $('sbChain').innerHTML = '<div class="muted pad">Loading the day\'s option prices (first time downloads them)…</div>';
@@ -552,16 +597,18 @@
     const M = market();
     const di = cal?.days.indexOf(S.day) ?? -1;
     const dte = cal ? cal.days.length - 1 - di : null;
+    const end = atEnd() ? dayBlock() : null;
     el.innerHTML = `<div class="set-row">
       <b class="sb-clock">${M ? esc(M.label) : '—'}</b>
       <span>Nifty <b>${M ? num(M.spot, 2) : '—'}</b></span>
       <span class="muted">${dte != null && dte >= 0 ? (dte ? `${dte} trading day${dte > 1 ? 's' : ''} to expiry` : 'expiry day') : ''}</span>
+      ${end ? `<span class="small" style="color:var(--warn, #d6af4c)">⏹ ${esc(end)}</span>` : ''}
       <span class="spacer"></span>
       <button class="btn-sm ghost" data-r="restart" title="Back to the start day and time, clearing the position">⏮ Restart</button>
       <button class="btn-sm ghost" data-r="reset" title="Clear all strikes, P&amp;L and logs for a completely fresh start">🗑 Reset</button>
       <button class="btn-sm ghost" data-r="back" title="Go back one step">◀ Step</button>
-      <button class="btn-sm ghost" data-r="step" title="Advance one step">▶ Step</button>
-      <button class="btn-sm ${playTimer ? '' : 'ghost'}" data-r="play">${playTimer ? '⏸ Pause' : '⏵ Auto play'}</button>
+      <button class="btn-sm ghost" data-r="step" ${end ? `disabled title="${esc(end)}"` : 'title="Advance one step"'}>▶ Step</button>
+      <button class="btn-sm ${playTimer ? '' : 'ghost'}" data-r="play" ${end && !playTimer ? `disabled title="${esc(end)}"` : ''}>${playTimer ? '⏸ Pause' : '⏵ Auto play'}</button>
       <span class="lbl">Step</span><div class="seg sm" id="sbStep">${STEPS.map(([v, l]) => `<button data-step="${v}" class="${String(S.step) === String(v) ? 'on' : ''}">${l}</button>`).join('')}</div>
       <span class="lbl">Speed</span><select id="sbSpeed">${SPEEDS.map(([v, l]) => `<option value="${v}" ${S.speed === v ? 'selected' : ''}>${l}/step</option>`).join('')}</select>
     </div>`;
@@ -574,7 +621,7 @@
     const M = market();
     if (!M) { const le = liveMap.get(S.liveExpiry); if (S.src === 'live' && le?.error) renderEmpty(le.error); return; }
     const A = analyse(M);
-    const Aw = S.pay.daysAhead || S.pay.ivShift ? analyse(M, true) : A;
+    const Aw = S.pay.daysAhead || S.pay.ivShift || payOn(M) ? analyse(M, true) : A;
     renderChainExp();
     const Mv = market(viewedExp());
     if (Mv) renderChain(Mv);
@@ -730,8 +777,10 @@
     $('sbPayInfo').textContent = has ? `${SBAdjust.structure(A.legs).name} · ${M.label}` : 'add legs to see the payoff';
     $('sbPayCtl').classList.toggle('hidden', !has);
     BT.payoff.controls($('sbPayCtl'), A, S.pay, () => { save(); const Mn = market(); if (Mn) renderPayoff(Mn, analyse(Mn, true)); });
+    renderPayOn(M);
     const near = has ? A.legs.map(legExp).sort()[0] : null;
-    BT.payoff.draw($('sbPayChart'), A, { expiryLabel: near ? dayShort(near) : '', nowLabel: M.label, levels: nearLevels(M) });
+    const on = payOn(M);
+    BT.payoff.draw($('sbPayChart'), A, { expiryLabel: near ? dayShort(near) : '', horizonLabel: on ? `On ${dayShort(on)} (close)` : '', nowLabel: M.label, levels: nearLevels(M) });
   }
 
   function renderPositions(M, A) {
@@ -911,11 +960,17 @@
   function clearPosition() { pause(); S.legs = []; S.log = []; S.mtm = []; S.atmIvEntry = null; S.spotEntry = null; S.from = null; research = null; $('sbResearchOut').classList.add('hidden'); }
   $('sbTop').addEventListener('change', async (e) => {
     const t = e.target;
+    // Changing the main expiry keeps the position (legs carry their own expiry, so calendars / diagonals can be
+    // built leg by leg) and shows the new expiry's chain. With open legs the replay stays on its day when that day
+    // trades on the new expiry too.
     if (t.id === 'sbExpiry') {
-      if (openLegs().length && !confirm('Change expiry? The current position will be cleared.')) { t.value = S.expiry; return; }
-      clearPosition(); S.expiry = t.value; S.chainExp = null; S.day = null; save(); activate();
+      S.expiry = t.value; S.chainExp = null;
+      const moved = openLegs().length && S.day > S.expiry;
+      if (!openLegs().length) S.day = null;
+      save(); await activate();
+      if (moved) flash(`${dayShort(S.expiry)} expires before the replay day, so the replay moved to ${dayShort(S.day)} (position kept)`);
     } else if (t.id === 'sbDay') { pause(); await setDay(t.value, minOf($('sbTime').value)); record(); save(); render(); }
-    else if (t.id === 'sbLiveExpiry') { if (openLegs().length && !confirm('Change expiry? The current position will be cleared.')) { t.value = S.liveExpiry; return; } clearPosition(); S.liveExpiry = t.value; S.chainExp = null; save(); activate(); }
+    else if (t.id === 'sbLiveExpiry') { S.liveExpiry = t.value; S.chainExp = null; save(); activate(); }
     else if (t.id === 'sbLots') { S.lots = Math.max(1, Number(t.value) || 1); save(); }
   });
   $('sbReplay').addEventListener('click', async (e) => {
@@ -989,7 +1044,25 @@
     save();
     render(); // shows "loading" and fetches the expiry's prices, then redraws
   });
-  $('sbWidth').addEventListener('change', (e) => { S.width = Number(e.target.value); save(); render(); });
+  $('sbPayOn').addEventListener('change', (e) => {
+    S.pay.onDate = e.target.value === nearExp() ? null : e.target.value;
+    save();
+    e.target.blur(); // let the redraw refresh the list
+    const M = market();
+    if (M) renderPayoff(M, analyse(M, true));
+  });
+  if (![...$('sbWidth').options].some((o) => Number(o.value) === S.width)) S.width = 10; // saved width no longer offered
+  $('sbWidth').value = String(S.width);
+  $('sbWidth').addEventListener('change', async (e) => {
+    S.width = Number(e.target.value) || 10;
+    save();
+    render();
+    if (S.src !== 'hist' || !S.day) return;
+    // a wider chain than the downloaded strikes: fetch the extra ones for the main and the other shown / held expiries
+    busy = true;
+    try { for (const exp of [S.expiry, ...extraExps()]) await loadDay(S.day, false, exp).catch(() => {}); } finally { busy = false; }
+    render();
+  });
   function applyChainMin() {
     $('sbGrid').classList.toggle('chain-min', !!S.chainMin);
     $('sbChainToggle').textContent = S.chainMin ? '▸ Expand' : '▾ Minimize';

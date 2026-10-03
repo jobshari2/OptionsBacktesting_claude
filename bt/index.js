@@ -24,10 +24,14 @@ function createBacktester({ getToken, upstoxGet, cacheDir, storeFile, logError }
 
   // ---------- Strategy Builder: historical replay data ----------
   // Trading days on which an expired expiry's options can be replayed (up to ~5 weeks before it).
-  async function builderDays(expiry) {
+  // `from` (optional) starts the list earlier than the usual 34 days, so a position kept while switching the
+  // replay to a later expiry (calendar / diagonal spreads) stays on its replay day; capped at 120 days.
+  async function builderDays(expiry, from) {
     const cal = await data.expiryCalendar();
     if (!cal.expiredSet.has(expiry)) throw new Error('Pick an expired expiry for historical replay');
-    const days = (await data.loadIndex(addDays(expiry, -34), expiry)).filter((d) => d <= expiry);
+    let start = addDays(expiry, -34);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(from || '') && from < start) start = from > addDays(expiry, -120) ? from : addDays(expiry, -120);
+    const days = (await data.loadIndex(start, expiry)).filter((d) => d <= expiry);
     const info = await data.contracts(expiry);
     return { expiry, days, lot: info.lot, liveLot: cal.liveLot, monthly: cal.monthly.has(expiry) };
   }
@@ -384,7 +388,7 @@ function createBacktester({ getToken, upstoxGet, cacheDir, storeFile, logError }
         return sendJson(res, 200, { ok: true, strategy: findStrategy(id) });
       }
       if (p === '/api/bt/scan' && req.method === 'POST') return sendJson(res, 200, await settle(startScan(await readJson(req)), 3000));
-      if (p === '/api/sb/days') return sendJson(res, 200, await builderDays(url.searchParams.get('expiry')));
+      if (p === '/api/sb/days') return sendJson(res, 200, await builderDays(url.searchParams.get('expiry'), url.searchParams.get('from')));
       if (p === '/api/sb/day') {
         const extra = (url.searchParams.get('extra') || '').split(',').map(Number).filter((x) => x > 0);
         return sendJson(res, 200, await builderDay(url.searchParams.get('expiry'), url.searchParams.get('day'), Math.min(30, Number(url.searchParams.get('width')) || 15), extra));

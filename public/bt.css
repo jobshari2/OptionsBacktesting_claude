@@ -197,6 +197,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .dep-kpis > div { background: var(--panel-2); border-radius: 6px; padding: 5px 8px; display: flex; flex-direction: column; min-width: 0; }
 .dep-kpis span { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .3px; }
 .dep-kpis b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dep-kpis .kpi-pct { color: var(--muted); font-size: 10px; font-style: normal; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dep-chart-head { display: flex; justify-content: space-between; align-items: center; padding: 4px 14px 0; gap: 10px; flex-wrap: wrap; }
 .dep-chart-head input { vertical-align: middle; accent-color: var(--accent); }
 .dep-chart { height: 300px; }

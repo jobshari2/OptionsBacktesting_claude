@@ -1,7 +1,7 @@
 // Payoff engine shared by the Builder (sb-view.js) and the Strategies deploy panel (lib-view.js): one set of
 // curves, KPIs, chart and what-if controls, so both screens show the same numbers for the same position.
 //   legs: [{ action: 'B'|'S', type: 'CE'|'PE', strike, lots, lot, entryPx, iv (decimal), T (years to the leg's expiry), px (price now) }]
-// Curves: at the horizon (the nearest expiry among the legs; later-expiry legs valued by Black-Scholes there),
+// Curves: at the horizon (the nearest expiry among the legs, or a chosen date; later-expiry legs valued by Black-Scholes there),
 // today (T+0) and, with the "days ahead" control, T+N. The IV control shifts every leg's IV for the curves
 // that still have time value. Greeks are Black-Scholes per leg, in rupees for the whole position.
 (() => {
@@ -47,14 +47,18 @@
     return { margin, premium, total: margin + premium };
   }
 
-  // opts: { spot, atmIv?, realised? (added to every curve), daysAhead?, ivShift? (vol points) }
+  // opts: { spot, atmIv?, realised? (added to every curve), daysAhead?, ivShift? (vol points),
+  //         horizon? (years from now: the main curve, max profit / loss, breakevens and chance of profit are taken on
+  //         that date instead of the nearest expiry; legs expired by then count at intrinsic value, the rest by
+  //         Black-Scholes; capped at the farthest expiry) }
   function analyse(legs, opts) {
     const spot = opts.spot;
     const realised = opts.realised || 0;
     const dv = (opts.ivShift || 0) / 100;
     const ivx = (l) => Math.max(0.01, l.iv + dv);
     const iv0 = opts.atmIv || (legs.length ? legs.reduce((s, l) => s + l.iv, 0) / legs.length : 0.12);
-    const Th = legs.length ? Math.min(...legs.map((l) => l.T)) : 1 / 365; // horizon: the nearest expiry among the legs
+    const Th = !legs.length ? 1 / 365 // horizon: the nearest expiry among the legs, or the chosen date
+      : opts.horizon != null ? Math.min(opts.horizon, Math.max(...legs.map((l) => l.T))) : Math.min(...legs.map((l) => l.T));
     const daysToNear = Th * 365;
     const daysAhead = Math.max(0, Math.min(opts.daysAhead || 0, Math.floor(daysToNear)));
     const valueAt = (x, dt) => realised + legs.reduce((s, l) => {
@@ -107,20 +111,22 @@
     if (!A.legs.length) return '';
     const lotsTxt = (() => { const s = [...new Set(A.legs.map((l) => l.lots))]; return s.length === 1 ? `${s[0]} lot${s[0] > 1 ? 's' : ''}` : 'your lots'; })();
     const pnl = opts.pnl ?? A.pnlNow;
+    // Each rupee figure also as a share of the capital at the position's lots (Capital · N lots).
+    const pc = (v, signed = true) => (A.capSel.total > 0 && isFinite(v) ? `<em class="kpi-pct" title="Share of the capital (${inr(A.capSel.total)})">${signed && v > 0 ? '+' : ''}${((v / A.capSel.total) * 100).toFixed(Math.abs(v / A.capSel.total) < 0.1 ? 2 : 1).replace('-', '−')}% of capital</em>` : '');
     return `
-      <div><span>${A.credit >= 0 ? 'Net credit' : 'Net debit'}</span><b class="${cls(A.credit)}">${inr(Math.abs(A.credit))}</b></div>
-      <div title="Margin blocked for the short legs + premium paid for the long legs, with each leg at 1 lot. Rough estimate (about 9% of notional per naked short, less when covered): check with your broker.&#10;Margin ${inr(A.capLot.margin)} + premium paid ${inr(A.capLot.premium)}"><span>Capital / lot</span><b>${kinr(A.capLot.total)}</b></div>
-      <div title="Same, at the lots in the position.&#10;Margin ${inr(A.capSel.margin)} + premium paid ${inr(A.capSel.premium)}"><span>Capital · ${lotsTxt}</span><b>${kinr(A.capSel.total)}</b></div>
-      <div><span>Max profit</span><b class="pos">${A.unlimP ? 'Unlimited' : inr(A.maxP)}</b></div>
-      <div><span>Max loss</span><b class="neg">${A.unlimL ? 'Unlimited' : inr(A.maxL)}</b></div>
+      <div><span>${A.credit >= 0 ? 'Net credit' : 'Net debit'}</span><b class="${cls(A.credit)}">${inr(Math.abs(A.credit))}</b>${pc(Math.abs(A.credit), false)}</div>
+      <div title="Margin blocked for the short legs + premium paid for the long legs, with each leg at 1 lot. Rough estimate (about 9% of notional per naked short, less when covered): check with your broker.&#10;Margin ${inr(A.capLot.margin)} + premium paid ${inr(A.capLot.premium)}"><span>Capital / lot</span><b>${kinr(A.capLot.total)}</b>${pc(A.capLot.total, false)}</div>
+      <div title="Same, at the lots in the position.&#10;Margin ${inr(A.capSel.margin)} + premium paid ${inr(A.capSel.premium)}"><span>Capital · ${lotsTxt}</span><b>${kinr(A.capSel.total)}</b>${A.capSel.total > 0 ? `<em class="kpi-pct">margin ${((A.capSel.margin / A.capSel.total) * 100).toFixed(0)}% · premium ${((A.capSel.premium / A.capSel.total) * 100).toFixed(0)}%</em>` : ''}</div>
+      <div><span>Max profit</span><b class="pos">${A.unlimP ? 'Unlimited' : inr(A.maxP)}</b>${A.unlimP ? '' : pc(A.maxP)}</div>
+      <div><span>Max loss</span><b class="neg">${A.unlimL ? 'Unlimited' : inr(A.maxL)}</b>${A.unlimL ? '' : pc(A.maxL)}</div>
       <div title="Max profit ÷ max loss at expiry"><span>Reward : risk</span><b>${A.rr == null ? '—' : '1 : ' + (1 / A.rr).toFixed(2)}</b></div>
       <div><span>Breakeven</span><b>${A.be.length ? A.be.map((x) => Math.round(x)).join(' · ') : '—'}</b></div>
       <div title="Lognormal model at ATM IV ${(A.iv0 * 100).toFixed(1)}%"><span>Chance of profit</span><b>${(A.pop * 100).toFixed(0)}%</b></div>
       <div title="Position delta in Nifty units"><span>Delta</span><b>${num(A.g.delta, 1)}</b></div>
-      <div><span>Theta / day</span><b class="${cls(A.g.theta)}">${inrS(A.g.theta)}</b></div>
-      <div><span>Vega / vol pt</span><b class="${cls(A.g.vega)}">${inrS(A.g.vega)}</b></div>
+      <div><span>Theta / day</span><b class="${cls(A.g.theta)}">${inrS(A.g.theta)}</b>${pc(A.g.theta)}</div>
+      <div><span>Vega / vol pt</span><b class="${cls(A.g.vega)}">${inrS(A.g.vega)}</b>${pc(A.g.vega)}</div>
       <div><span>Gamma</span><b>${num(A.g.gamma, 3)}</b></div>
-      <div><span>P&amp;L now</span><b class="${cls(pnl)}">${inrS(pnl)}</b></div>${A.ivShift ? `
+      <div><span>P&amp;L now</span><b class="${cls(pnl)}">${inrS(pnl)}</b>${pc(pnl)}</div>${A.ivShift ? `
       <div title="Curves and Greeks use every leg's IV shifted by this much"><span>IV what-if</span><b>${A.ivShift > 0 ? '+' : ''}${A.ivShift} vol</b></div>` : ''}`;
   }
 
@@ -171,12 +177,13 @@
       }
     },
   };
-  // opts: { expiryLabel, nowLabel, levels: { resistance, support } (nearest S/R, optional) }
+  // opts: { expiryLabel, horizonLabel (replaces "At expiry" when the main curve is on a chosen date), nowLabel,
+  //         levels: { resistance, support } (nearest S/R, optional) }
   function draw(canvas, A, opts = {}) {
     const pts = (ys) => A.xs.map((x, i) => ({ x, y: ys[i] }));
     const has = A.legs.length;
     const ds = has ? [
-      { label: `At expiry${opts.expiryLabel ? ` (${opts.expiryLabel})` : ''}`, data: pts(A.exp), borderColor: '#e6edf3', borderWidth: 1.8, pointRadius: 0, fill: { target: 'origin', above: 'rgba(63,182,139,.18)', below: 'rgba(240,113,107,.18)' } },
+      { label: opts.horizonLabel || `At expiry${opts.expiryLabel ? ` (${opts.expiryLabel})` : ''}`, data: pts(A.exp), borderColor: '#e6edf3', borderWidth: 1.8, pointRadius: 0, fill: { target: 'origin', above: 'rgba(63,182,139,.18)', below: 'rgba(240,113,107,.18)' } },
       { label: `Now (T+0${opts.nowLabel ? `, ${opts.nowLabel}` : ''})${A.ivShift ? ` IV ${A.ivShift > 0 ? '+' : ''}${A.ivShift}` : ''}`, data: pts(A.t0), borderColor: '#58a6ff', borderWidth: 1.4, pointRadius: 0, borderDash: [4, 3] },
     ] : [];
     if (has && A.tN) ds.push({ label: `+${A.daysAhead} day${A.daysAhead > 1 ? 's' : ''}`, data: pts(A.tN), borderColor: '#d6af4c', borderWidth: 1.4, pointRadius: 0 });
@@ -197,7 +204,7 @@
         interaction: { mode: 'nearest', axis: 'x', intersect: false },
         plugins: {
           legend: { position: 'bottom' },
-          tooltip: { callbacks: { title: (c) => `Nifty ${Math.round(c[0].raw.x)} (${(((c[0].raw.x - A.spot) / A.spot) * 100).toFixed(1)}%)`, label: (c) => `${c.dataset.label}: ${inrS(c.raw.y)}` } },
+          tooltip: { callbacks: { title: (c) => `Nifty ${Math.round(c[0].raw.x)} (${(((c[0].raw.x - A.spot) / A.spot) * 100).toFixed(1)}%)`, label: (c) => `${c.dataset.label}: ${inrS(c.raw.y)}${A.capSel.total > 0 ? ` (${c.raw.y > 0 ? '+' : ''}${((c.raw.y / A.capSel.total) * 100).toFixed(1).replace('-', '−')}% of capital)` : ''}` } },
           payv: { marks },
         },
         scales: { x: { type: 'linear', min: A.xs[0], max: A.xs[A.xs.length - 1], ticks: { callback: (v) => Math.round(v) } }, y: { ticks: { callback: (v) => kinr(v) } } },
