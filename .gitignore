@@ -9,3 +9,4 @@ hedge-cache/
 bt-cache/
 bt-data/anomaly-log/
 bt-data/anomaly-log-demo/
+bt-data/scenario-cache.json

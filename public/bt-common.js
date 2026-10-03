@@ -141,7 +141,7 @@
     id: null, name: 'My strategy', desc: '', category: 'Custom', mode: 'intraday', expiry: 'weekly',
     entry: { time: '09:20', days: [1, 2, 3, 4, 5], dte: [], dteDays: 3, after: 0, noOverlap: false, when: 'time', until: '14:30', maxTrades: 1, conditions: [] }, exit: { time: '15:15', dteDays: 0 },
     legs: [blankLeg({ type: 'CE' }), blankLeg({ type: 'PE' })],
-    risk: { sl: null, tgt: null, lockAt: null, lockTo: 0, trailEvery: null, trailBy: null, onLegSl: 'leg', slToCost: false, unit: 'inr', partialAt: null, partialPct: 60, partialFloor: null },
+    risk: { sl: null, tgt: null, slPrem: null, tgtPrem: null, lockAt: null, lockTo: 0, trailEvery: null, trailBy: null, onLegSl: 'leg', slToCost: false, unit: 'inr', partialAt: null, partialPct: 60, partialFloor: null },
     filters: { vixMin: null, vixMax: null, minCredit: null, maxLossDown: null, maxLossUp: null },
   });
   // Fill any missing fields (older saves, library entries).
@@ -273,6 +273,8 @@
             <span class="muted small">${r.unit === 'pct' ? 'capital = the Capital box in the settings, else the trade\'s estimated margin' : ''}</span></div>
           <div class="ed-row"><span class="lbl">Stop-loss</span>${numIn('risk.sl', r.sl, `min="0" step="${r.unit === 'pct' ? '0.5' : '500'}" placeholder="none"`)}
             <span class="lbl r">Target</span>${numIn('risk.tgt', r.tgt, `min="0" step="${r.unit === 'pct' ? '0.5' : '500'}" placeholder="none"`)}</div>
+          <div class="ed-row wrap" title="Overall stop / target as a % of the net premium at entry: the credit received or the debit paid. These are the rules the scenario table tests."><span class="lbl">% of premium</span><span class="muted">stop</span>${numIn('risk.slPrem', r.slPrem, 'min="0" step="5" placeholder="none"')}
+            <span class="muted">target</span>${numIn('risk.tgtPrem', r.tgtPrem, 'min="0" step="5" placeholder="none"')}<span class="muted small">of the entry credit / debit</span></div>
           <div class="ed-row wrap"><span class="lbl">Partial booking</span><span class="muted">when MTM reaches</span>${numIn('risk.partialAt', r.partialAt, `min="0" step="${r.unit === 'pct' ? '0.1' : '500'}" placeholder="—"`)}
             <span class="muted">book</span>${numIn('risk.partialPct', r.partialPct ?? 60, 'min="1" max="99" step="5"')}<span class="muted">% of the lots, then keep a floor of</span>${numIn('risk.partialFloor', r.partialFloor, `step="${r.unit === 'pct' ? '0.1' : '500'}" placeholder="—"`)}</div>
           <div class="ed-row wrap"><span class="lbl">Lock profit</span><span class="muted">when MTM reaches</span>${numIn('risk.lockAt', r.lockAt, 'min="0" step="500" placeholder="—"')}

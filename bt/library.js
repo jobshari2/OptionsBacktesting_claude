@@ -11,26 +11,71 @@ const leg = (action, type, strike, o = {}) => ({ action, type, lots: o.lots || 1
 const intraday = (entry = '09:20', exit = '15:15', extra = {}) => ({ mode: 'intraday', expiry: 'weekly', entry: { time: entry, days: [1, 2, 3, 4, 5], dte: [], ...extra }, exit: { time: exit } });
 const positional = (entryDte, entry, exitDte, exit, expiry = 'weekly') => ({ mode: 'positional', expiry, entry: { time: entry, dteDays: entryDte }, exit: { time: exit, dteDays: exitDte } });
 
-// The bi-weekly hedge and its variants (see the LIBRARY entries below). o: { shortCall, shortPut, callExpiry, roll, risk, filters }
+// The bi-weekly hedge and its variants (see the LIBRARY entries below).
+// o: { shortCall, shortPut, callExpiry, roll, risk, filters, exitDte, reverse }
+// reverse = the mirror image for the upside: the 2-week spread that is fully covered is the call spread (no loss
+// however far Nifty rallies), and the cheap near-week hedge that gets rolled is a put 100 below the short put.
 function biweekly(id, name, desc, o = {}) {
   const lots = 5;
+  const [near, far] = o.reverse ? ['PE', 'CE'] : ['CE', 'PE']; // near = side hedged in the near week, far = side hedged in the 2-week expiry
+  const wing = (type) => (type === 'CE' ? 100 : -100);
   return {
-    id, category: 'Calendar', name, desc,
+    id, category: 'Bi-weekly', name, desc,
     mode: 'positional', expiry: 'weekly',
     entry: { time: '09:20', dteDays: 0, after: 2, noOverlap: true }, // the day after the expiry 2 series before the 2-week expiry
-    exit: { time: '15:15', dteDays: 0 },
+    exit: { time: '15:15', dteDays: o.exitDte || 0 },
     legs: [
-      leg('S', 'CE', o.shortCall || prem(105), { lots, expiry: 'next' }),
-      leg('S', 'PE', o.shortPut || prem(120), { lots, expiry: 'next' }),
-      leg('B', 'PE', { by: 'leg', ref: 1, value: -100 }, { lots, expiry: 'next' }),
-      { ...leg('B', 'CE', { by: 'leg', ref: 0, value: 100 }, { lots, expiry: o.callExpiry || 'cur' }), roll: o.roll === false ? null : { dteDays: 1, time: '15:15' } },
+      leg('S', near, o.shortCall || prem(105), { lots, expiry: 'next' }),
+      leg('S', far, o.shortPut || prem(120), { lots, expiry: 'next' }),
+      leg('B', far, { by: 'leg', ref: 1, value: wing(far) }, { lots, expiry: 'next' }),
+      { ...leg('B', near, { by: 'leg', ref: 0, value: wing(near) }, { lots, expiry: o.callExpiry || 'cur' }), roll: o.roll === false ? null : { dteDays: 1, time: '15:15' } },
     ],
     risk: o.risk || { unit: 'pct', tgt: 2.5 },
-    filters: o.filters || { minCredit: 90, maxLossDown: 10 },
+    filters: o.filters || (o.reverse ? { minCredit: 90, maxLossUp: 10 } : { minCredit: 90, maxLossDown: 10 }),
   };
 }
 
 const LIBRARY = [
+  // ---- Bi-weekly hedge (Advanced Bi-Weekly Option Strategy playbook): first in every list ----
+  // Enter the day after a weekly expiry (start of a new series). Sell a ~₹105 call and a ~₹120 put in the 2-week
+  // expiry, buy the put 100 below the short put (same expiry) and the call 100 above the short call in the cheaper
+  // near week. The near-week call is rolled into the 2-week expiry the trading day before it expires, 15:15.
+  // Enter only when the net credit is ≥ 90 pts and the put-spread risk is covered (≤ 10 pts loss far below).
+  // Amounts are % of capital: set Capital to ₹1 L per lot (₹5 L for these 5 lots) in the settings bar.
+  // The playbook version itself is the user's own saved strategy "BiWeekly Hedge-Hari" (bt-data/strategies.json);
+  // these are the variants to compare it with.
+  // Ordered by their backtest over Oct 2024 - Sep 2026 (Rs 5 L capital, lot 65, 0.5 % slippage), best first.
+  // Most losing trades of the playbook lose on the rolled hedge: the 2-week option bought on the roll day costs
+  // 110-270 pts and usually expires worthless. Closing everything on the near-week expiry day keeps the cheap hedge
+  // for the whole trade and needs no roll; the 4 % stop caps the trending weeks.
+  biweekly('lib-biweekly-week1-sl', 'Bi-weekly Hedge, week-1 exit (no roll), target 2.5% + stop 4%',
+    'Best in testing (+₹1.12 L / +₹0.84 L in the two years, worst trade −₹22K). As BiWeekly Hedge-Hari, but the whole position is closed on the near-week expiry day at 15:15, while the cheap near-week call still hedges it: no roll. Target +2.5%, stop −4% of capital.',
+    { roll: false, exitDte: 5, risk: { unit: 'pct', tgt: 2.5, sl: 4 } }),
+  biweekly('lib-biweekly-week1', 'Bi-weekly Hedge, week-1 exit (no roll), target 2.5%',
+    'Second in testing (+₹0.85 L / +₹1.00 L, but worst trade −₹68K and twice the drawdown). Closed on the near-week expiry day at 15:15 with no roll and no stop. Target +2.5% of capital.',
+    { roll: false, exitDte: 5 }),
+  // The mirror image for the upside: sell a ~Rs 105 put and a ~Rs 120 call in the 2-week expiry, buy the call 100
+  // above the short call (same expiry: no loss however far Nifty rallies), and hedge the put with the near-week put
+  // 100 below it, rolled the day before it expires. Same entry day, credit filter, target and roll as the playbook.
+  // It lost in both forms in the second year (falls are faster than rallies and the rolled put is expensive).
+  biweekly('lib-biweekly-rev-week1', 'Bi-weekly Hedge Reverse (upside covered), week-1 exit',
+    'The reverse strategy closed on the near-week expiry day, no roll, target +2.5%. Its best form in testing, still +₹0.32 L / −₹1.07 L: a stop made it worse.',
+    { reverse: true, roll: false, exitDte: 5 }),
+  biweekly('lib-biweekly-rev', 'Bi-weekly Hedge Reverse (upside covered)',
+    'Mirror of BiWeekly Hedge-Hari: short ~₹105 put and ~₹120 call in the 2-week expiry, call wing 100 above (upside fully covered), near-week put 100 below rolled the day before it expires. Credit ≥ 90, target +2.5%. Tested −₹0.34 L / −₹1.23 L.',
+    { reverse: true }),
+  biweekly('lib-biweekly-partial', 'Bi-weekly Hedge, partial booking',
+    'As BiWeekly Hedge-Hari, but instead of a full target: at +3.6% book 60% of the lots (3 of 5) and keep a +1.4% floor; the rest runs to the 2-week expiry.',
+    { risk: { unit: 'pct', partialAt: 3.6, partialPct: 60, partialFloor: 1.4 } }),
+  biweekly('lib-biweekly-noroll', 'Bi-weekly Hedge, no Monday roll',
+    'What a missed roll costs: identical, but the near-week call simply expires, leaving the short call unhedged in week 2.',
+    { roll: false }),
+  biweekly('lib-biweekly-ic', 'Bi-weekly Iron Condor (same expiry)',
+    'The "traditional" comparison: the protective call is bought in the 2-week expiry at entry. No near-week trick, no roll, no credit filter.',
+    { callExpiry: 'next', roll: false, filters: {} }),
+  biweekly('lib-biweekly-dist', 'Bi-weekly Hedge, strikes by distance',
+    'As BiWeekly Hedge-Hari, but the short call is 450 pts and the short put 400 pts from spot instead of chosen by premium.',
+    { shortCall: { by: 'pts', value: 450 }, shortPut: { by: 'pts', value: 400 } }),
   // ---- Neutral: sell premium ----
   {
     id: 'lib-straddle-920', category: 'Neutral', name: '9:20 Short Straddle (25% SL)',
@@ -226,26 +271,6 @@ const LIBRARY = [
       leg('B', 'CE', atm(2), { expiry: 'next' }), leg('B', 'PE', atm(2), { expiry: 'next' }),
     ],
   },
-  // ---- Bi-weekly hedge (Advanced Bi-Weekly Option Strategy playbook) ----
-  // Enter the day after a weekly expiry (start of a new series). Sell a ~₹105 call and a ~₹120 put in the 2-week
-  // expiry, buy the put 100 below the short put (same expiry) and the call 100 above the short call in the cheaper
-  // near week. The near-week call is rolled into the 2-week expiry the trading day before it expires, 15:15.
-  // Enter only when the net credit is ≥ 90 pts and the put-spread risk is covered (≤ 10 pts loss far below).
-  // Amounts are % of capital: set Capital to ₹1 L per lot (₹5 L for these 5 lots) in the settings bar.
-  // The playbook version itself is the user's own saved strategy "BiWeekly Hedge-Hari" (bt-data/strategies.json);
-  // these are the variants to compare it with.
-  biweekly('lib-biweekly-partial', 'Bi-weekly Hedge, partial booking',
-    'As BiWeekly Hedge-Hari, but instead of a full target: at +3.6% book 60% of the lots (3 of 5) and keep a +1.4% floor; the rest runs to the 2-week expiry.',
-    { risk: { unit: 'pct', partialAt: 3.6, partialPct: 60, partialFloor: 1.4 } }),
-  biweekly('lib-biweekly-noroll', 'Bi-weekly Hedge, no Monday roll',
-    'What a missed roll costs: identical, but the near-week call simply expires, leaving the short call unhedged in week 2.',
-    { roll: false }),
-  biweekly('lib-biweekly-ic', 'Bi-weekly Iron Condor (same expiry)',
-    'The "traditional" comparison: the protective call is bought in the 2-week expiry at entry. No near-week trick, no roll, no credit filter.',
-    { callExpiry: 'next', roll: false, filters: {} }),
-  biweekly('lib-biweekly-dist', 'Bi-weekly Hedge, strikes by distance',
-    'As BiWeekly Hedge-Hari, but the short call is 450 pts and the short put 400 pts from spot instead of chosen by premium.',
-    { shortCall: { by: 'pts', value: 450 }, shortPut: { by: 'pts', value: 400 } }),
   {
     id: 'lib-butterfly', category: 'Neutral', name: 'Call Butterfly',
     desc: 'Buy 1 ITM 2 call, sell 2 ATM calls, buy 1 OTM 2 call. Cheap bet that Nifty pins near ATM.',

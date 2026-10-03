@@ -25,6 +25,9 @@
 //  - risk.unit = 'pct': overall stop / target / lock / partial amounts are % of capital (the capital in the settings,
 //    else the trade's estimated margin). risk.partialAt: book partialPct % of every leg's lots once, then keep
 //    partialFloor as a profit floor; the overall target no longer applies to the lots left running.
+//  - risk.slPrem / tgtPrem: overall stop / target as % of the net premium at entry (the credit received or the debit
+//    paid, in rupees). Used by the scenario scan (scenarios.js); when a rupee / % of capital rule is set too, the
+//    nearer one applies.
 //  - entry.noOverlap: one position at a time (a trade whose entry falls before the previous exit is skipped).
 const { MPD, addDays } = require('./data');
 const { normCondition, evaluate } = require('./conditions');
@@ -147,6 +150,8 @@ function normalizeStrategy(s) {
     risk: {
       sl: num(r.sl),
       tgt: num(r.tgt),
+      slPrem: num(r.slPrem),
+      tgtPrem: num(r.tgtPrem),
       lockAt: num(r.lockAt),
       lockTo: Number(r.lockTo) || 0,
       trailEvery: num(r.trailEvery),
@@ -499,8 +504,12 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
     // Overall rules in rupees: % of capital (settings, else this trade's estimated margin) when risk.unit = 'pct'.
     const base = opts.capital || estimateMargin(entryLegs, spotIn);
     const rs = (v) => (v == null ? null : strat.risk.unit === 'pct' ? (v * base) / 100 : v);
+    // ... or % of the net premium at entry (credit received or debit paid).
+    const premNet = entryLegs.reduce((v, l) => v + l.dir * l.qty * l.px, 0); // > 0 = debit
+    const prem = (v) => (v == null || !(Math.abs(premNet) > 0) ? null : (v * Math.abs(premNet)) / 100);
+    const nearer = (a, b) => (a == null ? b : b == null ? a : Math.min(a, b));
     const R = {
-      sl: rs(strat.risk.sl), tgt: rs(strat.risk.tgt), lockAt: rs(strat.risk.lockAt), lockTo: rs(strat.risk.lockTo) || 0,
+      sl: nearer(rs(strat.risk.sl), prem(strat.risk.slPrem)), tgt: nearer(rs(strat.risk.tgt), prem(strat.risk.tgtPrem)), lockAt: rs(strat.risk.lockAt), lockTo: rs(strat.risk.lockTo) || 0,
       trailEvery: rs(strat.risk.trailEvery), trailBy: rs(strat.risk.trailBy),
       partialAt: rs(strat.risk.partialAt), partialFloor: rs(strat.risk.partialFloor), partialPct: strat.risk.partialPct,
     };
@@ -747,7 +756,7 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
         vix: vix != null ? r2(vix) : null,
         gross: Math.round(gross), costs: Math.round(costs), net: Math.round(gross - costs),
         maxProfit: Math.round(Math.max(0, maxP)), maxLoss: Math.round(Math.min(0, minP)),
-        reason, legs: execs, margin: Math.round(estimateMargin(entryLegs, spotIn)),
+        reason, legs: execs, margin: Math.round(estimateMargin(entryLegs, spotIn)), premium: Math.round(-premNet),
         ...(pos.sigText ? { signal: pos.sigText } : {}),
         ...(creditPts != null ? { credit: r2(creditPts) } : {}),
         ...(partialDone ? { partial: 1 } : {}),
