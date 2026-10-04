@@ -79,6 +79,8 @@ function computeStats(trades, capitalOverride) {
     total: Math.round(total),
     gross: Math.round(sum(trades.map((t) => t.gross))),
     costs: Math.round(sum(trades.map((t) => t.costs))),
+    sumWin: Math.round(sumWin),
+    sumLoss: Math.round(sumLoss),
     avg: Math.round(mean),
     avgWin: wins.length ? Math.round(sumWin / wins.length) : 0,
     avgLoss: losses.length ? Math.round(sumLoss / losses.length) : 0,

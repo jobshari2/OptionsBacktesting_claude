@@ -400,7 +400,7 @@ $('range').addEventListener('change', (e) => {
 window.addEventListener('resize', () => { if (state.data) render(); });
 
 // Tabs. The chain needs live data; the backtest screens work on their own once logged in.
-const VIEWS = { chain: 'app', an: 'an', sb: 'sb', bt: 'bt', cmp: 'cmp', lib: 'lib', data: 'data' };
+const VIEWS = { chain: 'app', an: 'an', sb: 'sb', tr: 'tr', bt: 'bt', bw: 'bw', cmp: 'cmp', lib: 'lib', data: 'data' };
 function showViews() {
   for (const [v, id] of Object.entries(VIEWS)) {
     const show = v === state.view && !state.loggedOut && (v !== 'chain' || state.data);

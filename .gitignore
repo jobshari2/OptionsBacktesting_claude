@@ -10,3 +10,6 @@ bt-cache/
 bt-data/anomaly-log/
 bt-data/anomaly-log-demo/
 bt-data/scenario-cache.json
+bt-data/backtests.json
+bt-data/biweekly.json
+bt-data/paper-trades.json

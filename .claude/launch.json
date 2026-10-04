@@ -13,8 +13,20 @@
     {
       "name": "demo-3001",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["-e", "process.env.DEMO='1';process.env.PORT='3001';require('./server.js')"],
+      "runtimeArgs": [
+        "-e",
+        "process.env.DEMO='1';process.env.PORT='3001';require('./server.js')"
+      ],
       "port": 3001
+    },
+    {
+      "name": "demo-3002",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "-e",
+        "process.env.DEMO='1';process.env.PORT='3002';require('./server.js')"
+      ],
+      "port": 3002
     },
     {
       "name": "live",

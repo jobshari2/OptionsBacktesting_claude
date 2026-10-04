@@ -216,8 +216,9 @@ const legTxt = (legs) => legs.map((l) => `${l.act === 'B' ? 'BUY' : 'SELL'} ${l.
 const byDist = (out) => out.sort((x, y) => x.dist - y.dist || y.value - x.value);
 
 // ---------- the detectors ----------
-// All are arbitrages on one chain of Nifty's European, cash-settled options: each suggested trade cannot lose
-// if held to expiry (the calendar: to the near expiry), before brokerage and taxes.
+// All but the last are arbitrages on one chain of Nifty's European, cash-settled options: each suggested trade
+// cannot lose if held to expiry (the calendar: to the near expiry), before brokerage and taxes. The last one
+// (fair value deviation) is a relative-value signal: an edge, not a locked-in profit.
 const TYPES = [
   {
     // Same rules as the builder's "Vertical spread arbitrage" list (public/sb-view.js findArbs). For one expiry
@@ -358,7 +359,89 @@ const TYPES = [
       return { legs: [L('S', 'CE', sig(0)), L('B', 'CE', sig(0), { expiry: 'next' })] };
     },
   },
+  {
+    // Not a risk-free arbitrage like the ones above: a relative-value signal. Fair value of an option = Black-76 on
+    // the chain's own synthetic forward, at the volatility its neighbouring strikes trade at (a quadratic through
+    // the out-of-the-money vols of the nearest strikes either side, leaving the strike itself out). An option that
+    // can be sold above / bought below that by more than the thresholds is out of line with the rest of the chain.
+    id: 'fv', name: 'Fair value deviation', group: 'Arbitrage', maxLive: 12,
+    desc: "An option trades away from its fair value: the Black-76 price on the chain's own forward at the volatility its neighbouring strikes imply. Rich = it can be sold above fair value, cheap = it can be bought below it. A statistical edge (prices tend to come back in line), not a locked-in profit.",
+    how: 'Rich: sell the option and buy the next strike further out of the money, so you collect the overpricing with a capped risk. Cheap: buy the option and sell the next strike further out. You gain when the price returns to fair value (often within minutes: take the deviation as the target and exit), or at expiry if the mispricing held. For a pure fair-value trade hedge the remaining delta with futures; without a hedge a move in Nifty can outweigh the edge.',
+    dirs: ['rich', 'cheap'], cooldown: 15,
+    params: [P('minEdge', 'Min deviation', 2, 0.5, 'pts'), P('minPct', 'Min deviation', 5, 1, '% of fair'), P('band', 'Strikes ± ATM', 10, 1, '', 1), ...FILL],
+    detect(c, p) {
+      if (c.late) return [];
+      const { F, T, df } = c;
+      // the smile is read from quote mids when there is an order book (live), else from fresh last trades
+      const refPx = (k, t) => {
+        if (!c.book) return c.px(k, t, p.fresh);
+        const b = c.quote(k, t, 'bid');
+        const a = c.quote(k, t, 'ask');
+        return b && a ? (a + b) / 2 : null;
+      };
+      const x = c.ks.map((k) => Math.log(k / F));
+      const vol = c.ks.map((k) => { const t = c.otmType(k); const px = refPx(k, t); return px ? b76iv(px, F, k, T, t === 'CE', df) : null; });
+      const [lo, hi] = band(c, p.band);
+      const out = [];
+      for (let i = lo; i <= hi; i++) {
+        const k = c.ks[i];
+        const left = [];
+        const right = [];
+        for (let d = 1; d <= 6; d++) {
+          if (left.length < 3 && vol[i - d] != null) left.push([x[i - d], vol[i - d]]);
+          if (right.length < 3 && vol[i + d] != null) right.push([x[i + d], vol[i + d]]);
+        }
+        if (left.length < 2 || right.length < 2) continue; // no extrapolating past the quoted strikes
+        const fv = quadAt([...left, ...right], x[i]);
+        if (!(fv > 0.01)) continue;
+        for (const t of ['CE', 'PE']) {
+          const fair = b76(F, k, T, fv, t === 'CE', df);
+          if (!(fair >= p.minPx)) continue;
+          for (const [dir, act] of [['rich', 'S'], ['cheap', 'B']]) {
+            const f = fill(c, [{ act, k, t, n: 1 }], p); // sell at the bid / buy at the ask (history: last trade)
+            if (!f) continue;
+            const mkt = Math.abs(f.cash);
+            const edge = dir === 'rich' ? mkt - fair : fair - mkt;
+            const pct = (edge / fair) * 100;
+            if (edge < p.minEdge || pct < p.minPct) continue;
+            const mv = b76iv(mkt, F, k, T, t === 'CE', df);
+            out.push({
+              strike: k, side: t, dir, value: edge, unit: 'pts', fit: f.fit, dist: Math.abs(k - c.spot),
+              fair: r2(fair), mkt: r2(mkt), pct: r2(pct), ivFair: r2(fv * 100), ivMkt: mv == null ? null : r2(mv * 100),
+              text: `${k} ${t} ${dir === 'rich' ? 'sells' : 'buys'} at ${f2(mkt)} vs fair value ${f2(fair)}: ${dir} by ${f2(edge)} pts (${pct.toFixed(1)}%)${mv == null ? '' : ` · IV ${(mv * 100).toFixed(1)}% vs ${(fv * 100).toFixed(1)}% at the neighbouring strikes`}${fitTxt(f)}`,
+            });
+            break;
+          }
+        }
+      }
+      return out.sort((a, b) => b.value - a.value); // biggest deviation first
+    },
+    suggest(h) {
+      // the option itself against the next strike further out of the money (calls: above, puts: below)
+      const out = h.side === 'PE' ? -1 : 1;
+      const side = h.side || 'CE';
+      return h.dir === 'cheap'
+        ? { legs: [L('B', side, sig(0)), L('S', side, sig(out))] }
+        : { legs: [L('S', side, sig(0)), L('B', side, sig(out))] };
+    },
+  },
 ];
+const r2 = (x) => Math.round(x * 100) / 100;
+// Least-squares quadratic through [x, y] points, evaluated at x0 (falls back to a line, then the mean).
+function quadAt(pts, x0) {
+  const n = pts.length;
+  if (!n) return null;
+  let [s1, s2, s3, s4, t0, t1, t2] = [0, 0, 0, 0, 0, 0, 0];
+  for (const [xa, y] of pts) { const u = xa - x0; s1 += u; s2 += u * u; s3 += u ** 3; s4 += u ** 4; t0 += y; t1 += u * y; t2 += u * u * y; }
+  // normal equations for y = a + b·u + c·u² (u = x − x0, so the value at x0 is a), by Cramer's rule
+  const det = n * (s2 * s4 - s3 * s3) - s1 * (s1 * s4 - s3 * s2) + s2 * (s1 * s3 - s2 * s2);
+  const scale = n * s2 * s4;
+  if (n >= 3 && Math.abs(det) > 1e-9 * Math.abs(scale)) {
+    return (t0 * (s2 * s4 - s3 * s3) - s1 * (t1 * s4 - s3 * t2) + s2 * (t1 * s3 - s2 * t2)) / det;
+  }
+  const dl = n * s2 - s1 * s1;
+  return n >= 2 && Math.abs(dl) > 1e-12 ? (t0 * s2 - s1 * t1) / dl : t0 / n;
+}
 // Whether the lower strike is the one bought: calls with a free credit, puts priced over the width.
 function lowBuys(side, dir) { return (side === 'CE') === (dir === 'free-credit'); }
 const BY_ID = new Map(TYPES.map((t) => [t.id, t]));

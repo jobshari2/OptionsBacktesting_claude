@@ -165,12 +165,15 @@ function createData({ getToken, cacheDir, logError = () => {} }) {
   // ---------- expiry calendar ----------
   let calendar = null;
   async function expiryCalendar() {
-    if (calendar && Date.now() - calendar.fetchedAt < 6 * 3600_000) return calendar;
+    // Re-read hourly and whenever the IST day changes (new expiries get listed, today's moves to expired). A calendar
+    // served from the saved file because Upstox failed (e.g. not logged in yet) is retried after a minute.
+    if (calendar && calendar.day === istToday() && Date.now() - calendar.fetchedAt < (calendar.stale ? 60_000 : 3600_000)) return calendar;
     return once('calendar', async () => {
       const file = path.join(cacheDir, 'expiries.json');
       let expired = [];
       let live = [];
       let liveLot = null;
+      let stale = false;
       try {
         const [e, c] = await Promise.all([
           api(`/v2/expired-instruments/expiries?instrument_key=${encodeURIComponent(NIFTY)}`),
@@ -183,7 +186,8 @@ function createData({ getToken, cacheDir, logError = () => {} }) {
       } catch (err) {
         if (!fs.existsSync(file)) throw err;
         ({ expired, live, liveLot } = JSON.parse(fs.readFileSync(file, 'utf8')));
-        logError('bt-calendar', err);
+        if (!calendar?.stale) logError('bt-calendar', err);
+        stale = true;
       }
       const today = istToday();
       expired = expired.filter((e) => e < today);
@@ -193,7 +197,7 @@ function createData({ getToken, cacheDir, logError = () => {} }) {
       const lastOfMonth = new Map();
       for (const e of all) lastOfMonth.set(e.slice(0, 7), e);
       const monthly = new Set(lastOfMonth.values());
-      calendar = { fetchedAt: Date.now(), expired, live, liveLot, all, monthly, expiredSet: new Set(expired) };
+      calendar = { fetchedAt: Date.now(), day: today, stale, expired, live, liveLot, all, monthly, expiredSet: new Set(expired) };
       return calendar;
     });
   }

@@ -37,9 +37,9 @@ const lockedIn = (c, h, given) => A.worstAtExpiry(resolve(c, h, given), c.spot);
 
 const ARBS = ['varb', 'fly', 'box', 'cal'];
 
-test('the Anomalies screen lists only tradeable arbitrages', () => {
+test('the Arbitrage screen lists the arbitrages and the fair-value signal', () => {
   const cat = A.catalog();
-  assert.deepEqual(cat.map((t) => t.id), ARBS);
+  assert.deepEqual(cat.map((t) => t.id), [...ARBS, 'fv']);
   for (const t of cat) {
     assert.equal(t.group, 'Arbitrage');
     for (const d of t.dirs) assert.ok(t.templates[d].CE.legs.length >= 2, `${t.id}/${d}`);
@@ -216,3 +216,40 @@ test('a strategy condition on a removed anomaly type never fires', () => {
   assert.equal(evaluate([cond], { spot: SPOT, ctx: () => chain() }).ok, false);
 });
 
+
+test('fair value: a fair chain has no deviations, with or without a book', () => {
+  for (const [name, o] of Object.entries({ flat: {}, skewed: { skew: 1.2 }, steepSkew: { vol: 0.18, skew: 2.5 }, monthly: { t: 20 / 252 } })) {
+    const c = chain(o);
+    assert.deepEqual(A.detect('fv', c, { band: 12 }), [], name);
+    assert.deepEqual(A.detect('fv', withBook(chain(o)), { band: 12 }), [], name + ' with a book');
+  }
+});
+
+test('fair value: an overpriced call is rich, an underpriced put is cheap', () => {
+  const c = chain({ skew: 1.2, edit: (ce, pe, ks) => { ce[at(ks, 24200)] += 6; pe[at(ks, 23800)] -= 5; } });
+  const hs = A.detect('fv', c);
+  const rich = hs.find((h) => h.strike === 24200 && h.side === 'CE');
+  const cheap = hs.find((h) => h.strike === 23800 && h.side === 'PE');
+  assert.ok(rich && cheap, JSON.stringify(hs.map((h) => [h.strike, h.side, h.dir, h.value])));
+  assert.equal(rich.dir, 'rich');
+  assert.equal(cheap.dir, 'cheap');
+  assert.ok(Math.abs(rich.value - 6) < 0.3, 'fair value is read from the neighbours, not the nudged strike: ' + rich.value);
+  assert.ok(Math.abs(cheap.value - 5) < 0.3, String(cheap.value));
+  assert.ok(Math.abs(rich.mkt - rich.fair - rich.value) < 0.02);
+  assert.ok(rich.ivMkt > rich.ivFair && cheap.ivMkt < cheap.ivFair);
+  assert.ok(hs.every((h, i) => i === 0 || h.value <= hs[i - 1].value), 'biggest deviation first');
+  // the trade: sell the rich call and buy the next one out; buy the cheap put and sell the next one out
+  assert.deepEqual(resolve(c, rich).map((l) => [l.dir, l.strike]), [[-1, 24200], [1, 24250]]);
+  assert.deepEqual(resolve(c, cheap).map((l) => [l.dir, l.strike]), [[1, 23800], [-1, 23750]]);
+});
+
+test('fair value: thresholds and the bid / ask are respected', () => {
+  const mk = () => chain({ edit: (ce, pe, ks) => { ce[at(ks, 24200)] += 6; } });
+  assert.ok(!A.detect('fv', mk(), { minEdge: 8 }).some((h) => h.strike === 24200 && h.side === 'CE'));
+  assert.ok(!A.detect('fv', mk(), { minPct: 60 }).some((h) => h.strike === 24200 && h.side === 'CE'));
+  // a book quoted 1 wide around the nudged price: sold at the bid, so the edge is 0.5 less
+  const h = A.detect('fv', withBook(mk())).find((x) => x.strike === 24200 && x.side === 'CE');
+  assert.ok(h && h.dir === 'rich' && Math.abs(h.value - 5.5) < 0.3, JSON.stringify(h));
+  // a book so wide that the bid is below fair value: nothing to sell into
+  assert.ok(!A.detect('fv', withBook(mk(), { hs: 7 })).some((x) => x.strike === 24200 && x.side === 'CE'));
+});

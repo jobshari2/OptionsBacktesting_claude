@@ -38,6 +38,31 @@ function buildAdjustments(strategy) {
     add('w1-day-before', 'Week-1 exit', 'Exit the day before the near-week expiry', 'Closed at the moment the roll would have happened.', (s) => { s.exit.dteDays = week1 + 1; });
   }
 
+  // ---- lock a profit once it is there ----
+  const lock = (s) => { s.risk.lockAt = 1.2; s.risk.lockTo = 0.5; };
+  if (cap && base.risk.lockAt == null) {
+    add('lock', 'Lock profit', 'Lock 0.5% of capital once up 1.2%', 'A trade that was clearly ahead can no longer end as a loser: it is closed if the profit falls back to the floor. Cuts the drawdown more than it costs.', lock);
+    add('lock-1', 'Lock profit', 'Lock 0.3% of capital once up 1%', 'An earlier, lower floor.', (s) => { s.risk.lockAt = 1; s.risk.lockTo = 0.3; });
+  }
+  if (week1 != null && base.exit.dteDays < week1) {
+    const w1 = (s) => { s.exit.dteDays = week1; s.legs.forEach((l) => { l.roll = null; }); };
+    if (cap && base.risk.lockAt == null) add('w1-lock', 'Week-1 exit', 'Week-1 exit, no roll, lock 0.5% once up 1.2%', 'The week-1 exit with a profit floor.', (s) => { w1(s); lock(s); });
+    if (base.filters.minCredit != null) {
+      add('w1-credit', 'Week-1 exit', `Week-1 exit, no roll, net credit at least ${base.filters.minCredit + 10} pts`, 'The week-1 exit, only in the richer weeks: fewer trades, smaller drawdown.', (s) => { w1(s); s.filters.minCredit += 10; });
+      add('w1-credit-sl', 'Week-1 exit', `Week-1 exit, no roll, net credit at least ${base.filters.minCredit + 10} pts, ${stopTxt(stops[1])}`, 'The richer weeks only, with an overall stop.', (s) => { w1(s); s.filters.minCredit += 10; stop(s, stops[1]); });
+    }
+  }
+
+  // ---- a closer near-week hedge ----
+  // The hedge bought in the nearer expiry, measured from a short leg: half the distance (e.g. 50 instead of 100).
+  const nearHedge = base.legs.map((l, i) => (l.action === 'B' && l.strike.by === 'leg' && Math.abs(l.strike.value) >= 100 && base.legs[l.strike.ref]?.expiry !== l.expiry ? i : -1)).filter((i) => i >= 0);
+  const closer = (s) => nearHedge.forEach((i) => { s.legs[i].strike.value /= 2; });
+  if (nearHedge.length) {
+    const d = Math.abs(base.legs[nearHedge[0]].strike.value) / 2;
+    add('hedge-closer', 'Hedge', `Near-week hedge ${d} pts from the short strike`, 'A closer hedge follows the short leg better when Nifty moves against it; it costs more, so fewer weeks pass the credit filter.', closer);
+    if (week1 != null && base.exit.dteDays < week1) add('hedge-closer-w1', 'Hedge', `Near-week hedge ${d} pts away, week-1 exit, no roll`, 'The closer hedge, with everything closed on the near-week expiry day.', (s) => { closer(s); s.exit.dteDays = week1; s.legs.forEach((l) => { l.roll = null; }); });
+  }
+
   // ---- roll timing ----
   if (rolled >= 0) {
     const d = base.legs[rolled].roll.dteDays;
@@ -84,6 +109,12 @@ function buildAdjustments(strategy) {
     if (week1 != null && base.exit.dteDays < week1) {
       const w1 = (s) => { mirror(s); s.exit.dteDays = week1; s.legs.forEach((l) => { l.roll = null; }); };
       add('rev-w1', 'Reverse', 'Reverse, week-1 exit, no roll', 'The mirror image, closed on the near-week expiry day.', w1);
+      if (nearHedge.length) {
+        const d = Math.abs(base.legs[nearHedge[0]].strike.value) / 2;
+        add('rev-w1-closer', 'Reverse', `Reverse, hedge ${d} pts away, week-1 exit, no roll`, 'The mirror image with the closer near-week hedge: the form of the reverse that held up in testing.', (s) => { w1(s); closer(s); });
+        if (cap && base.risk.lockAt == null) add('rev-w1-closer-lock', 'Reverse', `Reverse, hedge ${d} pts away, week-1 exit, lock 0.5% once up 1.2%`, 'The reverse form with the smallest drawdown in testing.', (s) => { w1(s); closer(s); s.risk.lockAt = 1.2; s.risk.lockTo = 0.5; });
+        if (base.filters.vixMin == null) add('rev-w1-closer-vix', 'Reverse', `Reverse, hedge ${d} pts away, week-1 exit, India VIX at least 12`, 'The same, skipping the quiet weeks.', (s) => { w1(s); closer(s); s.filters.vixMin = 12; });
+      }
       add(`rev-w1-sl${stops[1]}`, 'Reverse', `Reverse, week-1 exit, no roll, ${stopTxt(stops[1])}`, 'The mirror image with the week-1 exit and an overall stop.', (s) => { w1(s); stop(s, stops[1]); });
     }
   }

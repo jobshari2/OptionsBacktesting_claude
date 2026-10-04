@@ -14,8 +14,11 @@
   let adj = null; // adjustment variations of main: { rows } once tested
   let adjNote = ''; // progress / error text while adj is not there
   let adjSort = { k: 'total', dir: -1 };
-  let topTab = 'details';
-  let autoRan = false;
+  let topTab = 'summary';
+  let saved = []; // saved backtests (headline numbers), for the Summary tab
+  let sumSort = { k: 'roi', dir: -1 };
+  let sumAll = false; // Summary: every saved backtest instead of the top 5 of the bi-weekly hedge and of its reverse
+  let adjBusy = false;
   let scSort = { k: 'total', dir: -1 };
   let result = null; // full run of the selected scenario
   let jobId = null;
@@ -34,11 +37,10 @@
     const draft = BT.store.get('draft', null);
     if (draft?.s) { currentId = draft.id; editor.set(draft.s); } else editor.set(BT.blankStrategy());
     BT.on('meta', fillPicker);
-    // First visit: start on the bi-weekly hedge. The loaded strategy is then run once on its own (cached history,
-    // saved settings), so the screen opens on results; "Run backtest" re-runs it with other settings.
+    // First visit: start on the bi-weekly hedge. Nothing is backtested on opening: the screen shows the saved
+    // results (Summary tab) and only "Run backtest" / "Backtest all strategies" run anything.
     const start = () => {
       if (!draft && !dirty && !currentId) load(BT.findStrategy('my-biweekly-hari') || BT.meta.library[0]);
-      if (!autoRan && !scan && BT.meta.calendar) { autoRan = true; run(); }
     };
     if (BT.meta.loaded) { fillPicker(); start(); } else BT.on('meta', start);
     BT.on('meta-error', (e) => { $('btResults').innerHTML = `<div class="panel empty err">${esc(e.message)}</div>`; });
@@ -76,13 +78,19 @@
     $('btPick').value = currentId && BT.findStrategy(currentId) ? currentId : '';
     $('btSaveMsg').textContent = '';
     updateButtons();
-    if (!keepResults) renderEmpty();
+    if (!keepResults) {
+      renderEmpty();
+      // a saved backtest of this strategy: show it (nothing is run)
+      const hit = saved.find((x) => x.key === (s.id || 'name:' + s.name));
+      if (hit) openSaved(hit.key, true);
+    }
   }
 
   $('btPick').addEventListener('change', (e) => {
     const s = BT.findStrategy(e.target.value);
     if (!s) return;
     if (dirty && !confirm('Discard unsaved changes to the current strategy?')) { e.target.value = currentId || ''; return; }
+    topTab = 'details';
     load(s);
   });
   $('btNew').addEventListener('click', () => {
@@ -138,10 +146,11 @@
   });
   $('btBuilder').addEventListener('click', () => BT.emit('open-builder', { strategy: { ...editor.get(), id: currentId }, src: 'live', note: 'from the Backtest editor' }));
   BT.on('open-backtest', ({ strategy, run: autoRun }) => {
-    autoRan = true; // opened for this strategy: no automatic run of the previous one
     init();
-    load(strategy);
     window.app.setView('bt');
+    load(strategy);
+    topTab = 'details';
+    renderTop();
     if (autoRun) run();
   });
 
@@ -158,15 +167,15 @@
     adj = null;
     topTab = 'details';
     runOpts = opts;
-    if (await scanFor(strategy)) testAdjustments();
+    if (await scanFor(strategy, true)) { loadSaved(); await testAdjustments(true); loadSaved(); }
   }
 
   // Scenario scan of one strategy (the editor's, or an adjustment variation of it) into the Details tab.
-  async function scanFor(strategy) {
+  async function scanFor(strategy, save = false) {
     settings.setBusy(true);
     const t0 = performance.now();
     try {
-      const job = await BT.runJob('/api/bt/scenarios', { strategy, opts: runOpts }, settings.progress);
+      const job = await BT.runJob('/api/bt/scenarios', { strategy, opts: runOpts, save }, settings.progress);
       scan = job.result;
       scan.ms = performance.now() - t0;
       scan.rows = distinct(scan.scenarios);
@@ -182,11 +191,13 @@
 
   // ---------- adjustments ----------
   // Every adjustment variation of the strategy (bt/adjustments.js), tested in the background after its own run.
-  async function testAdjustments() {
+  async function testAdjustments(save = true) {
     const mine = main;
+    adjBusy = true;
     adjNote = 'Testing the adjustment variations…';
+    if (topTab === 'adjust') renderAdjust();
     try {
-      const job = await BT.runJob('/api/bt/adjustments', { strategy: main, opts: runOpts }, (p) => {
+      const job = await BT.runJob('/api/bt/adjustments', { strategy: main, opts: runOpts, save }, (p) => {
         if (main !== mine) return;
         adjNote = `${p.phase || 'Testing adjustments'}${p.total ? ` — ${p.done} of ${p.total}` : ''}`;
         if (topTab === 'adjust') renderAdjust();
@@ -197,6 +208,7 @@
       if (main !== mine) return;
       adjNote = 'Could not test the adjustments: ' + e.message;
     }
+    adjBusy = false;
     renderTop();
     renderAdjust();
   }
@@ -205,17 +217,220 @@
     ['total', 'Net P&amp;L', (v) => inrS(v)], ['roi', '% profit', (v) => pct(v)], ['capital', 'Investment', (v) => inr(v)], ['winRate', 'Win %', (v) => pct(v)], ['trades', 'Trades', (v) => v],
     ['maxDD', 'Max DD', (v) => inr(v)], ['calmar', 'Return / DD', (v) => num(v)], ['maxLoss', 'Worst trade', (v) => inrS(v)], ['profitFactor', 'Profit factor', (v) => num(v)],
   ];
+  // The results area: a tab bar and one pane per tab, built once.
+  function shell() {
+    if ($('btTop')) return;
+    $('btResults').innerHTML = `
+      <div class="panel top-bar"><div class="seg top-tabs" id="btTop"></div></div>
+      <div id="btPaneSummary" class="bt-results"></div>
+      <div id="btPaneDetails" class="bt-results hidden"></div>
+      <div id="btPaneAdjust" class="panel adj-panel hidden"></div>`;
+    $('btTop').addEventListener('click', (e) => { if (e.target.dataset.top) { topTab = e.target.dataset.top; renderTop(); } });
+    $('btPaneAdjust').addEventListener('click', (e) => {
+      if (e.target.id === 'btAdjRun') return testAdjustments(true).then(loadSaved);
+      const th = e.target.closest('th[data-k]');
+      if (th) {
+        adjSort = th.dataset.k === adjSort.k ? { k: adjSort.k, dir: -adjSort.dir } : { k: th.dataset.k, dir: -1 };
+        return renderAdjust();
+      }
+      const tr = e.target.closest('tr[data-k]');
+      if (tr) pickVariant(tr.dataset.k);
+    });
+    $('btPaneSummary').addEventListener('click', async (e) => {
+      if (e.target.id === 'btAll') return backtestAll();
+      if (e.target.id === 'btSumAll') { sumAll = !sumAll; return renderSummary(); }
+      const del = e.target.closest('[data-del]');
+      if (del) {
+        if (!confirm('Remove this saved backtest?')) return;
+        await BT.api('/api/bt/results/delete', { key: del.dataset.del });
+        return loadSaved();
+      }
+      const th = e.target.closest('th[data-k]');
+      if (th) {
+        sumSort = th.dataset.k === sumSort.k ? { k: sumSort.k, dir: -sumSort.dir } : { k: th.dataset.k, dir: -1 };
+        return renderSummary();
+      }
+      const open = e.target.closest('[data-open]');
+      if (open) openSaved(open.dataset.open);
+    });
+  }
   function renderTop() {
     const el = $('btTop');
     if (!el) return;
-    el.innerHTML = `<button data-top="details" class="${topTab === 'details' ? 'on' : ''}">Details</button><button data-top="adjust" class="${topTab === 'adjust' ? 'on' : ''}" title="The strategy with one adjustment changed at a time, each backtested with the same settings">Adjustments (${adj ? adj.rows.length : '…'})</button>`;
+    const tabs = [['summary', 'Summary', 'The saved backtests: the top 5 of the bi-weekly hedge and of its reverse'], ['details', 'Details', 'Scenarios, months, trades and equity curve of one strategy'],
+      ['adjust', `Adjustments${adj ? ` (${adj.rows.length})` : ''}`, 'The strategy with one adjustment changed at a time, each backtested with the same settings']];
+    el.innerHTML = tabs.map(([t, l, tip]) => `<button data-top="${t}" class="${topTab === t ? 'on' : ''}" title="${tip}">${l}</button>`).join('');
+    $('btPaneSummary').classList.toggle('hidden', topTab !== 'summary');
     $('btPaneDetails').classList.toggle('hidden', topTab !== 'details');
     $('btPaneAdjust').classList.toggle('hidden', topTab !== 'adjust');
   }
+
+  // ---------- summary: saved backtests ----------
+  async function loadSaved() {
+    try { saved = (await BT.api('/api/bt/results')).results; } catch { saved = []; }
+    renderTop();
+    renderSummary();
+    // the strategy in the editor has a saved backtest and nothing is shown yet: put it in Details (nothing is run)
+    if (!scan && editor && !dirty) {
+      const cur = editor.get();
+      const hit = saved.find((x) => x.key === (currentId || 'name:' + cur.name));
+      if (hit) openSaved(hit.key, true);
+    }
+  }
+  const when = (t) => new Date(t).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' });
+  // Short options that no bought option of the same type covers for their whole life (naked shorts, ratio spreads,
+  // a near-week hedge that is not rolled): the loss is not limited, whatever one backtested year shows.
+  function unlimitedRisk(s) {
+    const rank = { cur: 0, next: 1, mcur: 2, mnext: 3 };
+    // closed on or before the near-week expiry: a near-week hedge is alive for the whole trade
+    const early = s.mode === 'positional' && s.entry.after >= 2 && s.exit.dteDays >= 5 * (s.entry.after - 1);
+    return ['CE', 'PE'].some((type) => {
+      const shorts = s.legs.filter((l) => l.action === 'S' && l.type === type);
+      if (!shorts.length) return false;
+      const last = Math.max(...shorts.map((l) => rank[l.expiry]));
+      const cover = s.legs.filter((l) => l.action === 'B' && l.type === type && (l.roll || early || rank[l.expiry] >= last)).reduce((n, l) => n + l.lots, 0);
+      return cover < shorts.reduce((n, l) => n + l.lots, 0);
+    });
+  }
+  const riskPill = (s) => (unlimitedRisk(s) ? ' <span class="cat-pill c-bearish" title="Some short options are not covered by a bought option for their whole life: one bad week can lose far more than this backtest shows">unlimited risk</span>' : '');
+  const SUM_COLS = [
+    ['roi', '% profit', (v) => pct(v)], ['total', 'Net P&amp;L', (v) => inrS(v)], ['capital', 'Investment', (v) => inr(v)], ['trades', 'Trades', (v) => v], ['winRate', 'Win %', (v) => pct(v)],
+    ['sumWin', 'Profit (winners)', (v) => inrS(v)], ['sumLoss', 'Loss (losers)', (v) => inrS(v)], ['maxDD', 'Max DD', (v) => inr(v)], ['profitFactor', 'Profit factor', (v) => num(v)],
+  ];
+  function renderSummary() {
+    const el = $('btPaneSummary');
+    if (!el) return;
+    const all = `<button class="btn-sm ghost" id="btAll" title="Backtest every saved and built-in strategy with the settings in the bar above and save the results. Takes a few minutes the first time.">Backtest all strategies</button>`;
+    if (!saved.length) {
+      el.innerHTML = `<div class="panel empty"><h3>No saved backtests yet</h3>
+        <p>Nothing is backtested when this screen opens. Press <b>Run backtest</b> for the strategy on the left, or ${all} — every result is saved and shown here next time, best strategy first.</p></div>`;
+      return;
+    }
+    const { k, dir } = sumSort;
+    const val = (r) => { const v = k === 'bestTotal' ? r.best.stats.total : r.own.stats[k]; return !r.own.stats.trades || v == null || !isFinite(v) ? null : v; };
+    const rows = saved.slice().sort((a, b) => {
+      const x = val(a);
+      const y = val(b);
+      if (x == null || y == null) return (x == null) - (y == null);
+      return (x - y) * dir;
+    });
+    // Listed: the five best of the bi-weekly hedge and the five best of its reverse (by % profit as defined). The
+    // family is read from the legs: a position entered at the start of a series whose first short leg is hedged by a
+    // bought call (hedge) or put (reverse) measured from it. Everything else sits behind "Show all strategies".
+    const family = (r) => {
+      const h = r.strategy.legs.find((l) => l.action === 'B' && l.strike.by === 'leg' && l.strike.ref === 0);
+      return r.strategy.entry?.after >= 2 && h ? (h.type === 'PE' ? 'rev' : 'hedge') : null;
+    };
+    const byRoi = (list) => list.filter((r) => r.own.stats.trades).sort((a, b) => (b.own.stats.roi ?? -1e9) - (a.own.stats.roi ?? -1e9));
+    const top5 = { hedge: byRoi(saved.filter((r) => family(r) === 'hedge')).slice(0, 5), rev: byRoi(saved.filter((r) => family(r) === 'rev')).slice(0, 5) };
+    const families = top5.hedge.length + top5.rev.length > 0;
+    const shown = sumAll || !families ? saved : [...top5.hedge, ...top5.rev];
+    const top = byRoi(shown)[0];
+    let card = '';
+    if (top) {
+      const st = top.own.stats;
+      const tot = st.sumWin - st.sumLoss || 1;
+      const better = top.best.key !== top.own.key && top.best.stats.total > st.total;
+      const safe = unlimitedRisk(top.strategy) ? byRoi(shown.filter((r) => !unlimitedRisk(r.strategy)))[0] : null;
+      card = `<div class="panel res-head best-card">
+        <div class="res-title scen-sel">
+          <h3>Best strategy: ${esc(top.name)}</h3><span class="cat-pill c-${esc(String(top.category || '').toLowerCase())}">${esc(top.category || '')}</span>${riskPill(top.strategy)}
+          <span class="spacer"></span><button class="btn-sm" data-open="${esc(top.key)}">Open details ▸</button>
+        </div>
+        <span class="muted small">Highest % profit among the strategies listed below, as the strategy is defined · ${esc(BT.timingLabel(top.strategy))} · ${dayLabel(st.from)} → ${dayLabel(st.to)} · ${top.opts.lotMode === 'fixed' ? 'lot ' + top.opts.lotSize : 'lot as traded'} · backtested ${when(top.at)}</span>
+        <div class="res-legs">${BT.legChips(top.strategy)}</div>
+        <div class="kpis">
+          ${tile('Investment', inr(st.capital), top.opts.capital ? 'Capital (settings bar)' : 'est. margin (largest trade)')}
+          ${tile('Net P&amp;L', inrS(st.total), `gross ${inrS(st.gross)} · costs ${inr(st.costs)}`, cls(st.total))}
+          ${tile('% profit', pct(st.roi), `${pct(st.annualRoi)} a year`, cls(st.roi))}
+          ${tile('Trades', st.trades, `${st.wins} winners · ${st.losses} losers`)}
+          ${tile('Win rate', pct(st.winRate), `avg win ${inrS(st.avgWin)} · avg loss ${inrS(st.avgLoss)}`)}
+          ${tile('Profit vs loss', `<span class="pos">${kinr(st.sumWin)}</span> <span class="muted">vs</span> <span class="neg">${kinr(st.sumLoss)}</span>`, `<div class="pl-bar"><i style="width:${((st.sumWin / tot) * 100).toFixed(0)}%"></i></div>`)}
+          ${tile('Max drawdown', inr(st.maxDD), st.capital ? pct((st.maxDD / st.capital) * 100) + ' of investment' : '', 'neg')}
+          ${tile('Profit factor', num(st.profitFactor), `return / drawdown ${num(st.calmar)}`)}
+          ${tile('Best / worst trade', `<span class="pos">${inrS(st.maxWin)}</span>`, `<span class="neg">${inrS(st.maxLoss)}</span>`)}
+          ${tile('Sharpe', num(st.sharpe), `longest losing run ${st.streakLoss}`)}
+        </div>
+        ${safe ? `<span class="dep-warn">This one leaves short options uncovered, so its loss is not limited and one good year proves little. Best strategy with limited risk: <b>${esc(safe.name)}</b>, ${inrS(safe.own.stats.total)} = ${pct(safe.own.stats.roi)} — <button class="link" data-open="${esc(safe.key)}">open it</button></span>` : ''}
+        ${better ? `<span class="muted small">Its best tested scenario (${esc(scText(top.best, top.strategy, top.debit))}) made ${inrS(top.best.stats.total)} = ${pct(top.best.stats.roi)}; see the scenario table in Details.</span>` : ''}
+      </div>`;
+    }
+    const head = `<thead><tr><th>#</th><th class="l">Strategy</th>${SUM_COLS.map(([c, l]) => `<th data-k="${c}" class="sortable${c === k ? ' sorted' : ''}">${l}${c === k ? (dir < 0 ? ' ▼' : ' ▲') : ''}</th>`).join('')}<th data-k="bestTotal" class="sortable${k === 'bestTotal' ? ' sorted' : ''}" title="Net P&amp;L of the best take-profit / stop / exit scenario tested for it">Best scenario${k === 'bestTotal' ? (dir < 0 ? ' ▼' : ' ▲') : ''}</th><th class="l">Period · saved</th><th></th></tr></thead>`;
+    const rowHtml = (r, i) => {
+      const st = r.own.stats;
+      return `<tr data-open="${esc(r.key)}" class="${main && scan && !variant && (main.id || 'name:' + main.name) === r.key ? 'sel' : ''}"><td class="muted">${i + 1}</td>
+        <td class="l sum-name"><span class="cat-pill c-${esc(String(r.category || '').toLowerCase())}">${esc(r.category || '')}</span> <b>${esc(r.name)}</b>${top && r.key === top.key ? ' <span class="cat-pill c-bullish">best</span>' : ''}${riskPill(r.strategy)}</td>
+        ${SUM_COLS.map(([c, , fmt]) => `<td class="${c === 'total' || c === 'roi' ? cls(st.total) + ' b' : c === 'sumWin' ? 'pos' : c === 'sumLoss' || c === 'maxDD' ? 'neg' : ''}">${st.trades ? (c === 'trades' ? `${st.trades} <span class="muted">(${st.wins} W / ${st.losses} L)</span>` : fmt(st[c])) : c === 'trades' ? 'no trades' : '—'}</td>`).join('')}
+        <td class="${cls(r.best.stats.total)}">${r.best.stats.trades ? inrS(r.best.stats.total) : '—'}</td>
+        <td class="l muted small">${st.trades ? `${dayShort(st.from)} → ${dayLabel(st.to)} · ` : ''}${when(r.at)}</td>
+        <td><button class="icon" data-del="${esc(r.key)}" title="Remove this saved backtest">✕</button></td></tr>`;
+    };
+    const table = (title, note, list) => `<div class="panel scen-panel">
+        <div class="chart-head"><h3>${title}</h3><span class="muted small">${note}</span></div>
+        <div class="tbl-wrap"><table class="grid-tbl cmp-tbl scen-tbl sum-tbl">${head}<tbody>${rows.filter((r) => list.includes(r)).map(rowHtml).join('') || '<tr><td colspan="14" class="l muted">None backtested yet.</td></tr>'}</tbody></table></div>
+      </div>`;
+    const hint = 'as each is defined · click a row to see it in Details and Adjustments (nothing is run again) · click a column to sort';
+    const more = families ? `<button class="btn-sm ghost" id="btSumAll">${sumAll ? 'Show only the top 5 of each' : `Show all ${saved.length} strategies`}</button>` : '';
+    el.innerHTML = `${card}
+      ${sumAll || !families ? table('All saved backtests', `${saved.length} strategies · ${hint}`, saved)
+        : table('Bi-weekly Hedge — top 5', `the 5 with the highest % profit of ${saved.filter((r) => family(r) === 'hedge').length} backtested · ${hint}`, top5.hedge)
+          + table('Bi-weekly Hedge Reverse — top 5', `the 5 with the highest % profit of ${saved.filter((r) => family(r) === 'rev').length} backtested · ${hint}`, top5.rev)}
+      <div class="panel top-bar sum-foot">${more} ${all} <span class="muted small">Run backtest replaces a strategy's saved result.</span></div>`;
+  }
+
+  // A saved backtest into the Details and Adjustments tabs, exactly as it was stored: nothing is run.
+  async function openSaved(key, stay) {
+    let e;
+    try { e = await BT.api('/api/bt/result?key=' + encodeURIComponent(key)); } catch (err) { if (!stay) alert(err.message); return; }
+    if (!stay) {
+      if (dirty && !confirm('Discard unsaved changes to the strategy in the editor?')) return;
+      currentId = e.id && BT.findStrategy(e.id) ? e.id : null;
+      editor.set(BT.clone(e.scan.strategy));
+      dirty = false;
+      BT.store.set('draft', { id: currentId, s: editor.get() });
+      $('btPick').value = currentId || '';
+      $('btSaveMsg').textContent = '';
+      updateButtons();
+      topTab = 'details';
+    }
+    main = e.scan.strategy;
+    variant = null;
+    runOpts = e.optsRaw;
+    scan = { ...e.scan, ms: 0, savedAt: e.at, detail: e.detail, detailKey: e.detailKey };
+    scan.rows = distinct(scan.scenarios);
+    scSort = { k: 'total', dir: -1 };
+    adj = e.adj;
+    adjNote = '';
+    renderResults();
+    renderSummary();
+  }
+
+  async function backtestAll() {
+    let opts;
+    try { opts = settings.get(); } catch (e) { return alert(e.message); }
+    if (!confirm(`Backtest every strategy for ${opts.from} → ${opts.to} with the settings in the bar and save the results?\n\nThis replaces their saved backtests and can take several minutes (longer if option data has to be downloaded).`)) return;
+    settings.setBusy(true);
+    try {
+      const job = await BT.runJob('/api/bt/overview', { opts }, settings.progress);
+      const bad = job.result.failed;
+      if (bad.length) alert(`${job.result.done} strategies backtested and saved.\n\nNot backtested:\n` + bad.map((x) => `• ${x.name}: ${x.error}`).join('\n'));
+    } catch (e) {
+      alert('Backtest failed: ' + e.message);
+    } finally {
+      settings.setBusy(false);
+    }
+    loadSaved();
+  }
+
   function renderAdjust() {
     const el = $('btPaneAdjust');
     if (!el) return;
-    if (!adj) { el.innerHTML = `<div class="pad muted">${esc(adjNote)}</div>`; return; }
+    if (!adj) {
+      el.innerHTML = !main ? '<div class="pad muted">Run a backtest, or pick a strategy in the Summary tab, to see its adjustment variations.</div>'
+        : adjBusy || adjNote ? `<div class="pad muted">${esc(adjNote)}</div>${adjBusy ? '' : '<div class="pad"><button class="btn-sm" id="btAdjRun">Try again</button></div>'}`
+          : '<div class="pad"><span class="muted">The adjustment variations of this strategy have not been tested yet. </span><button class="btn-sm" id="btAdjRun">Test the adjustment variations</button></div>';
+      return;
+    }
     const { k, dir } = adjSort;
     const val = (r) => (r.stats?.[k] == null || !isFinite(r.stats[k]) ? null : r.stats[k]);
     const rows = adj.rows.slice().sort((a, b) => {
@@ -238,7 +453,7 @@
     if (!row || row.error) return;
     variant = key === 'own' ? null : row;
     topTab = 'details';
-    await scanFor(row.strategy);
+    await scanFor(row.strategy); // served from the scan cache when it was tested before
   }
 
   // A rule that never came into play leaves the result unchanged: show each outcome once, as its simplest
@@ -261,18 +476,26 @@
     main = null;
     variant = null;
     adj = null;
-    $('btResults').innerHTML = `<div class="panel empty">
+    adjNote = '';
+    shell();
+    $('btPaneDetails').innerHTML = `<div class="panel empty">
       <h3>Backtest on real 1-minute Nifty option prices</h3>
-      <p>Pick a ready-made strategy on the left (or build your own), choose a period and the expiries to include, then press <b>Run backtest</b>.</p>
+      <p>Pick a ready-made strategy on the left (or build your own), choose a period and the expiries to include, then press <b>Run backtest</b>. Results are saved: the <b>Summary</b> tab lists every backtested strategy, best first, and opening one never runs it again.</p>
       <ul>
         <li>Data: Upstox expired-option candles, every strike, every minute. The first run of a period downloads what it needs (about 100 ms per contract); later runs come from the local cache and take milliseconds.</li>
         <li>Entries and timed exits fill at that minute's open. Stops and targets are checked against each candle's high and low; when both are touched in one candle, the stop is taken.</li>
         <li>Slippage, brokerage and STT / exchange / GST charges are deducted from every trade.</li>
         <li>Every run also tests the scenarios around your strategy: booking profit at 10 %, 20 %, 30 % … of the entry premium, an overall stop-loss, and exiting on expiry day or earlier. They are ranked with the most profitable on top; click one to see its months, trades and equity curve.</li>
       </ul></div>`;
+    renderTop();
+    renderAdjust();
+    renderSummary();
   }
   function renderError(msg) {
-    $('btResults').innerHTML = `<div class="panel empty err"><b>Backtest failed:</b> ${esc(msg)}</div>`;
+    shell();
+    topTab = 'details';
+    $('btPaneDetails').innerHTML = `<div class="panel empty err"><b>Backtest failed:</b> ${esc(msg)}</div>`;
+    renderTop();
   }
 
   // Share of the investment (capital in the settings, else the estimated margin) of the run shown in Details.
@@ -284,10 +507,9 @@
     ['total', 'Net P&amp;L', (v) => inrS(v)], ['roi', '% profit', (v) => pct(v)], ['winRate', 'Win %', (v) => pct(v)], ['trades', 'Trades', (v) => v], ['avg', 'Avg / trade', (v) => inrS(v)],
     ['maxDD', 'Max DD', (v) => inr(v)], ['calmar', 'Return / DD', (v) => num(v)], ['profitFactor', 'Profit factor', (v) => num(v)], ['sharpe', 'Sharpe', (v) => num(v)],
   ];
-  function scLabels(sc) {
-    const s = scan.strategy;
+  function scLabels(sc, s = scan.strategy, debit = scan.debit) {
     const r = s.risk;
-    const prem = scan.debit ? 'debit' : 'credit';
+    const prem = debit ? 'debit' : 'credit';
     const own = (v, p) => [v != null ? (r.unit === 'pct' ? `${v}% of capital` : inr(v)) : null, p != null ? `${p}% of ${prem}` : null].filter(Boolean).join(' or ') || 'None';
     const of = (v) => (v == null ? 'None' : `${v}% of ${prem}`);
     return {
@@ -296,7 +518,7 @@
       exit: s.mode === 'intraday' ? sc.exit.time : `${sc.exit.dteDays ? `${sc.exit.dteDays}d before expiry` : 'Expiry day'} ${sc.exit.time}`,
     };
   }
-  const scText = (sc) => { const l = scLabels(sc); return `take profit ${l.tgt} · stop-loss ${l.sl} · exit ${l.exit}`; };
+  const scText = (sc, s, debit) => { const l = s ? scLabels(sc, s, debit) : scLabels(sc); return `take profit ${l.tgt} · stop-loss ${l.sl} · exit ${l.exit}`; };
   function sortedRows() {
     const { k, dir } = scSort;
     const val = (r) => (r.stats[k] == null || !isFinite(r.stats[k]) ? null : r.stats[k]);
@@ -315,37 +537,24 @@
     const none = !st.trades;
     if (none) result = { skipped: scan.skipped };
     const noTrades = `<div class="panel empty"><h3>No trades</h3><p>${scan.considered} trading days/expiries matched the timing rules, ${own.skippedCount} were skipped${scan.noSignal ? `, and on ${scan.noSignal} the entry conditions never all held` : ''}.</p>${none ? skippedHtml() : ''}</div>`;
-    $('btResults').innerHTML = `
+    shell();
+    $('btPaneDetails').innerHTML = `
       <div class="panel res-head">
         <div class="res-title">
           <h3>${esc(main.name)}${variant ? ` <span class="muted">›</span> ${esc(variant.name)} <button class="btn-sm ghost" id="btMain" title="Back to the strategy as it is in the editor">◂ As defined</button>` : ''}</h3>
-          <span class="muted small">${esc(BT.timingLabel(s))}${none ? '' : ` · ${dayLabel(st.from)} → ${dayLabel(st.to)}`} · ${scan.opts.expiries ? scan.opts.expiries.length + ' selected expiries · ' : ''}${scan.opts.lotMode === 'fixed' ? 'lot ' + scan.opts.lotSize : 'lot as traded'}${s.entry.when === 'signal' ? ` · signal on ${scan.considered - (scan.noSignal || 0)} of ${scan.considered} sessions` : ''} · ${scan.scenarios.length} scenarios in ${(scan.ms / 1000).toFixed(2)} s</span>
+          <span class="muted small">${esc(BT.timingLabel(s))}${none ? '' : ` · ${dayLabel(st.from)} → ${dayLabel(st.to)}`} · ${scan.opts.expiries ? scan.opts.expiries.length + ' selected expiries · ' : ''}${scan.opts.lotMode === 'fixed' ? 'lot ' + scan.opts.lotSize : 'lot as traded'}${s.entry.when === 'signal' ? ` · signal on ${scan.considered - (scan.noSignal || 0)} of ${scan.considered} sessions` : ''} · ${scan.scenarios.length} scenarios ${scan.savedAt ? `· saved backtest of ${when(scan.savedAt)} (Run backtest to redo it)` : `in ${(scan.ms / 1000).toFixed(2)} s`}</span>
           ${none ? '' : `<span class="muted small">Investment <b class="txt-strong">${inr(st.capital)}</b> ${scan.opts.capital ? '(the Capital in the settings bar)' : '(largest estimated margin of the trades; set Capital in the settings bar to fix it)'} · as defined: ${inrS(st.total)} = <b class="${cls(st.roi)}">${pct(st.roi)}</b> on it, ${pct(st.annualRoi)} a year</span>`}
           <div class="res-legs">${BT.legChips(s)}</div>
         </div>
-        <div class="seg top-tabs" id="btTop"></div>
       </div>
-      <div id="btPaneDetails" class="bt-results">
-        ${none ? noTrades : `<div class="panel scen-panel">
-          <div class="chart-head"><h3>Scenarios — best combinations</h3><span class="muted small">${scan.scenarios.length} combinations of take profit × stop-loss × exit tested, ${scan.rows.length} different outcomes · % of the net ${scan.debit ? 'debit paid' : 'credit received'} at entry · click a row to see it below · click a column to sort</span></div>
-          <div class="tbl-wrap scen-wrap" id="btScen"></div>
-        </div>
-        <div id="btDetail" class="bt-results"></div>`}
+      ${none ? noTrades : `<div class="panel scen-panel">
+        <div class="chart-head"><h3>Scenarios — best combinations</h3><span class="muted small">${scan.scenarios.length} combinations of take profit × stop-loss × exit tested, ${scan.rows.length} different outcomes · % of the net ${scan.debit ? 'debit paid' : 'credit received'} at entry · click a row to see it below · click a column to sort</span></div>
+        <div class="tbl-wrap scen-wrap" id="btScen"></div>
       </div>
-      <div id="btPaneAdjust" class="panel adj-panel hidden"></div>`;
+      <div id="btDetail" class="bt-results"></div>`}`;
     renderTop();
     renderAdjust();
-    $('btTop').addEventListener('click', (e) => { if (e.target.dataset.top) { topTab = e.target.dataset.top; renderTop(); } });
     $('btMain')?.addEventListener('click', () => pickVariant('own'));
-    $('btPaneAdjust').addEventListener('click', (e) => {
-      const th = e.target.closest('th[data-k]');
-      if (th) {
-        adjSort = th.dataset.k === adjSort.k ? { k: adjSort.k, dir: -adjSort.dir } : { k: th.dataset.k, dir: -1 };
-        return renderAdjust();
-      }
-      const tr = e.target.closest('tr[data-k]');
-      if (tr) pickVariant(tr.dataset.k);
-    });
     if (none) return;
     renderScenarios();
     $('btScen').addEventListener('click', (e) => {
@@ -382,6 +591,11 @@
     if (!sc) return;
     selKey = key;
     $('btScen').querySelectorAll('tr[data-k]').forEach((tr) => tr.classList.toggle('sel', tr.dataset.k === key));
+    if (scan.detail && (sc.key === scan.detailKey || sc.same.some((x) => x.key === scan.detailKey))) { // stored with the saved backtest
+      result = scan.detail;
+      jobId = null;
+      return renderDetail(sc);
+    }
     const mine = scan;
     const current = () => scan === mine && selKey === key;
     try {
@@ -447,6 +661,7 @@
       $('btCsv').addEventListener('click', exportCsv);
       // "show it" in the suggestions: jump to that scenario (or the row it shares its result with)
       $('btTab').addEventListener('click', (e) => {
+        if (e.target.dataset.var) return pickVariant(e.target.dataset.var);
         const k = e.target.dataset.go;
         const row = k && scan.rows.find((x) => x.key === k || x.same.some((y) => y.key === k));
         if (row) select(row.key);
@@ -601,6 +816,26 @@
     else add('ok', 'No tested rule beats this one', 'Among the take-profit, stop-loss and exit combinations tested, this scenario has the highest net P&amp;L.');
     if (calm && calm.key !== all?.key && calm.stats.maxDD > st.maxDD) add('info', 'A calmer alternative', `<ul class="sugg-ul">${line(`Smallest drawdown among the profitable combinations: <b>${esc(scText(calm))}</b>`, calm)}</ul>`);
 
+    // The max drawdown: when it happened, and which tested rules and adjustment variations made it smaller.
+    {
+      const inDD = st.ddFrom ? T.filter((t) => t.exitDay > st.ddFrom && t.exitDay <= st.ddTo) : [];
+      const ddLosers = inDD.filter((t) => t.net < 0);
+      const smaller = (x) => x.stats.trades && x.stats.total > 0 && x.stats.maxDD > st.maxDD * 0.9;
+      const seen = new Set();
+      const uniq = (x) => { const k = x.stats.total + '|' + x.stats.maxDD; if (seen.has(k)) return false; seen.add(k); return true; };
+      const scn = grid.filter(smaller).sort((a, b) => b.stats.maxDD - a.stats.maxDD).filter(uniq).slice(0, 3);
+      const vars = (adj?.rows || []).filter((x) => x.stats && !x.risky && x.key !== (variant?.key || 'own') && smaller(x)).sort((a, b) => b.stats.maxDD - a.stats.maxDD).filter(uniq).slice(0, 5);
+      const row = (name, x, link) => `<tr><th>${name}</th><td class="neg">${inr(x.stats.maxDD)}</td><td>${pct(((x.stats.maxDD - st.maxDD) / st.maxDD) * -100, 0)} ${x.stats.maxDD > st.maxDD ? 'smaller' : 'larger'}</td><td class="${cls(x.stats.total)}">${inrS(x.stats.total)}</td><td class="neg">${inrS(x.stats.maxLoss)}</td><td>${link}</td></tr>`;
+      add('act', `Reducing the max drawdown (now ${inr(st.maxDD)}${st.capital ? ', ' + pct((st.maxDD / st.capital) * 100) + ' of the investment' : ''})`,
+        `${st.ddFrom ? `The deepest fall ran from ${dayShort(st.ddFrom)} to ${dayShort(st.ddTo)}: ${inDD.length} trades, ${ddLosers.length} of them losers (${ddLosers.slice().sort((a, b) => a.net - b.net).slice(0, 3).map((t) => `${dayShort(t.entryDay)} ${inrS(t.net)}`).join(', ')}). A drawdown is a run of losses, so what cuts it is a smaller worst trade (a stop, or a locked profit) or fewer trades in the bad weeks (an entry filter).` : ''}
+        ${scn.length || vars.length ? `<table class="grid-tbl sugg-tbl"><thead><tr><th class="l">Tested, still profitable</th><th>Max drawdown</th><th>vs now</th><th>Net P&amp;L (now ${inrS(st.total)})</th><th>Worst trade (now ${inrS(st.maxLoss)})</th><th></th></tr></thead><tbody>
+          ${vars.map((x) => row(`<span class="cat-pill">${esc(x.group)}</span> ${esc(x.name)}`, x, `<button class="link" data-var="${x.key}">open it</button>`)).join('')}
+          ${scn.map((x) => row(`<span class="cat-pill">Scenario</span> ${esc(scText(x))}`, x, go(x))).join('')}
+        </tbody></table>` : '<div>None of the tested scenarios has a smaller drawdown while staying profitable.</div>'}
+        ${adj ? (variant ? '<div class="muted small">The adjustment rows are variations of the main strategy, tested on the same period.</div>' : '') : '<div class="muted small">Open the <b>Adjustments</b> tab and test the variations (stops, locked profit, entry filters, week-1 exit) to see which of them cut the drawdown: they are then listed here.</div>'}
+        <div class="muted small">Fewer lots scale the drawdown down in proportion, and the profit with it.</div>`);
+    }
+
     // Losers that were in profit first.
     const withPrem = losers.filter((t) => Math.abs(t.premium) > 0);
     const lv = [10, 20, 30, 50].map((p) => {
@@ -733,33 +968,81 @@
   // ---------- replay in the Builder ----------
   // The trade's original legs (not re-entries) at their backtest fills, on the trade's expiry and entry minute. Each
   // leg carries its strategy rule, so saving from the Builder keeps the rule, SL and target of legs left in place.
-  function replayTrade(i) {
-    const t = result.trades[i];
-    const s = result.strategy;
+  // The fills include the slippage, and the backtest's lot size and costs go along, so the Builder's P&L of the
+  // replayed trade ends on the trade's net P&L.
+  // Fill of an execution's entry / exit: the price after slippage (worked out for runs saved without it).
+  const fillOf = (x, opts, exit) => (exit ? x.exitFill : x.entryFill) ?? (exit ? x.exitPx : x.entryPx) * (1 + ((x.action === 'B') !== exit ? 1 : -1) * (opts.slippage || 0));
+  const replayTrade = (i) => replay(result.trades[i], result.strategy, result.opts, i);
+  function replay(t, s, opts, i) {
     const seen = new Set(); // a partial booking splits a leg into two executions with the same entry
     const legs = t.legs.filter((x) => !x.re && !x.rolled && x.entryDay === t.entryDay && x.entryTime === t.entryTime && !seen.has(x.leg) && seen.add(x.leg)).map((x) => ({
-      action: x.action, type: x.type, strike: x.strike, expiry: x.expiry, lots: s.legs[x.leg]?.lots, qty: x.qty, px: x.entryPx,
+      action: x.action, type: x.type, strike: x.strike, expiry: x.expiry, lots: s.legs[x.leg]?.lots, qty: x.qty, px: fillOf(x, opts, false),
       rule: s.legs[x.leg], ruleStrike: x.strike,
     }));
     document.querySelector('.modal-ov')?.remove();
     BT.emit('open-builder', {
       strategy: s, src: 'hist', expiry: t.ref, day: t.entryDay, time: t.entryTime,
       session: t.exitDay !== t.entryDay || s.mode === 'positional' ? 'multi' : 'intraday',
+      plan: replayPlan(t, s, opts),
+      lot: opts.lotMode === 'fixed' ? opts.lotSize : null, bt: { net: t.net, gross: t.gross, costs: t.costs },
       legs, note: `backtest trade #${i + 1} · ${dayShort(t.entryDay)} ${t.entryTime} · ended ${inrS(t.net)} (${REASON[t.reason] || t.reason})`,
+    });
+  }
+
+  // Everything the backtest did to the trade after its entry, in time order, for the Builder to repeat during the
+  // replay: rolls, re-entries, leg stops / targets, partial booking, expiry of a leg, and the final exit with its
+  // reason. Each step: { day, time, title, why, ops: [{ op: 'close' | 'open', action, type, strike, expiry, qty, lot, px }] }.
+  function replayPlan(t, s, opts) {
+    const lot = opts.lotMode === 'fixed' ? opts.lotSize : null;
+    const steps = new Map();
+    const at = (day, time) => { const k = day + ' ' + time; if (!steps.has(k)) steps.set(k, { day, time, ops: [], reasons: new Set() }); return steps.get(k); };
+    const op = (kind, x, px) => ({ op: kind, action: x.action, type: x.type, strike: x.strike, expiry: x.expiry, qty: x.qty, lot, px, ...(kind === 'open' ? { rule: s.legs[x.leg] } : {}) });
+    for (const x of t.legs) {
+      const initial = !x.re && !x.rolled && x.entryDay === t.entryDay && x.entryTime === t.entryTime;
+      if (!initial) { const e = at(x.entryDay, x.entryTime); e.ops.push(op('open', x, fillOf(x, opts, false))); e.reasons.add(x.rolled ? 'roll' : 're'); }
+      const e = at(x.exitDay, x.exitTime);
+      e.ops.push(op('close', x, fillOf(x, opts, true)));
+      e.reasons.add(x.reason);
+    }
+    const r = s.risk;
+    const amt = (v) => (v == null ? '' : r.unit === 'pct' ? `${v}% of capital` : inr(v));
+    const TEXT = {
+      roll: ['Roll the hedge into the next expiry', 'The near-week hedge is about to expire: close it and buy the same strike in the next expiry, as the strategy\'s roll rule says.'],
+      'mtm-tgt': ['Target reached — book the whole position', `The position\'s profit reached the overall target${r.tgt != null ? ' (' + amt(r.tgt) + ')' : r.tgtPrem != null ? ` (${r.tgtPrem}% of the entry premium)` : ''}: close every leg.`],
+      'mtm-sl': ['Overall stop-loss hit — exit everything', `The position\'s loss reached the overall stop${r.sl != null ? ' (' + amt(r.sl) + ')' : r.slPrem != null ? ` (${r.slPrem}% of the entry premium)` : ''}: close every leg.`],
+      'lock-trail': ['Locked profit given back — exit everything', 'The profit fell back to the locked / trailed floor: close every leg.'],
+      'leg-sl-all': ['A leg stop was hit — exit everything', 'The strategy closes the whole position when one leg is stopped.'],
+      'exit-time': ['Exit time of the strategy — close everything', `The strategy\'s exit (${s.mode === 'intraday' ? s.exit.time : (s.exit.dteDays ? s.exit.dteDays + ' trading days before expiry' : 'expiry day') + ' ' + s.exit.time}) is reached.`],
+      partial: ['Partial booking — close part of every leg', `The profit reached the partial-booking level${r.partialAt != null ? ' (' + amt(r.partialAt) + ')' : ''}: book ${r.partialPct}% of the lots and let the rest run.`],
+      sl: ['Leg stop-loss hit — exit that leg', 'The leg\'s own stop-loss was touched.'],
+      tgt: ['Leg target hit — exit that leg', 'The leg\'s own target was touched.'],
+      re: ['Re-entry', 'The strategy re-enters the leg that was closed.'],
+      expiry: ['A leg expired', 'This leg\'s expiry came before the position\'s exit: it is settled at its closing price.'],
+    };
+    const order = ['roll', 'mtm-tgt', 'mtm-sl', 'lock-trail', 'leg-sl-all', 'partial', 'sl', 'tgt', 're', 'expiry', 'exit-time'];
+    return [...steps.values()].sort((a, b) => (a.day + a.time).localeCompare(b.day + b.time)).map((e) => {
+      const main = order.find((k) => e.reasons.has(k)) || [...e.reasons][0];
+      const [title, why] = TEXT[main] || [REASON[main] || main, ''];
+      return { day: e.day, time: e.time, title, why, ops: [...e.ops.filter((o) => o.op === 'close'), ...e.ops.filter((o) => o.op === 'open')] };
     });
   }
 
   // ---------- trade detail ----------
   async function openTrade(i) {
     let d;
-    try { d = await BT.api(`/api/bt/trade?job=${jobId}&i=${i}`); } catch (e) { alert(e.message); return; }
-    const t = d.trade;
-    const p = d.path;
+    try {
+      if (!jobId) jobId = (await BT.runJob('/api/bt/run', { strategy: scan.strategy, opts: runOpts, scenario: { own: selSc.own, tgt: selSc.tgt, sl: selSc.sl, exit: selSc.exit } })).id;
+      d = await BT.api(`/api/bt/trade?job=${jobId}&i=${i}`);
+    } catch (e) { alert(e.message); return; }
+    tradeModal(d.trade, d.path, i, result.stats.capital, () => replayTrade(i));
+  }
+  // capital: the investment the trade's % is taken on. onReplay: what "Replay in Builder" does.
+  function tradeModal(t, p, i, capital, onReplay) {
     const ov = document.createElement('div');
     ov.className = 'modal-ov';
     ov.innerHTML = `<div class="modal panel">
       <div class="modal-head"><h3>Trade ${i + 1} · ${dayLabel(t.entryDay)} ${t.entryTime} → ${t.exitDay !== t.entryDay ? dayLabel(t.exitDay) + ' ' : ''}${t.exitTime}</h3>
-        <span class="${cls(t.net)} big">${inrS(t.net)} <span class="small">${ofCap(t.net)} of ${kinr(result.stats.capital)}</span></span><button class="btn-sm" data-replay="${i}" title="Open this trade in the Builder at its entry minute, to step through it and try adjustments">▶ Replay in Builder</button><button class="icon close">✕</button></div>
+        <span class="${cls(t.net)} big">${inrS(t.net)} <span class="small">${capital ? pct((t.net / capital) * 100) : '—'} of ${kinr(capital)}</span></span><button class="btn-sm" data-replay="${i}" title="Open this trade in the Builder at its entry minute, to step through it and try adjustments">▶ Replay in Builder</button><button class="icon close">✕</button></div>
       ${t.signal ? `<div class="sig-txt pad">⚡ Entry signal: ${esc(t.signal)}</div>` : ''}
       ${t.credit != null ? `<div class="muted small pad">Net credit at entry ${t.credit} pts per lot${t.partial ? ' · part of the lots booked early (partial booking)' : ''}</div>` : ''}
       ${t.notes?.length ? `<div class="dep-warn pad">${t.notes.map(esc).join('<br>')}</div>` : ''}
@@ -773,7 +1056,7 @@
     document.body.appendChild(ov);
     const close = () => ov.remove();
     ov.addEventListener('click', (e) => {
-      if (e.target.dataset.replay != null) { replayTrade(i); return; }
+      if (e.target.dataset.replay != null) { onReplay(); return; }
       if (e.target === ov || e.target.classList.contains('close')) close();
     });
     document.addEventListener('keydown', function k(e) { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', k); } });
@@ -815,7 +1098,7 @@
     URL.revokeObjectURL(a.href);
   }
 
-  window.addEventListener('viewchange', (e) => { if (e.detail === 'bt') { init(); settings.reload(); } });
-  if (window.app.state.view === 'bt') init();
-  window.BTView = { init };
+  window.addEventListener('viewchange', (e) => { if (e.detail === 'bt') { init(); settings.reload(); topTab = 'summary'; renderTop(); loadSaved(); } });
+  if (window.app.state.view === 'bt') { init(); loadSaved(); }
+  window.BTView = { init, tradeModal, replay };
 })();

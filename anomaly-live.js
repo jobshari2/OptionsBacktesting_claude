@@ -166,7 +166,7 @@ function createAnomalyLive({ getChain, getNextChain, data, isMarketOpen, demo, c
       const found = [];
       for (const t of enabled) {
         const p = config.params?.[t.id] || {};
-        for (const h of A.detect(t.id, ctx, p).slice(0, 3)) found.push(withTrade(h, p, s));
+        for (const h of A.detect(t.id, ctx, p).slice(0, t.maxLive || 3)) found.push(withTrade(h, p, s));
       }
       active = found;
       lastScan = { at: Date.now(), ok: true, reason: open ? null : 'market closed — showing the last session\'s chain, not logging' };

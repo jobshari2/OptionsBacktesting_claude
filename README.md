@@ -23,9 +23,10 @@ You need Node.js 22 or newer. Run `npm install` once (installs `protobufjs` for 
 | Tab | What it's for |
 | --- | --- |
 | **Chain** | Live option chain with support / resistance |
-| **Anomalies** | Option-pricing anomalies: live scanner, history scan, one-click strategy |
+| **Arbitrage** | Option arbitrage and fair-value deviations: live scanner, history scan, one-click strategy |
 | **Builder** | Manual / strategy trading on a historical replay or live (paper), payoff, P&L, adjustment suggestions |
 | **Backtest** | Build or load a strategy, run it over a period, study the results |
+| **Bi-weekly** | The bi-weekly hedge, its reverse and the two combined: every variation backtested over the whole history |
 | **Compare** | Backtest many strategies on the same days and rank them |
 | **Strategies** | Ready-made and saved strategies as cards (**+ New strategy**, edit / reset built-ins); **Deploy live** on an upcoming expiry |
 | **Data** | What history Upstox provides, what's cached, bulk prefetch |
@@ -107,9 +108,11 @@ Strategies are defined *relative to the market*, so one definition works on ever
 - **Capital:** leave empty to use an estimated margin for ROI.
 
 **Scenarios (every run)**
-- The Backtest tab opens on results: the loaded strategy (first visit: *BiWeekly Hedge-Hari*) is run once automatically with the saved settings. **Run backtest** re-runs it with whatever you change.
+- **Nothing runs when the Backtest tab opens.** It opens on the **Summary** tab, built from the saved backtests (`bt-data/backtests.json`): the **top 5 of the Bi-weekly Hedge** and the **top 5 of the Bi-weekly Hedge Reverse** by % profit as defined (**Show all strategies** lists the rest), with a card for the best one (investment, net P&L, % profit, trades, winners vs losers, profit vs loss, drawdown, profit factor). Strategies whose short options are not fully covered carry an "unlimited risk" tag. Click a strategy to see its saved result in **Details** and **Adjustments** without running it again.
+- **Run backtest** backtests the strategy in the editor with the settings in the bar and replaces its saved result; **Backtest all strategies** (Summary tab) does that for every strategy. Looking at a scenario or variation other than the stored one computes just that one.
 - Each run tests the strategy as defined plus every combination of **take profit** (none, 10 % … 90 % of the net credit; up to 200 % for debit positions), **overall stop-loss** (none, 50 / 100 / 200 % of the credit; 25 / 50 / 75 % of a debit) and **exit** (positional: expiry day or 1–3 trading days before; intraday: 11:00, 12:30, 14:00, 15:15). Entries, strikes, leg stops, rolls and filters stay as defined.
 - The table lists them with the most profitable on top (click a column to sort; combinations with the same result share a row). Click a row: the KPIs, **Monthly / Breakdown / Suggestions / Trades** tabs and the equity curve below show that scenario. **Use in editor** copies its rules into the strategy ("% of premium" under Overall position).
+- **Suggestions** also has a *Reducing the max drawdown* card: when the deepest fall happened, and the tested scenarios and adjustment variations (once tested in the Adjustments tab) that had a smaller drawdown while staying profitable, each with a link to open it.
 - **Suggestions** analyses the losing trades of the selected scenario: which tested rule did better, losers that were in profit first, which side (calls / puts) lost, how much room a stop needs, thin-credit entries.
 - **Details / Adjustments tabs:** *Details* is everything above. *Adjustments* lists the strategy with one adjustment changed at a time (week-1 exit instead of the roll, roll timing, take profit, overall stop, leg stops and re-entry, entry filters, the reverse position; `bt/adjustments.js`), each backtested with the same settings and ranked by net P&L. Click a variation to open it in Details; **◂ As defined** goes back, **Use in editor** copies it into the editor.
 - **Investment and % profit:** the investment is the Capital in the settings bar (else the largest estimated margin of the trades). Net P&L is also shown as a % of it in the KPIs, both tables, the monthly grid, the breakdowns, each trade and the CSV.
@@ -136,6 +139,18 @@ Strategies are defined *relative to the market*, so one definition works on ever
 Signal strategies also show how many sessions had a signal, and each trade lists the signal that triggered it (also in the CSV).
 
 Margin is estimated: about 9% of notional per naked short lot, capped at the defined risk for spreads, with partial offset for straddles and strangles. Use **Capital** for your own figure.
+
+## Bi-weekly (hedge, reverse, combined)
+
+One screen for the two bi-weekly strategies. The menu on the left picks **Bi-weekly Hedge**, **Bi-weekly Hedge Reverse** or **Combined**; each has the same three tabs.
+
+- **Backtest all variations** runs every variation of both strategies over the period in the bar (by default the whole option history, about two years, on ₹5 L): the adjustment variations of *BiWeekly Hedge-Hari* and of the built-in reverse (`bt/adjustments.js`) plus the built-in bi-weekly variants. The headline numbers are saved in `bt-data/biweekly.json` and shown next time without running anything.
+- **Short strikes:** *By premium* keeps the strikes as the strategies define them (≈₹105 / ≈₹120); *Points OTM* sells the call and the put that many points from spot (100 by default) in every variation. It applies on the next **Backtest all variations**.
+- **New trade every week (overlapping):** ticked (the default), a position is entered at the start of every weekly series even while the previous one is still open; each is its own trade and all are in the results, so up to two positions (twice the capital) are open at once. Unticked, those weeks are skipped as "previous trade still open".
+- **Summary:** the best variation (highest net P&L among those whose short options stay hedged; "unlimited risk" ones are listed but never picked) and the top 5, with the P&L per year.
+- **Details:** KPIs, monthly grid, breakdown, trades (click one for its minute-by-minute P&L, **▶ Replay** for the Builder), skipped expiries and the equity curve of one variation. **Open in Backtest ▸** puts it in the editor.
+- **Adjustments:** every variation ranked; click a row to open it in Details.
+- **Combined:** the hedge and the reverse as **one position**: the 4 legs of each (8 legs) are entered together, with one target / stop on the whole position, one exit, and one trade in the results (so **▶ Replay** puts all of them in the Builder). It has its own adjustment variations, plus the legs of the best hedge and best reverse variation put together. *Capital*, *Hedge lots* and *Reverse lots* are set at the top (2 + 2 lots to start with); **Apply** backtests the combined variations again. The net-credit and covered-risk entry checks are the two strategies' limits added up.
 
 ## Compare
 
@@ -194,7 +209,7 @@ Each card shows a payoff sketch and three buttons:
 
 A level below spot is support, above is resistance. Levels for a day use only earlier sessions, so backtests have no look-ahead. They are used on the Chain tab, in strategy conditions/strikes/stops, in Deploy live, and in the Builder's suggestions.
 
-## Anomalies
+## Arbitrage (anomaly scanner)
 
 The screen runs only **arbitrages that can actually be traded**: structures on Nifty's European, cash-settled options that cannot lose if held to expiry (before brokerage and taxes). They run on the nearest weekly expiry, live and in history, nearest the money first.
 
@@ -204,6 +219,7 @@ The screen runs only **arbitrages that can actually be traded**: structures on N
 | Butterfly arbitrage | a long 1 − 2 + 1 fly (equal wings, 1 strike by default) pays a credit ≥ 0.5 pts | buy the fly |
 | Box spread arbitrage | a box between two strikes (up to 6 apart) can be bought for ≥ 2 pts less, or sold for ≥ 2 pts more, than its discounted width | buy / sell the box |
 | Calendar arbitrage (calls) | the next expiry's call can be bought for ≥ 0.5 pts less than the same strike's call on this expiry sells for | sell this expiry, buy the next |
+| Fair value deviation (a relative-value signal, **not** risk-free) | an option can be sold above / bought below its fair value by ≥ 2 pts and ≥ 5 %. Fair value = Black-76 on the chain's forward at the volatility of the neighbouring strikes | rich: sell it, buy the next strike out; cheap: buy it, sell the next strike out; exit when it is back at fair value |
 
 **Only what can be filled is reported.** Live, every leg is priced where it would really trade (sells at the bid, buys at the ask) and the book must hold at least *Fillable ≥ N lots* of the whole structure on that side (a butterfly body needs twice that); a leg with no bid, no ask or too little quantity drops the hit, and each hit shows how many lots the book can fill. History has no order book, so every leg must have traded within the last minute (*Traded within*) and is priced at its last trade. Put-call parity / conversions and options below intrinsic value are left out on purpose: locking those in needs a futures or index leg.
 
@@ -217,6 +233,8 @@ Every threshold, the cooldown (one alert per anomaly/strike per N minutes) and w
 - **Source:** *Historical replay* (any expired expiry, start on any day of its last ~5 weeks at any time) or *Live (paper)* on an upcoming expiry (prices refresh every 5 s; entries/exits are recorded at LTP — no orders are sent).
 - **Chain (left):** LTP, delta, IV (and OI live) with **B** / **S** buttons per strike, S/R tags, open-position markers. Or pick any built-in / saved strategy and **Apply** it at the current time (strike rules resolved on the chain; lots multiplier).
 - **Payoff (right):** at expiry and now (T+0), spot, ±1σ and breakevens; credit/debit, max profit/loss, chance of profit, net Greeks.
+- **Replaying a backtest trade (▶ Replay in the Backtest's Trades tab):** the Builder gets the trade's entry legs and everything the backtest did afterwards (roll, leg stops / targets, re-entries, partial booking, target / stop / time exit). They are listed above the suggestions as *Adjustments from the backtest* (Next / Later / Done). **▶ Step** and **⏵ Auto play** land on each one's minute, make the same trades at the backtest's prices and show an alert saying what was done and why; auto play stops when the trade is finished. The replay uses the backtest's fills (slippage included) and lot size, and the P&L header also shows the total **after costs** (the trade's brokerage and taxes), which ends on the trade's Net P&L in the backtest.
+- **Saved trades:** **💾 Save trade** keeps the position in the Builder — a live paper trade or a replay — with its legs, entries and exits, log and P&L (`bt-data/paper-trades.json`). The **Trades** tab lists them all: mode, expiry, open legs, realised / open / total P&L at the last save and, for live paper trades, the total at current prices (**↻ Live P&L**). **Load** puts a trade back in the Builder with its payoff, positions and P&L; adjust it and press **Save changes** (or **Save as new…** for a copy).
 - **Replay:** step 1, 3, 5, 10, 15, 30 min, 1 h, 2 h or 1 day — **▶ Step** manually or **⏵ Auto play** at 0.5–4 s per step. *Intraday* stops (and squares off) at the close; *Multi-day* carries the position overnight to expiry, where open legs settle.
 - **Positions & P&L:** every leg with entry/now/exit, P&L, delta, **Exit**, roll one strike ◀ ▶, realised/open/total, a P&L-vs-Nifty chart over the replay, and a trade log.
 - **Adjustment suggestions:** a rule book of published techniques, re-evaluated every step, ranked *Act now / Consider / Option / OK*, each with the reasoning, source and an **Apply** button that places the orders at current prices:
@@ -245,6 +263,7 @@ Every threshold, the cooldown (one alert per anomaly/strike per N minutes) and w
 | `bt/histchain.js` | Rebuilds a past chain at any minute from cached candles |
 | `bt/scan.js` | History scan with forward outcomes |
 | `bt/conditions.js` | Signal entry conditions (anomaly, S/R, move, range) |
+| `bt/biweekly.js`, `public/bw-view.js` | The Bi-weekly screen: variations of the hedge, of its reverse, and of the two as one position |
 | `bt/research.js` | Online adjustment research (Claude + web search) |
 | `anomaly-live.js` | Live anomaly scanner and daily log |
 | `public/an-view.js` | Anomalies screen |

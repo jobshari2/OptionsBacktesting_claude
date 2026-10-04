@@ -87,7 +87,7 @@ async function runScan(data, hist, raw, onProgress = () => {}) {
 
 const r2 = (x) => Math.round(x * 100) / 100;
 const hhmm = (m) => { const t = m + 555; return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`; };
-const pick = (h) => ({ type: h.type, strike: h.strike, ref: h.ref ?? null, side: h.side, dir: h.dir, value: r2(h.value), unit: h.unit, text: h.text, arb: Boolean(h.arb) });
+const pick = (h) => ({ type: h.type, strike: h.strike, ref: h.ref ?? null, side: h.side, dir: h.dir, value: r2(h.value), unit: h.unit, text: h.text, arb: Boolean(h.arb), ...(h.fair != null ? { fair: h.fair, mkt: h.mkt, pct: h.pct } : {}) });
 
 // Strike for a suggested leg: 'signal' = n strikes from the hit (or ref) strike; 'atm' = n strikes OTM.
 function legStrike(def, h, ks, spot) {

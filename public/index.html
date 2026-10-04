@@ -14,11 +14,13 @@
     <div class="brand">NIFTY 50 <span id="source" class="source hidden"></span></div>
     <nav class="tabs" id="tabs">
       <button data-view="chain" class="on" title="Live option chain with support and resistance">Chain</button>
-      <button data-view="an" title="Option-pricing anomalies: live scanner and history scan">Anomalies</button>
+      <button data-view="an" title="Option arbitrage and fair-value deviations: live scanner and history scan">Arbitrage</button>
       <button data-view="lib" title="Ready-made and saved strategies; deploy one on the live chain">Strategies</button>
       <button data-view="bt" title="Backtest a strategy on historical 1-minute option data">Backtest</button>
+      <button data-view="bw" title="The bi-weekly hedge, its reverse and the two combined: every variation backtested over the whole history">Bi-weekly</button>
       <button data-view="cmp" title="Backtest several strategies on the same period and rank them">Compare</button>
       <button data-view="sb" title="Build and trade a position on a historical replay or the live chain, with payoff and adjustment suggestions">Builder</button>
+      <button data-view="tr" title="Trades saved from the Builder: live paper trades and replays; load one back into the Builder">Trades</button>
       <button data-view="data" title="Historical data availability and cache">Data</button>
     </nav>
     <div class="stat"><span class="label">Spot</span><span id="spot" class="value big">—</span></div>
@@ -109,11 +111,11 @@
     </aside>
   </main>
 
-  <!-- ===== Anomalies ===== -->
+  <!-- ===== Arbitrage (anomaly scanner) ===== -->
   <main id="an" class="an-screen hidden">
     <aside class="panel an-types">
       <div class="bt-edit-head">
-        <div class="cmp-head"><b>Anomaly types</b>
+        <div class="cmp-head"><b>Arbitrage types</b>
           <span><button class="btn-sm ghost" id="anAll">All</button> <button class="btn-sm ghost" id="anNone">None</button></span></div>
         <div class="muted small">Tick the types to scan, tune thresholds, then scan live or across history.</div>
       </div>
@@ -140,8 +142,8 @@
     <section class="panel sb-replay" id="sbReplay"></section>
     <div class="sb-grid" id="sbGrid">
       <section class="panel sb-chain">
-        <div class="panel-head"><h3>Option chain <span class="muted small" id="sbChainInfo"></span></h3>
-          <span class="small"><label class="mini" title="Lots for the B / S buttons in this chain. Overrides the Lots at the top; leave empty to use that one.">Lots <input class="num xs" type="number" id="sbChainLots" min="1" step="1"></label> <select id="sbChainExp" title="Expiry shown in the chain: pick a different one to add legs of another expiry (calendar / diagonal spreads)"></select> <button class="btn-sm ghost" id="sbChainToggle" title="Minimize / restore the option chain">▾ Minimize</button> <select id="sbWidth"><option value="6">ATM ± 6</option><option value="10" selected>ATM ± 10</option><option value="15">ATM ± 15</option><option value="20">ATM ± 20</option><option value="30">ATM ± 30</option></select></span></div>
+        <div class="panel-head" id="sbChainHead" title="Click the header to minimize / restore the option chain"><h3><span id="sbChainCaret">▾</span> Option chain <span class="muted small" id="sbChainInfo"></span></h3>
+          <span class="small"><label class="mini" title="Lots for the B / S buttons in this chain. Overrides the Lots at the top; leave empty to use that one.">Lots <input class="num xs" type="number" id="sbChainLots" min="1" step="1"></label> <span id="sbChainExp" class="sb-exps" title="Expiry shown in the chain: pick a different one to add legs of another expiry (calendar / diagonal spreads)"></span> <select id="sbWidth"><option value="6">ATM ± 6</option><option value="10" selected>ATM ± 10</option><option value="15">ATM ± 15</option><option value="20">ATM ± 20</option><option value="30">ATM ± 30</option></select></span></div>
         <div class="tbl-wrap sb-chain-wrap" id="sbChain"></div>
       </section>
       <section class="panel sb-payoff">
@@ -151,12 +153,11 @@
         <div class="pay-ctl" id="sbPayCtl"></div>
         <div class="chart-box sb-pay-chart"><canvas id="sbPayChart"></canvas></div>
       </section>
-      <section class="panel sb-pos">
-        <div class="panel-head"><h3>Positions &amp; P&amp;L</h3><span id="sbPnlHead" class="small"></span></div>
+      <section class="panel sb-pos empty" id="sbPosPanel">
+        <div class="panel-head"><h3>Positions &amp; P&amp;L</h3><span class="muted small pos-hint">No positions yet: click <b>B</b> or <b>S</b> in the chain, or <b>Apply</b> a strategy.</span></div>
         <div class="sb-pos-body">
           <div id="sbPos"></div>
-          <div class="chart-box sb-mtm-chart"><canvas id="sbMtmChart"></canvas></div>
-          <div id="sbLog" class="sb-log"></div>
+          <div id="sbPnlHead" class="sb-pnl-row"></div>
         </div>
       </section>
       <section class="panel sb-arbp">
@@ -170,6 +171,11 @@
         <div id="sbResearchOut" class="sb-research hidden"></div>
       </section>
     </div>
+  </main>
+
+  <!-- ===== Saved trades (from the Builder) ===== -->
+  <main id="tr" class="sb-screen hidden">
+    <section class="panel sb-trades" id="sbTrades"></section>
   </main>
 
   <!-- ===== Backtest ===== -->
@@ -195,6 +201,16 @@
     <section class="bt-main">
       <div class="panel bt-settings" id="btSettings"></div>
       <div id="btResults" class="bt-results"></div>
+    </section>
+  </main>
+
+  <!-- ===== Bi-weekly hedge / reverse / combined ===== -->
+  <main id="bw" class="bt-screen bw-screen hidden">
+    <aside class="panel bw-menu" id="bwMenu"></aside>
+    <section class="bt-main">
+      <div class="panel bt-settings" id="bwSettings"></div>
+      <div class="panel top-bar bw-cfg" id="bwStrikes"></div>
+      <div id="bwResults" class="bt-results"></div>
     </section>
   </main>
 
@@ -237,6 +253,7 @@
   <script src="bt-common.js"></script>
   <script src="payoff.js"></script>
   <script src="bt-view.js"></script>
+  <script src="bw-view.js"></script>
   <script src="cmp-view.js"></script>
   <script src="lib-view.js"></script>
   <script src="data-view.js"></script>

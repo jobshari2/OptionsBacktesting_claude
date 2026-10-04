@@ -15,6 +15,7 @@ const { buildAdjustments } = require('./adjustments');
 const { evaluate } = require('./conditions');
 const A = require('./anomalies');
 const { createResearch } = require('./research');
+const { createBiweekly } = require('./biweekly');
 const { MPD } = require('./data');
 
 function createBacktester({ getToken, upstoxGet, cacheDir, storeFile, logError }) {
@@ -66,6 +67,30 @@ function createBacktester({ getToken, upstoxGet, cacheDir, storeFile, logError }
       spot: Array.from({ length: MPD }, (_, m) => Math.round(sp[m * 4 + 3] * 100) / 100),
       ce: ks.map((k) => res.get(k + 'CE')), pe: ks.map((k) => res.get(k + 'PE')),
     };
+  }
+
+  // ---------- Builder: saved trades ----------
+  // Positions built in the Builder (live paper trades and replays), each with its whole Builder state (legs with
+  // their entries and exits, log, P&L curve) so it can be loaded back, adjusted and saved again. bt-data/paper-trades.json.
+  const tradesFile = path.join(path.dirname(storeFile), 'paper-trades.json');
+  function readTrades() {
+    try { return JSON.parse(fs.readFileSync(tradesFile, 'utf8')); } catch { return []; }
+  }
+  function writeTrades(list) {
+    fs.mkdirSync(path.dirname(tradesFile), { recursive: true });
+    fs.writeFileSync(tradesFile + '.tmp', JSON.stringify(list));
+    fs.renameSync(tradesFile + '.tmp', tradesFile);
+  }
+  function saveTrade(b) {
+    if (!Array.isArray(b?.snap?.legs) || !b.snap.legs.length) throw new Error('Nothing to save: the position has no legs');
+    const list = readTrades();
+    const old = list.find((x) => x.id === b.id);
+    const t = {
+      id: old ? old.id : 'pt-' + Date.now().toString(36), name: String(b.name || old?.name || 'Paper trade').slice(0, 80),
+      createdAt: old?.createdAt || Date.now(), savedAt: Date.now(), summary: b.summary || {}, snap: b.snap,
+    };
+    writeTrades(old ? list.map((x) => (x.id === t.id ? t : x)) : [...list, t]);
+    return t;
   }
 
   // ---------- saved strategies ----------
@@ -168,7 +193,7 @@ function createBacktester({ getToken, upstoxGet, cacheDir, storeFile, logError }
   // headline numbers of each run are kept; the page re-runs the scenario it wants to look at in detail.
   // Expired data never changes, so a scan is kept (memory + bt-data/scenario-cache.json) until the strategy, the
   // settings or the last expired expiry change: the all-strategies overview and repeat runs are then instant.
-  const SCAN_VERSION = 4; // bump when the engine or the scenario grid changes what a scan returns
+  const SCAN_VERSION = 8; // bump when the engine or the scenario grid changes what a scan returns
   const scanFile = path.join(path.dirname(storeFile), 'scenario-cache.json');
   let scanCache = null;
   function scans() {
@@ -187,6 +212,10 @@ function createBacktester({ getToken, upstoxGet, cacheDir, storeFile, logError }
   }
   const scanKey = (strategy, opts, cal) => crypto.createHash('sha1')
     .update(JSON.stringify([SCAN_VERSION, normalizeStrategy(strategy), opts, cal.expired[cal.expired.length - 1]])).digest('hex');
+
+  // On cached data a backtest never waits for I/O, so a long series of them would keep the server from answering
+  // anything else (the page's progress polls included): let the event loop run between two backtests.
+  const breathe = () => new Promise((r) => setImmediate(r));
 
   async function scanScenarios(job, strategy, opts, { label = '', persist = true, progress = true } = {}) {
     const cal = await data.expiryCalendar();
@@ -208,6 +237,7 @@ function createBacktester({ getToken, upstoxGet, cacheDir, storeFile, logError }
     const todo = base.trades.length ? list.filter((x) => x !== own) : [];
     for (const [i, sc] of todo.entries()) {
       say({ phase: 'Testing scenarios', done: i, total: todo.length });
+      await breathe();
       try {
         rows.push({ ...sc, ...lite(await runBacktest(data, applyScenario(base.strategy, sc), opts, () => {}, ext)) });
       } catch (e) {
@@ -219,20 +249,68 @@ function createBacktester({ getToken, upstoxGet, cacheDir, storeFile, logError }
     if (persist) saveScans();
     return view;
   }
-  const startScenarios = (strategy, opts) => startJob('scenarios', async (job) => ({ view: await scanScenarios(job, strategy, opts) }));
+  // ---------- saved backtests ----------
+  // The result of every "Run backtest" is kept in bt-data/backtests.json, one entry per strategy (its id, else its
+  // name): the scenario scan, the full run of its best scenario and, once tested, its adjustment variations. The
+  // Backtest screen opens on these (Summary tab) and shows them without running anything again.
+  const resultsFile = path.join(path.dirname(storeFile), 'backtests.json');
+  let results = null;
+  function savedResults() {
+    if (!results) { try { results = JSON.parse(fs.readFileSync(resultsFile, 'utf8')); } catch { results = {}; } }
+    return results;
+  }
+  function writeResults() {
+    try {
+      fs.mkdirSync(path.dirname(resultsFile), { recursive: true });
+      fs.writeFileSync(resultsFile + '.tmp', JSON.stringify(results));
+      fs.renameSync(resultsFile + '.tmp', resultsFile);
+    } catch (e) { logError('bt-results', e); }
+  }
+  const resultKey = (s) => s.id || 'name:' + String(s.name || 'Untitled');
+  const bestOf = (rows) => rows.reduce((b, x) => (x.stats.trades && x.stats.total > b.stats.total ? x : b), rows[0]);
+  const runView = (r) => ({ strategy: r.strategy, opts: r.opts, stats: r.stats, trades: r.trades, skipped: r.skipped.slice(0, 200), skippedCount: r.skipped.length, considered: r.considered, noSignal: r.noSignal });
+  async function saveResult(job, strategy, opts, view) {
+    const best = bestOf(view.scenarios);
+    const detail = runView(await runOne(job, applyScenario(view.strategy, best), opts, 'Saving · '));
+    const key = resultKey(strategy);
+    const lib = strategy.id && findStrategy(strategy.id);
+    savedResults()[key] = {
+      key, id: strategy.id || null, name: view.strategy.name, category: strategy.id?.startsWith('my-') ? 'Mine' : lib?.category || view.strategy.category,
+      at: Date.now(), optsRaw: opts, scan: view, detail, detailKey: best.key, adj: null,
+    };
+    writeResults();
+  }
+  // What the Summary tab lists: the headline numbers only.
+  const resultSummary = (e) => ({
+    key: e.key, id: e.id, name: e.name, category: e.category, at: e.at, opts: e.scan.opts, strategy: e.scan.strategy, debit: e.scan.debit,
+    tested: e.scan.scenarios.length, own: e.scan.scenarios[0], best: bestOf(e.scan.scenarios), adjustments: e.adj ? e.adj.rows.length : 0,
+  });
+
+  // save: this is a "Run backtest" (not a look at a variation): keep the result.
+  const startScenarios = (strategy, opts, save) => startJob('scenarios', async (job) => {
+    const view = await scanScenarios(job, strategy, opts);
+    if (save) await saveResult(job, strategy, opts, view);
+    return { view };
+  });
 
   // Adjustment variations of a strategy (adjustments.js), each run as defined: one row of headline numbers per
   // variation, with the complete strategy so the page can open any of them in detail. Cached like the scans.
-  function startAdjustments(strategy, opts) {
+  function startAdjustments(strategy, opts, save) {
     return startJob('adjustments', async (job) => {
       const cal = await data.expiryCalendar();
       const key = 'adj-' + scanKey(strategy, opts, cal);
+      const keep = (view) => { // attach to the saved backtest of the same strategy and settings
+        const e = save && savedResults()[resultKey(strategy)];
+        if (e && JSON.stringify(e.optsRaw) === JSON.stringify(opts)) { e.adj = view; writeResults(); }
+        return { view };
+      };
       const hit = scans().get(key);
-      if (hit) return { view: hit };
+      if (hit) return keep(hit);
       const list = buildAdjustments(strategy);
       const rows = [];
       for (const [i, v] of list.entries()) {
         job.progress = { phase: 'Testing adjustments · ' + v.name, done: i, total: list.length };
+        await breathe();
         try {
           const r = await runBacktest(data, v.strategy, opts, () => {}, ext);
           const st = computeStats(r.trades, r.opts.capital);
@@ -244,36 +322,33 @@ function createBacktester({ getToken, upstoxGet, cacheDir, storeFile, logError }
       }
       const view = { rows, at: Date.now() };
       // A run that failed for missing data (not logged in) is not kept: it should be retried.
-      if (!rows.some((x) => x.error)) { scans().set(key, view); saveScans(); }
+      if (!rows.some((x) => x.error)) { scans().set(key, view); saveScans(); return keep(view); }
       return { view };
     });
   }
 
-  // Every saved and built-in strategy scanned with the same settings: its result as defined and its best scenario.
-  // One overview runs at a time; asking again for the same settings joins the running job.
+  // "Backtest all strategies": every saved and built-in strategy scanned with the same settings and saved.
+  // One runs at a time; asking again for the same settings joins the running job.
   let overviewJob = null;
   function startOverview(opts) {
     const tag = JSON.stringify(opts);
     if (overviewJob?.status === 'running' && overviewJob.tag === tag) return overviewJob;
     overviewJob = startJob('overview', async (job) => {
       const list = [...saved(), ...library()];
-      const rows = [];
+      const failed = [];
       for (const [i, s] of list.entries()) {
         const label = `${i + 1}/${list.length} ${s.name} · `;
         job.progress = { phase: label + 'starting', done: i, total: list.length };
-        const row = { id: s.id, name: s.name, category: s.id?.startsWith('my-') ? 'Mine' : s.category };
         try {
-          const v = await scanScenarios(job, s, opts, { label, persist: false, progress: false });
-          const best = v.scenarios.reduce((b, x) => (x.stats.trades && x.stats.total > b.stats.total ? x : b), v.scenarios[0]);
-          Object.assign(row, { strategy: v.strategy, debit: v.debit, tested: v.scenarios.length, own: v.scenarios[0], best });
+          const view = await scanScenarios(job, s, opts, { label, persist: false, progress: false });
+          await saveResult({ progress: {} }, s, opts, view);
         } catch (e) {
-          row.error = e.message;
+          failed.push({ name: s.name, error: e.message });
           logError('bt-overview', e, s.name);
         }
-        rows.push(row);
       }
       saveScans();
-      return { view: { rows, at: Date.now() } };
+      return { view: { done: list.length - failed.length, failed } };
     });
     overviewJob.tag = tag;
     return overviewJob;
@@ -346,6 +421,9 @@ function createBacktester({ getToken, upstoxGet, cacheDir, storeFile, logError }
       return { view: { expiries: list.length, contracts: tasks.length, failed } };
     });
   }
+
+  // ---------- the Bi-weekly screen ----------
+  const bw = createBiweekly({ data, ext, dir: path.dirname(storeFile), startJob, settle, breathe, findStrategy, library, logError });
 
   // ---------- live deployment on the current chain ----------
   const chainCache = new Map();
@@ -512,6 +590,9 @@ function createBacktester({ getToken, upstoxGet, cacheDir, storeFile, logError }
         const extra = (url.searchParams.get('extra') || '').split(',').map(Number).filter((x) => x > 0);
         return sendJson(res, 200, await builderDay(url.searchParams.get('expiry'), url.searchParams.get('day'), Math.min(30, Number(url.searchParams.get('width')) || 15), extra));
       }
+      if (p === '/api/sb/trades' && req.method !== 'POST') return sendJson(res, 200, { trades: readTrades() });
+      if (p === '/api/sb/trades' && req.method === 'POST') return sendJson(res, 200, { trade: saveTrade(await readJson(req, 3_000_000)) });
+      if (p === '/api/sb/trades/delete' && req.method === 'POST') { const id = (await readJson(req)).id; writeTrades(readTrades().filter((x) => x.id !== id)); return sendJson(res, 200, { ok: true }); }
       if (p === '/api/sb/research' && req.method === 'POST') return sendJson(res, 200, await researcher.research((await readJson(req)).summary));
       if (p === '/api/bt/levels') {
         const lv = await levelsFor(url.searchParams.get('day'));
@@ -523,12 +604,19 @@ function createBacktester({ getToken, upstoxGet, cacheDir, storeFile, logError }
       }
       if (p === '/api/bt/scenarios' && req.method === 'POST') {
         const b = await readJson(req);
-        return sendJson(res, 200, await settle(startScenarios(b.strategy, b.opts || {})));
+        return sendJson(res, 200, await settle(startScenarios(b.strategy, b.opts || {}, Boolean(b.save))));
       }
       if (p === '/api/bt/adjustments' && req.method === 'POST') {
         const b = await readJson(req);
-        return sendJson(res, 200, await settle(startAdjustments(b.strategy, b.opts || {})));
+        return sendJson(res, 200, await settle(startAdjustments(b.strategy, b.opts || {}, Boolean(b.save))));
       }
+      if (p === '/api/bt/results' && req.method !== 'POST') return sendJson(res, 200, { results: Object.values(savedResults()).map(resultSummary) });
+      if (p === '/api/bt/result') {
+        const e = savedResults()[url.searchParams.get('key')];
+        return e ? sendJson(res, 200, e) : sendJson(res, 404, { error: 'No saved backtest for this strategy — run it' });
+      }
+      if (p === '/api/bt/results/delete' && req.method === 'POST') { delete savedResults()[(await readJson(req)).key]; writeResults(); return sendJson(res, 200, { ok: true }); }
+      if (p.startsWith('/api/bt/bw/')) return await bw.handle(req, res, p, sendJson, readJson);
       if (p === '/api/bt/overview' && req.method === 'POST') return sendJson(res, 200, await settle(startOverview((await readJson(req)).opts || {})));
       if (p === '/api/bt/compare' && req.method === 'POST') {
         const b = await readJson(req, 2_000_000);

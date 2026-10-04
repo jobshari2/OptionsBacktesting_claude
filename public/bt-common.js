@@ -668,4 +668,15 @@
   const load = () => loadMeta().catch((e) => emit('meta-error', e));
   window.addEventListener('viewchange', (e) => { if (e.detail !== 'chain') load(); });
   if (window.app?.state.view !== 'chain') load();
+  // Keep the expiry calendar current while the page stays open (new weekly expiries get listed, old ones expire):
+  // re-read it every 15 minutes and redraw only when it changed.
+  setInterval(async () => {
+    if (!meta.loaded || document.hidden) return;
+    try {
+      const m = await api('/api/bt/meta');
+      if (!m.calendar || JSON.stringify(m.calendar) === JSON.stringify(meta.calendar)) return;
+      meta.calendar = m.calendar;
+      emit('meta', meta);
+    } catch {}
+  }, 15 * 60_000);
 })();

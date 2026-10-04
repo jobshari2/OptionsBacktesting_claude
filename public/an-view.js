@@ -1,4 +1,4 @@
-// Anomalies screen: pick anomaly types and thresholds on the left; on the right either the live scanner
+// Arbitrage screen (the anomaly scanner): pick anomaly types and thresholds on the left; on the right either the live scanner
 // (what is firing on the chain now, today's log, suggested trades with Deploy / Backtest) or a history scan
 // (every occurrence over a period and what its suggested trade made afterwards).
 (() => {
@@ -161,10 +161,36 @@
     </tr>`;
   }
 
+  // One fair-value deviation: what to do with it and what it is worth per lot if the price comes back to fair.
+  function fvRow(h, i) {
+    const rich = h.dir === 'rich';
+    const lot = BT.meta.calendar?.liveLot || 65;
+    const hedge = (h.legs || [])[1];
+    return `<tr>
+      <td class="l"><b>${h.strike} ${h.side}</b></td>
+      <td><span class="dir-pill ${rich ? 'neg' : 'pos'}">${rich ? 'Overpriced' : 'Underpriced'}</span></td>
+      <td>${num(h.mkt)}<div class="muted small">${rich ? 'bid' : 'ask'}</div></td>
+      <td>${num(h.fair)}</td>
+      <td class="b ${rich ? 'neg' : 'pos'}">${rich ? '+' : '−'}${num(h.value)} pts</td>
+      <td>${num(h.pct, 1)}%</td>
+      <td>${h.ivMkt == null ? '—' : num(h.ivMkt, 1) + '%'} <span class="muted">vs ${num(h.ivFair, 1)}%</span></td>
+      <td>${h.fit == null ? '—' : h.fit + ' lot' + (h.fit === 1 ? '' : 's')}</td>
+      <td class="l wrap"><b class="${rich ? 'neg' : 'pos'}">${rich ? 'SELL' : 'BUY'}</b> ${h.strike} ${h.side} at ${num(h.mkt)}${hedge ? ` and <b class="${rich ? 'pos' : 'neg'}">${rich ? 'BUY' : 'SELL'}</b> ${hedge.strike} ${hedge.type} to cap the risk` : ''}.
+        <div class="muted small">Worth about <b>${inrS(Math.round(h.value * lot))}</b> per lot if it returns to fair value (${num(h.fair)}); exit there.</div></td>
+      <td class="nowrap"><button class="btn-sm ghost" data-dep="${i}" data-list="active" title="Resolve this trade on the live chain (Strategies tab)">Deploy ▸</button>
+        <button class="btn-sm ghost" data-hbt="${i}" data-list="active" title="Backtest this as a signal strategy">Backtest ▸</button></td>
+    </tr>`;
+  }
+
   function renderLive() {
     const s = liveState;
     const m = s.metrics;
     const st = s.status || {};
+    // fair-value deviations get their own table; the rest are the risk-free arbitrages
+    const fvType = typeOf('fv');
+    const all = s.active.map((h, i) => [h, i]);
+    const fvs = all.filter(([h]) => h.type === 'fv');
+    const arbs = all.filter(([h]) => h.type !== 'fv');
     const tile = (l, v, sub = '') => `<div class="kpi"><span class="k-l">${l}</span><span class="k-v">${v}</span><span class="k-s">${sub}</span></div>`;
     $('anLive').innerHTML = `
       <div class="panel res-head">
@@ -180,9 +206,15 @@
       </div>
       <div class="panel">
         <div class="chart-head"><h3>Firing now</h3><span class="muted small">re-evaluated every 5 s · IV figures use trading time</span></div>
-        ${s.active.length ? `<div class="tbl-wrap"><table class="grid-tbl an-tbl"><thead><tr><th class="l">Anomaly</th><th>Strike</th><th>Dir</th><th>Size</th><th class="l">Detail</th><th class="l">Suggested trade</th><th></th></tr></thead>
-          <tbody>${s.active.map((h, i) => hitRow(h, i, 'active', false)).join('')}</tbody></table></div>` : '<div class="muted pad">Nothing firing with the current thresholds.</div>'}
+        ${arbs.length ? `<div class="tbl-wrap"><table class="grid-tbl an-tbl"><thead><tr><th class="l">Anomaly</th><th>Strike</th><th>Dir</th><th>Size</th><th class="l">Detail</th><th class="l">Suggested trade</th><th></th></tr></thead>
+          <tbody>${arbs.map(([h, i]) => hitRow(h, i, 'active', false)).join('')}</tbody></table></div>` : '<div class="muted pad">No arbitrage firing with the current thresholds.</div>'}
       </div>
+      ${fvType && s.config?.enabled?.fv !== false ? `<div class="panel">
+        <div class="chart-head"><h3>Fair value deviations</h3><span class="muted small">options priced away from fair value now · biggest deviation first · ${fvs.length} found</span></div>
+        ${fvs.length ? `<div class="tbl-wrap"><table class="grid-tbl an-tbl"><thead><tr><th class="l">Option</th><th>Status</th><th title="Price you can trade at: the bid when selling a rich option, the ask when buying a cheap one">Market</th><th title="Black-76 price on the chain's forward at the volatility of the neighbouring strikes">Fair value</th><th>Deviation</th><th>%</th><th title="Implied volatility at the market price vs the neighbouring strikes">IV vs fair IV</th><th title="Lots that can be filled at that price">Fillable</th><th class="l">How to benefit</th><th></th></tr></thead>
+          <tbody>${fvs.map(([h, i]) => fvRow(h, i)).join('')}</tbody></table></div>` : '<div class="muted pad">Every option within the scanned strikes is at its fair value (within the thresholds on the left).</div>'}
+        <div class="an-benefit small"><b>How to benefit:</b> ${esc(fvType.how)}</div>
+      </div>` : ''}
       <div class="panel">
         <div class="chart-head"><h3>Today's log</h3><span class="muted small">each anomaly once per cooldown · saved to bt-data/anomaly-log/</span></div>
         ${s.log.length ? `<div class="tbl-wrap an-log"><table class="grid-tbl an-tbl"><thead><tr><th>Time</th><th class="l">Anomaly</th><th>Strike</th><th>Dir</th><th>Size</th><th class="l">Detail</th><th class="l">Suggested trade</th><th></th></tr></thead>

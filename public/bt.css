@@ -129,6 +129,12 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .adj-name { white-space: normal !important; min-width: 300px; }
 .cell-pct { font-size: 10px; opacity: .75; }
 .txt-strong { color: var(--text); }
+.top-bar { flex: none; padding: 8px 14px; overflow: visible; }
+.best-card { border-color: rgba(63,182,139,.55); }
+.pl-bar { height: 6px; border-radius: 3px; background: var(--down); overflow: hidden; margin-top: 4px; }
+.pl-bar i { display: block; height: 100%; background: var(--up); }
+.sum-tbl td { vertical-align: middle; }
+.scen-panel .chart-head > span:last-child { margin-left: auto; }
 .res-chart { flex: none; }
 .chart-box.eq { height: 280px; }
 .chart-box.eq.tall { height: 360px; }
@@ -306,6 +312,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .an-params { display: flex; flex-wrap: wrap; gap: 6px 10px; margin: 6px 0; }
 .an-params input.num { width: 64px; }
 .an-how { margin: 4px 0; }
+.an-benefit { padding: 10px 14px; border-top: 1px solid var(--line); color: var(--muted); line-height: 1.5; }
+.an-benefit b { color: var(--text); }
 .an-type-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .an-types-foot { padding: 8px 12px; border-top: 1px solid var(--line); }
 .an-bar { padding: 8px 14px; flex-direction: row; align-items: center; gap: 12px; flex: none; overflow: visible; }
@@ -349,12 +357,44 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .sb-grid { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr); gap: 12px; flex: none; grid-template-areas: "chain pay" "pos sugg" "arb sugg"; }
 .sb-grid > .sb-chain { grid-area: chain; } .sb-grid > .sb-payoff { grid-area: pay; } .sb-grid > .sb-pos { grid-area: pos; } .sb-grid > .sb-sugg { grid-area: sugg; } .sb-grid > .sb-arbp { grid-area: arb; }
 .sb-grid.chain-min { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "chain chain" "pos pay" "arb sugg"; }
-/* Positions is always exactly as tall as Payoff (--sb-pay-h is set from the payoff panel by sb-view.js); its body scrolls */
-.sb-grid > .sb-pos { height: var(--sb-pay-h, 480px); align-self: start; }
+/* Positions is only as tall as its rows, so nothing inside it needs a scroll bar */
+.sb-grid > .sb-pos { height: auto; align-self: start; }
 .sb-grid.chain-min > .sb-payoff { align-self: start; } /* same row as Positions: size from its own content so the two don't feed each other */
-.sb-pos-body { flex: 1; min-height: 0; overflow: auto; }
+.sb-pos-body { flex: 1; min-height: 0; overflow: visible; }
+/* compact two-line rows so every column fits the half-width panel without a horizontal scroll bar */
+.sb-pos-tbl th, .sb-pos-tbl td { padding: 3px 4px; font-size: 11.5px; vertical-align: top; }
+.sb-pos-tbl .sb-sub { margin-top: 3px; font-size: 10.5px; white-space: nowrap; }
+.sb-pos-tbl input.num.xs[data-lots] { width: 40px; padding: 1px 4px; font-size: 11px; }
+.sb-pos-tbl .btn-sm { padding: 1px 6px; font-size: 11px; }
+.sb-pos-tbl button.icon { padding: 0 3px; }
+.sb-pos-tbl input.sb-px, .sb-exit-box input.sb-px { width: 72px; }
+.sb-pos-tbl input.sb-when, .sb-exit-box input.sb-when { font: inherit; font-size: 11px; padding: 2px 4px; background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 5px; color-scheme: dark; }
+:root[data-theme="day"] input.sb-when, :root[data-theme="large"] input.sb-when { color-scheme: light; }
+.sb-pos-tbl input.sb-px { width: 66px; padding: 1px 4px; font-size: 11.5px; }
+.sb-pos-tbl input.sb-when { font-size: 10px; padding: 1px 2px; width: 128px; }
+.sb-pos-tbl input.sb-when::-webkit-calendar-picker-indicator { margin: 0; padding: 0; }
+.modal.sb-exit-box { width: min(560px, 100%); }
+/* builder: exit popup */
+.modal.sb-exit-box { width: min(520px, 100%); }
+.sb-exit-body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 10px; }
+.sb-exit-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.sb-pos-tbl .sb-side { padding: 1px 7px; white-space: nowrap; }
+.sb-pos-tbl .btn-sm.ghost.sb-side.pos { color: var(--up); }
+.sb-pos-tbl .btn-sm.ghost.sb-side.neg { color: var(--down); }
+/* totals row under the positions: set apart from the legs and highlighted */
+.sb-pnl-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 22px; margin: 10px 12px 12px; padding: 9px 14px; border: 1px solid var(--accent); border-radius: 8px; background: rgba(88,166,255,.10); font-size: 13px; }
+.sb-pnl-row .tot { display: inline-flex; align-items: baseline; gap: 7px; color: var(--muted); }
+.sb-pnl-row .tot b { font-size: 15px; }
+.sb-pnl-row .tot.total b { font-size: 17px; }
+.sb-pnl-row { justify-content: flex-end; }
+.sb-pos-tbl .sb-avg { font-size: 10px; color: var(--accent); border: 1px solid var(--accent); border-radius: 6px; padding: 0 4px; }
+/* no positions: the panel shrinks to its header */
+.sb-grid > .sb-pos.empty { height: auto; min-height: 0; }
+.sb-pos.empty .sb-pos-body, .sb-pos.empty #sbPnlHead, .sb-pos:not(.empty) .pos-hint { display: none; }
 .sb-grid > .sb-sugg { align-self: start; }
 .sb-grid.chain-min .sb-chain-wrap { display: none; }
+#sbChainHead { cursor: pointer; user-select: none; }
+#sbChainHead button, #sbChainHead input, #sbChainHead select { cursor: revert; }
 .sb-chain-wrap { max-height: 560px; }
 .sb-chain-tbl th, .sb-chain-tbl td { padding: 2px 6px; font-size: 12px; height: 22px; }
 .sb-chain-tbl thead tr:nth-child(2) th { top: 22px; }
@@ -367,10 +407,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .sb-held { margin-left: 4px; font-size: 10px; padding: 0 4px; border-radius: 6px; background: var(--panel-2); border: 1px solid currentColor; }
 .sb-payoff .dep-kpis { grid-template-columns: repeat(7, minmax(0, 1fr)); }
 .sb-pay-chart { height: 380px; }
-.sb-mtm-chart { height: 170px; }
 .sb-pos-tbl tr.closed td { opacity: .55; }
 .sb-pos-tbl td.nowrap { white-space: nowrap; }
-.sb-log { max-height: 140px; overflow: auto; padding: 4px 14px 10px; font-size: 11.5px; display: flex; flex-direction: column; gap: 2px; }
 .sb-sugg-list { display: flex; flex-direction: column; gap: 8px; padding: 10px 14px; overflow: auto; max-height: 620px; }
 .sugg { border: 1px solid var(--line); border-left: 4px solid var(--muted); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; background: rgba(28,34,43,.5); }
 .sugg.act { border-left-color: var(--down); }
@@ -407,3 +445,36 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .sb-pos-tbl button.sb-kbtn:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
 .sb-pos-tbl button.sb-kbtn:disabled { opacity: .35; cursor: default; }
 .sb-pos-tbl select.sb-exp-sel { font-size: 11.5px; padding: 1px 4px; }
+
+/* replay of a backtest trade: its adjustments */
+.sb-alert { display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; margin-top: 8px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--atm); background: rgba(214,175,76,.14); }
+.sugg-plan { display: flex; flex-direction: column; gap: 8px; padding-bottom: 8px; margin-bottom: 4px; border-bottom: 1px dashed var(--line); }
+
+.sum-foot { display: flex; flex-direction: row; align-items: center; gap: 10px; }
+.sum-name { white-space: normal !important; min-width: 260px; }
+
+/* ---------- bi-weekly screen ---------- */
+.bw-screen { grid-template-columns: 250px minmax(0, 1fr); }
+.bw-menu { overflow: auto; }
+.bw-item { display: flex; flex-direction: column; gap: 3px; text-align: left; background: transparent; color: var(--text); border: 0; border-left: 3px solid transparent; border-bottom: 1px solid var(--line); padding: 11px 12px; font: inherit; cursor: pointer; }
+.bw-item:hover { background: var(--panel-2); }
+.bw-item.on { background: rgba(88,166,255,.14); border-left-color: var(--accent); }
+.bw-item b { font-size: 14px; }
+.bw-cfg { flex-direction: row; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.bw-cfg .lbl { color: var(--muted); margin-left: 6px; }
+.bw-cfg > .small { flex: 1; min-width: 260px; }
+@media (max-width: 1000px) { .bw-screen { grid-template-columns: 1fr; } }
+
+/* ---------- builder: saved trades ---------- */
+.sb-trades { flex: none; overflow: visible; }
+.sb-trades .panel-head { padding: 8px 14px; display: flex; align-items: center; gap: 10px; }
+.sb-trades .panel-head h3 { margin: 0; font-size: 13px; }
+.sb-trades-wrap { max-height: none; }
+/* builder: expiry strip of the option chain (4 at a time, < > to move) */
+.sb-exps { display: inline-flex; align-items: center; gap: 4px; vertical-align: middle; }
+.sb-exps .chip { white-space: nowrap; }
+.sb-exps .chip.past { opacity: .55; }
+.sb-exps .nav { padding: 2px 7px; }
+.sb-exps .nav:disabled { opacity: .35; cursor: default; }
+.sb-trades-tbl tbody tr.sel td { background: rgba(88,166,255,.14); }
+.sb-trades-tbl td.legs-cell { min-width: 240px; }

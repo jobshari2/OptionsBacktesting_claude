@@ -94,11 +94,12 @@ async function upstox(pathname, params = {}) {
 }
 
 async function getExpiries() {
-  if (expiries.list.length && Date.now() - expiries.fetchedAt < 60 * 60_000) return expiries.list;
+  // Re-read hourly and whenever the IST day changes, so newly listed expiries appear and past ones drop off.
+  const today = new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10);
+  if (expiries.list.length && expiries.day === today && Date.now() - expiries.fetchedAt < 60 * 60_000) return expiries.list;
   const data = await upstox('/option/contract', { instrument_key: NIFTY_KEY });
-  const today = new Date().toISOString().slice(0, 10);
   const list = [...new Set((data || []).map((c) => c.expiry))].filter((e) => e >= today).sort();
-  expiries = { list, fetchedAt: Date.now() };
+  expiries = { list, fetchedAt: Date.now(), day: today };
   return list;
 }
 

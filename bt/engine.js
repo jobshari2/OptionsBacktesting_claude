@@ -6,7 +6,8 @@
 // Fills: entry and timed exit at the OPEN of that minute's candle; stop-loss / target are checked against
 // each candle's high/low (stop first when both are touched in one candle — the conservative choice) and
 // fill at the trigger price, or at the open if the candle gapped through it. Overall MTM rules are checked
-// on candle closes. Slippage is applied against you on every fill.
+// on candle closes. Slippage is applied against you on every fill. Marks and fills are never below the option's
+// intrinsic value (a stale price of a deep in-the-money contract that stopped trading).
 //
 // Signal-triggered strategies (entry.when = 'signal') scan each session from the entry time to the
 // "until" time and enter at the open of the minute after all entry conditions hold (anomaly fired, near or
@@ -411,7 +412,7 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
       if (strike == null) strike = await selectStrike(def.strike, def.type, expiry, day, m, spot, sx);
       const c = await data.option(expiry, strike, def.type, tl[0]);
       const a = data.optionDay(c, day);
-      const px = a && a[m * 4] > 0 ? a[m * 4] / 100 : null;
+      const px = a && a[m * 4] > 0 ? Math.max(a[m * 4] / 100, def.type === 'CE' ? spot - strike : strike * Math.exp(-RATE * yearsTo(expiry, day, m)) - spot) : null; // not below its no-arbitrage bound (stale price)
       if (px == null) throw new Skip(`${strike} ${def.type} ${expiry} not traded at entry`);
       const dir = def.action === 'B' ? 1 : -1;
       const lot = await lotOf(expiry);
@@ -459,6 +460,13 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
         }
       }
     }
+
+    // An option is never worth less than its intrinsic value. A deep in-the-money contract that has stopped
+    // trading still shows its last, stale price (candles are carried forward), which would book a loss on a short
+    // or a profit on a long that nobody could trade: marks, exits, rolls and settlements are floored at the
+    // no-arbitrage bound (calls: spot − strike; puts: discounted strike − spot, as index puts are priced off the
+    // future and can trade a little under spot intrinsic).
+    const real = (leg, px, spot, day, m) => Math.max(px, leg.type === 'CE' ? spot - leg.strike : leg.strike * Math.exp(-RATE * yearsTo(leg.expiry, day, m)) - spot);
 
     const arrOf = (leg, day) => {
       if (leg.arrDay !== day) { leg.arr = data.optionDay(leg.c, day); leg.arrDay = day; }
@@ -545,7 +553,8 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
       const cost = execCost(x);
       x.pnl = Math.round(pnl);
       x.cost = Math.round(cost);
-      delete x.entryFill; delete x.exitFill; delete x.dir;
+      // the fills (price after slippage) stay on the execution: a replay in the Builder trades at them
+      x.entryFill = Math.round(x.entryFill * 1e4) / 1e4; x.exitFill = Math.round(x.exitFill * 1e4) / 1e4; delete x.dir;
       execs.push(x);
       realized += pnl;
       costs += cost;
@@ -561,7 +570,7 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
       for (const leg of legs) {
         if (!leg.open) continue;
         const a = arrOf(leg, tl[t]);
-        const px = a ? a[m * 4 + (useOpen ? 0 : 3)] / 100 : leg.entryPx;
+        const px = a ? real(leg, a[m * 4 + (useOpen ? 0 : 3)] / 100, data.spotDay(tl[t])[m * 4 + (useOpen ? 0 : 3)], tl[t], m) : leg.entryPx;
         close(leg, t, m, px, why);
       }
       pending.length = 0;
@@ -613,7 +622,7 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
           leg.rollAt = null;
           const to = nthOnOrAfter(cal.all, addDays(leg.expiry, 1), 0);
           const a = arrOf(leg, day);
-          const px = a && a[m * 4] > 0 ? a[m * 4] / 100 : null;
+          const px = a && a[m * 4] > 0 ? real(leg, a[m * 4] / 100, sp[m * 4], day, m) : null;
           if (px == null || !to || !cal.expiredSet.has(to)) { notes.push(`${hhmm(m)} ${day}: roll of ${leg.strike} ${leg.type} skipped (${px == null ? 'no price' : 'no later expiry with data'})`); continue; }
           let nl;
           try {
@@ -696,7 +705,7 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
 
         // Expiry settlement of legs whose expiry comes before the position's exit.
         if (m === MPD - 1) {
-          for (const leg of legs) if (leg.open && leg.lastDay === day) close(leg, t, m, arrOf(leg, day)?.[m * 4 + 3] / 100 || 0.05, 'expiry');
+          for (const leg of legs) if (leg.open && leg.lastDay === day) close(leg, t, m, real(leg, arrOf(leg, day)?.[m * 4 + 3] / 100 || 0.05, sp[m * 4 + 3], day, m), 'expiry');
         }
 
         // Mark to market on the close
@@ -705,7 +714,7 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
         for (const leg of legs) {
           if (!leg.open) continue;
           const a = arrOf(leg, day);
-          const c = a ? a[m * 4 + 3] / 100 : leg.entryPx;
+          const c = a ? real(leg, a[m * 4 + 3] / 100, sp[m * 4 + 3], day, m) : leg.entryPx;
           open += (c - leg.entryFill) * leg.dir * leg.qty;
           nOpen++;
         }
@@ -729,7 +738,7 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
             const n = Math.floor((lots * r.partialPct) / 100);
             if (n < 1 || n >= lots) continue;
             const a = arrOf(leg, day);
-            const px = a ? a[m * 4 + 3] / 100 : leg.entryPx;
+            const px = a ? real(leg, a[m * 4 + 3] / 100, sp[m * 4 + 3], day, m) : leg.entryPx;
             close({ ...leg, qty: n * leg.lot }, t, m, px, 'partial', true);
             leg.qty -= n * leg.lot;
             booked++;
