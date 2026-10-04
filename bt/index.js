@@ -151,6 +151,79 @@ function createBacktester({ getToken, upstoxGet, cacheDir, storeFile, logError }
     return out;
   }
 
+  // Nifty candles for the chart on the Chain screen and its pop-out window. History comes from the cached 1-minute
+  // files under bt-cache/index, the running session from the Upstox intraday endpoint (the page then moves the last
+  // candle with the live tick). tf = minutes per candle (1, 5, 10, 15, 60, 120) or 'D' / 'W' / 'M'.
+  // Intraday candles come a block of sessions at a time, ending before the day `before`, so the page can load
+  // further back as it is scrolled; D / W / M return everything in the cache folder.
+  // Candle = [time, open, high, low, close]; time is IST wall-clock seconds (as if UTC), which the chart displays as is.
+  const TF_SESSIONS = { 1: 6, 5: 30, 10: 60, 15: 90, 60: 250, 120: 500 };
+  async function niftyCandles(tf, before) {
+    const step = Number(tf);
+    const sessions = TF_SESSIONS[step];
+    if (!sessions && !['D', 'W', 'M'].includes(tf)) throw new Error('Unknown chart timeframe ' + tf);
+    const today = istToday();
+    const start = data.indexStart() || addDays(today, -200).slice(0, 7) + '-01';
+    const older = /^\d{4}-\d{2}-\d{2}$/.test(before || '') && before <= today ? before : null;
+    let intra = [];
+    if (!older) {
+      try { intra = (await data.niftyIntraday()).filter((c) => c[0].slice(0, 10) === today); } catch { /* demo / not logged in / holiday */ }
+    }
+    const to = older ? addDays(older, -1) : today;
+    let from = sessions ? addDays(to, -Math.ceil(sessions * 1.6) - 10) : start;
+    if (from < start) from = start;
+    let days = [];
+    if (from <= to) {
+      try {
+        days = await data.loadIndex(from, to);
+      } catch (e) {
+        days = await data.loadIndex(from, addDays(today.slice(0, 7) + '-01', -1)); // running month unavailable: cached history
+      }
+    }
+    if (intra.length) days = days.filter((d) => d < today); // today comes from the intraday feed
+    let more = false;
+    if (sessions) {
+      const keep = sessions - (intra.length ? 1 : 0);
+      more = days.length > keep || from > start;
+      days = days.slice(-keep);
+    }
+    if (intra.length) days.push(today);
+
+    const r2 = (x) => Math.round(x * 100) / 100;
+    const sec = (day, m) => Date.parse(day + 'T00:00:00Z') / 1000 + (m == null ? 0 : (555 + m) * 60);
+    const weekOf = (d) => addDays(d, -((new Date(d + 'T00:00:00Z').getUTCDay() + 6) % 7));
+    const minuteOf = (ts) => Number(ts.slice(11, 13)) * 60 + Number(ts.slice(14, 16)) - 555;
+    const candles = [];
+    let cur = null;
+    let curKey = null;
+    const add = (key, t, o, h, l, c) => {
+      if (key !== curKey) { cur = [t, o, h, l, c]; candles.push(cur); curKey = key; return; }
+      if (h > cur[2]) cur[2] = h;
+      if (l < cur[3]) cur[3] = l;
+      cur[4] = c;
+    };
+    for (const d of days) {
+      const key = tf === 'D' ? d : tf === 'W' ? weekOf(d) : tf === 'M' ? d.slice(0, 7) : null;
+      const bar = (m, o, h, l, c) => {
+        if (key) return add(key, sec(d), o, h, l, c);
+        const b = Math.floor(m / step) * step;
+        add(d + '|' + b, sec(d, b), o, h, l, c);
+      };
+      if (d === today && intra.length) {
+        for (const c of intra) { const m = minuteOf(c[0]); if (m >= 0 && m < MPD) bar(m, c[1], c[2], c[3], c[4]); }
+      } else {
+        const a = data.spotDay(d);
+        for (let m = 0; m < MPD; m++) bar(m, a[m * 4], a[m * 4 + 1], a[m * 4 + 2], a[m * 4 + 3]);
+      }
+    }
+    for (const c of candles) for (let i = 1; i < 5; i++) c[i] = r2(c[i]);
+    const prev = days.length > 1 ? data.spotDay(days[days.length - 2]) : null;
+    return {
+      tf: String(tf), candles, more, first: days[0] || null, day: days[days.length - 1] || null,
+      today: intra.length > 0, prevClose: !older && prev ? r2(prev[(MPD - 1) * 4 + 3]) : null,
+    };
+  }
+
   // ---------- jobs ----------
   const jobs = new Map();
   function startJob(kind, fn) {
@@ -598,6 +671,7 @@ function createBacktester({ getToken, upstoxGet, cacheDir, storeFile, logError }
         const lv = await levelsFor(url.searchParams.get('day'));
         return sendJson(res, 200, lv);
       }
+      if (p === '/api/bt/candles') return sendJson(res, 200, await niftyCandles(url.searchParams.get('tf') || '5', url.searchParams.get('before')));
       if (p === '/api/bt/run' && req.method === 'POST') {
         const b = await readJson(req);
         return sendJson(res, 200, await settle(startRun(b.scenario ? applyScenario(b.strategy, b.scenario) : b.strategy, b.opts || {})));

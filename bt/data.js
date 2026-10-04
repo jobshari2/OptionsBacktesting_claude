@@ -92,6 +92,7 @@ function createData({ getToken, cacheDir, logError = () => {} }) {
 
   // ---------- index candles (Nifty, VIX) per calendar month ----------
   const indexMem = new Map(); // `${key}|${month}` -> Map(day -> Float64Array(MPD*4))
+  const indexAt = new Map(); // when the running month was last read (it is re-read after an hour)
 
   function denseIndex(candles) {
     const days = {};
@@ -117,7 +118,8 @@ function createData({ getToken, cacheDir, logError = () => {} }) {
 
   async function indexMonth(key, month) {
     const memKey = `${key}|${month}`;
-    if (indexMem.has(memKey)) return indexMem.get(memKey);
+    const running = month >= istToday().slice(0, 7);
+    if (indexMem.has(memKey) && (!running || Date.now() - indexAt.get(memKey) < 3600_000)) return indexMem.get(memKey);
     return once('idx|' + memKey, async () => {
       const file = path.join(cacheDir, 'index', key.replace(/[^A-Za-z0-9]+/g, '_'), month + '.json.gz');
       const first = month + '-01';
@@ -125,8 +127,10 @@ function createData({ getToken, cacheDir, logError = () => {} }) {
       const today = istToday();
       const complete = last < today;
       let days = null;
+      let saved = null;
+      let at = Date.now();
       if (fs.existsSync(file)) {
-        const saved = readGz(file);
+        saved = readGz(file);
         // The running month is refreshed after an hour.
         if (complete || Date.now() - saved.fetchedAt < 3600_000) days = saved.days;
       }
@@ -134,13 +138,21 @@ function createData({ getToken, cacheDir, logError = () => {} }) {
         if (first > today) days = {};
         else {
           const to = complete ? last : today;
-          const data = await api(`/v3/historical-candle/${encodeURIComponent(key)}/minutes/1/${to}/${first}`);
-          days = denseIndex(data?.candles || []);
-          writeGz(file, { fetchedAt: Date.now(), days });
+          try {
+            const data = await api(`/v3/historical-candle/${encodeURIComponent(key)}/minutes/1/${to}/${first}`);
+            days = denseIndex(data?.candles || []);
+            writeGz(file, { fetchedAt: Date.now(), days });
+          } catch (e) {
+            // Offline / demo / not logged in: keep what was downloaded before and try again in a minute.
+            if (!saved) throw e;
+            days = saved.days;
+            at -= 3600_000 - 60_000;
+          }
         }
       }
       const map = new Map(Object.entries(days).map(([d, a]) => [d, Float64Array.from(a)]));
       indexMem.set(memKey, map);
+      indexAt.set(memKey, at);
       return map;
     });
   }
@@ -161,6 +173,28 @@ function createData({ getToken, cacheDir, logError = () => {} }) {
   }
   const spotDay = (day) => indexMem.get(`${NIFTY}|${day.slice(0, 7)}`)?.get(day) || null;
   const vixDay = (day) => indexMem.get(`${VIX}|${day.slice(0, 7)}`)?.get(day) || null;
+  // First day of the earliest month of Nifty history in the cache folder, or null when nothing is cached yet.
+  function indexStart() {
+    try {
+      const m = fs.readdirSync(path.join(cacheDir, 'index', NIFTY.replace(/[^A-Za-z0-9]+/g, '_'))).filter((f) => /^\d{4}-\d{2}\.json\.gz$/.test(f)).sort()[0];
+      return m ? m.slice(0, 7) + '-01' : null;
+    } catch {
+      return null;
+    }
+  }
+
+  // Today's 1-minute Nifty candles, oldest first: [timestamp, open, high, low, close]. The historical endpoint only
+  // has completed sessions, so the running one comes from the intraday endpoint (cached for 20 s).
+  let intraday = { at: 0, candles: [] };
+  async function niftyIntraday() {
+    if (Date.now() - intraday.at < 20_000) return intraday.candles;
+    return once('intraday', async () => {
+      const d = await api(`/v3/historical-candle/intraday/${encodeURIComponent(NIFTY)}/minutes/1`);
+      const candles = (d?.candles || []).map((c) => c.slice(0, 5)).sort((a, b) => (a[0] < b[0] ? -1 : 1));
+      intraday = { at: Date.now(), candles };
+      return candles;
+    });
+  }
 
   // ---------- expiry calendar ----------
   let calendar = null;
@@ -391,7 +425,7 @@ function createData({ getToken, cacheDir, logError = () => {} }) {
   }
 
   return {
-    MPD, NIFTY, loadIndex, spotDay, vixDay, expiryCalendar, contracts, option, optionDay, optionCached, optionRaw,
+    MPD, NIFTY, loadIndex, spotDay, vixDay, indexStart, niftyIntraday, expiryCalendar, contracts, option, optionDay, optionCached, optionRaw,
     cacheStats, clearCache, apiStats: limiter.stats, api, addDays,
   };
 }

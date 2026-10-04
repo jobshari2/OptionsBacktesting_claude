@@ -299,12 +299,13 @@ function renderChain(d, rows) {
   $('chainBody').innerHTML = html;
   state.prevLtp = nextPrev;
 
-  // Centre the ATM strike once per expiry/range selection.
+  // Centre the ATM strike once per expiry/range selection (and the strike column, when the table is wider than its panel).
   const scrollKey = d.expiry + ':' + state.range;
   if (state.scrolledFor !== scrollKey) {
     const atmRow = $('chainBody').querySelector('tr.atm');
     const wrap = $('tableWrap');
     if (atmRow) wrap.scrollTop = atmRow.offsetTop - wrap.clientHeight / 2;
+    wrap.scrollLeft = (wrap.scrollWidth - wrap.clientWidth) / 2;
     state.scrolledFor = scrollKey;
   }
 }
@@ -383,6 +384,15 @@ function renderLevels(d) {
   if (!spotDone) html += `<div class="lv-spot">Nifty ${price(spot)}</div>`;
   $('lvLadder').innerHTML = (L.error ? `<div class="err small">Price levels: ${esc(L.error)}</div>` : '') + html;
 }
+
+// The panel folds down to its header, which leaves its height to the Nifty chart above it.
+function setLevelsCollapsed(on) {
+  $('levelsPanel').classList.toggle('collapsed', on);
+  $('lvCaret').textContent = on ? '▸' : '▾';
+  localSet('lvCollapsed', on ? '1' : '');
+}
+$('lvHead').addEventListener('click', () => setLevelsCollapsed(!$('levelsPanel').classList.contains('collapsed')));
+setLevelsCollapsed(localGet('lvCollapsed') === '1');
 
 // ---------- controls ----------
 $('expiry').addEventListener('change', (e) => {

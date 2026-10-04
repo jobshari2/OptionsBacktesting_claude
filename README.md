@@ -192,7 +192,10 @@ Each card shows a payoff sketch and three buttons:
   - The highest OI on each side is outlined.
   - Vol Δ shows volume added over the window picked in the chain header (1/3/5/15 min). LTP flashes when it ticks.
   - Strikes carrying a support (**S**, green) or resistance (**R**, red) level are tagged; filled tags are major levels. Hover for the source.
-- **Support & resistance panel:** nearest major/minor resistance and support with distance from spot, and the full ladder around Nifty.
+- **Nifty chart** (right half of the screen): candles of 1, 5, 10, 15 minutes, 1 hour, 2 hours, day, week or month, with the support / resistance levels drawn across. Drag to move, wheel to zoom, scroll back to load older candles; **Candles / Line**, **S/R** on/off, **Latest**. The hovered candle's open / high / low / close is shown at the top left; hovering a support / resistance line shows its details (major / minor, distance from Nifty, source).
+  - **New window** opens the chart in its own window (`chart.html`) with the full tool set: **indicators** (SMA, EMA, Bollinger Bands, Supertrend on the price; RSI, MACD, ATR, Stochastic in their own panes; any parameters, several at once, ✕ in the legend removes one), chart types (candles, bars, Heikin Ashi, line, area), **drawings** (horizontal and trend lines; right-click one to remove it), log scale, PNG snapshot and full screen. Indicators and drawings are remembered.
+  - History is read from the cached 1-minute Nifty files (`bt-cache/index`); today's candles come from the Upstox intraday endpoint (re-read every 30 s) and the last candle follows the live tick feed.
+- **Support & resistance panel:** nearest major/minor resistance and support with distance from spot, and the full ladder around Nifty. Click its header to collapse it (the chart takes the space).
 
 **Data source**
 - **Tick feed:** a WebSocket feed (Upstox Market Data Feed V3) streams Nifty plus ATM ±15 strikes.

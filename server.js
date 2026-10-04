@@ -456,6 +456,25 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Latest Nifty tick for the chart (Chain screen and its pop-out window). Counts as a browser watching, so the
+  // feed keeps running while only the chart window is open.
+  if (p === '/api/nifty/ltp') {
+    lastClientAt = Date.now();
+    const t = feed.tick(NIFTY_KEY);
+    const rest = nearestExpiry ? restChains.get(nearestExpiry) : null;
+    const at = t?.at ?? rest?.fetchedAt ?? 0;
+    return sendJson(res, 200, { ltp: t?.ltp ?? rest?.spot ?? null, at, live: !DEMO && isMarketOpen() && Date.now() - at < 60_000, loggedIn: Boolean(token) });
+  }
+
+  // TradingView Lightweight Charts (candlestick chart), served from node_modules like Chart.js below.
+  if (p === '/vendor/lightweight-charts.js') {
+    return fs.readFile(path.join(__dirname, 'node_modules/lightweight-charts/dist/lightweight-charts.standalone.production.js'), (err, buf) => {
+      if (err) return sendJson(res, 404, { error: 'Run npm install' });
+      res.writeHead(200, { 'Content-Type': 'text/javascript' });
+      res.end(buf);
+    });
+  }
+
   // Chart.js, served from node_modules so the page works without a CDN.
   if (p === '/vendor/chart.js') {
     return fs.readFile(path.join(__dirname, 'node_modules/chart.js/dist/chart.umd.min.js'), (err, buf) => {

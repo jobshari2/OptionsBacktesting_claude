@@ -270,7 +270,46 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 
 /* ---------- chain: support / resistance ---------- */
 .main-col { grid-template-rows: minmax(0, 1fr) !important; }
-.levels-panel { flex: 1; }
+.levels-panel { flex: 0 1 40%; }
+.levels-panel.collapsed { flex: none; }
+.levels-panel.collapsed .lv-body { display: none; }
+.levels-panel.collapsed .panel-head { border-bottom: 0; }
+#lvHead { cursor: pointer; user-select: none; }
+.lv-body { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+/* chain screen: Nifty candlestick chart with support / resistance (chart.html shows the same panel in its own window) */
+.nifty-panel { flex: 1 1 0; min-height: 260px; }
+.nc-head { gap: 6px 12px; padding: 7px 14px; }
+.nc-last { margin-left: 6px; font-size: 13px; font-weight: 600; }
+.nc-tools { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.nc-tools .btn-sm { padding: 2px 9px; font-size: 12px; }
+.btn-sm.ghost.on { border-color: var(--accent); color: var(--accent); }
+.nc-tools select { padding: 2px 6px; font-size: 12px; }
+.nc-wrap { flex: 1; min-height: 0; position: relative; display: flex; }
+.nc-chart { flex: 1; min-width: 0; min-height: 0; }
+/* candle open / high / low / close (and the indicator values) at the top left of the chart */
+.nc-ohlc { position: absolute; top: 6px; left: 10px; z-index: 3; pointer-events: none; white-space: nowrap; display: flex; flex-direction: column; gap: 2px; }
+.nc-ohlc > div { background: color-mix(in srgb, var(--panel) 78%, transparent); border-radius: 4px; padding: 0 4px; align-self: flex-start; }
+.nc-ind i { display: inline-block; width: 10px; height: 3px; margin-right: 5px; vertical-align: middle; }
+.nc-ind button { pointer-events: auto; background: none; border: 0; color: var(--muted); cursor: pointer; font: inherit; padding: 0 4px; }
+.nc-ind button:hover { color: var(--down); }
+/* details of the support / resistance level (or drawing) under the mouse */
+.nc-tip { position: absolute; z-index: 4; pointer-events: none; max-width: 320px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 6px 9px; font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,.35); }
+/* indicator picker of the pop-out window */
+.nc-dd { position: relative; }
+.nc-menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 20; width: 380px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; box-shadow: 0 6px 20px rgba(0,0,0,.4); }
+.nc-menu-row { display: grid; grid-template-columns: 82px minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.nc-menu-row span { display: flex; gap: 8px; flex-wrap: wrap; }
+.nc-menu-row label { color: var(--muted); font-size: 11px; }
+.nifty-panel:fullscreen { border-radius: 0; }
+.nc-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 4px 14px 8px; }
+body.nc-window { height: 100vh; padding: 8px; }
+@media (max-width: 1100px) {
+  .nifty-panel { flex: none; height: 480px; }
+  .levels-panel { flex: none; }
+  body.nc-window .nifty-panel { flex: 1; height: auto; }
+}
+.nc-sw { display: inline-block; width: 14px; height: 2px; vertical-align: middle; margin-right: 4px; }
+.nc-sw.r { background: var(--down); } .nc-sw.s { background: var(--up); }
 .sw.lv-r { background: var(--ce); }
 .sw.lv-s { background: var(--pe); }
 .lv-tag { display: inline-block; margin-left: 5px; padding: 0 4px; border-radius: 3px; font-size: 9.5px; font-weight: 700; line-height: 14px; vertical-align: 1px; border: 1px solid; opacity: .75; }

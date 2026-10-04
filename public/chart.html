@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Nifty 50 chart</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="bt.css" />
+  <link rel="stylesheet" href="themes.css" />
+  <script>try { document.documentElement.dataset.theme = localStorage.getItem("nifty-theme") || "night"; } catch (e) {}</script>
+</head>
+<body class="nc-window">
+  <!-- The Chain screen's Nifty chart in its own window (opened with "New window"); chain-chart.js fills the panel. -->
+  <section class="panel nifty-panel" id="niftyPanel"></section>
+  <script src="/vendor/lightweight-charts.js"></script>
+  <script src="chain-chart.js"></script>
+  <script>
+    // Follow the colour theme picked in the main window.
+    window.addEventListener('storage', (e) => { if (e.key === 'nifty-theme') document.documentElement.dataset.theme = e.newValue || 'night'; });
+  </script>
+</body>
+</html>
