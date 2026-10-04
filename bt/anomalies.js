@@ -231,6 +231,7 @@ const TYPES = [
     desc: 'Two strikes of the same type break the no-arbitrage bounds of a vertical spread: the further-OTM option is dearer than the nearer one (free credit), or the pair is priced further apart than the strike gap (credit above width).',
     how: 'Free credit: buy the nearer-ITM strike and sell the further one for a credit. Credit above width: sell the nearer-ITM strike and buy the further one for more than the spread can ever cost. Either way the trade cannot lose at expiry, before costs.',
     dirs: ['free-credit', 'over-width'], cooldown: 10,
+    ease: { rank: 4, why: 'Only two legs, but the violations mostly sit in deep in-the-money strikes where quotes are thin.', watch: 'A long leg that finishes in the money pays exercise STT on its full value; that can exceed a small edge.' },
     params: [P('minEdge', 'Min edge', 0.5, 0.25, 'pts'), P('band', 'Strikes ± ATM', 10, 1, '', 1), P('maxGap', 'Max strikes apart', 20, 1, '', 1), ...FILL],
     detect(c, p) {
       const [lo, hi] = band(c, p.band);
@@ -274,6 +275,7 @@ const TYPES = [
     desc: 'Three equally spaced strikes of the same type are not convex: the long butterfly (buy 1 low, sell 2 middle, buy 1 high) can be put on for a credit.',
     how: 'Buy the butterfly for a credit: it is worth zero or more at expiry, so the credit is the minimum gain (up to credit + wing width if Nifty finishes at the body).',
     dirs: ['credit'], cooldown: 10,
+    ease: { rank: 3, why: 'Liquid when centred near the money; the body needs twice the quantity on the book.', watch: 'Three orders: if the body fills and a wing does not, you are left with a naked short.' },
     params: [P('minEdge', 'Min credit', 0.5, 0.25, 'pts'), P('wing', 'Wing width', 1, 1, 'strikes', 1), P('band', 'Strikes ± ATM', 10, 1, '', 1), ...FILL],
     detect(c, p) {
       const [lo, hi] = band(c, p.band);
@@ -303,6 +305,7 @@ const TYPES = [
     desc: 'A box (bull call spread + bear put spread between two strikes) pays exactly the strike gap at expiry, but can be bought for less, or sold for more, than that amount discounted to today.',
     how: 'Cheap: buy the box (buy the lower call and higher put, sell the higher call and lower put). Rich: sell it (the reverse). The difference to its fair value is locked in at expiry.',
     dirs: ['cheap', 'rich'], cooldown: 15,
+    ease: { rank: 1, why: 'All four legs sit in the most liquid strikes and the payout at expiry is fixed.', watch: 'Four orders: the fixed brokerage needs several lots to be covered. A sold box blocks margin until expiry.' },
     params: [P('minEdge', 'Min edge', 2, 0.5, 'pts'), P('band', 'Strikes ± ATM', 8, 1, '', 1), P('maxGap', 'Max box width', 6, 1, 'strikes', 1), ...FILL],
     detect(c, p) {
       const [lo, hi] = band(c, p.band);
@@ -339,6 +342,7 @@ const TYPES = [
     desc: "A call on the next expiry can be bought for less than the same strike's call on this expiry sells for, although the longer-dated call is always worth at least as much.",
     how: "Sell this expiry's call and buy the next expiry's call at the same strike for a credit; at this expiry the long call is worth at least what the short one costs, so close it then (or hold it).",
     dirs: ['inverted'], cooldown: 15,
+    ease: { rank: 5, why: 'Rare, and the quotes of the next expiry are wider than those of this one.', watch: 'After the near expiry you still hold the long call and have to sell it.' },
     params: [P('minEdge', 'Min credit', 0.5, 0.25, 'pts'), P('band', 'Strikes ± ATM', 5, 1, '', 1), ...FILL],
     detect(c, p) {
       const nx = c.next?.();
@@ -368,6 +372,7 @@ const TYPES = [
     desc: "An option trades away from its fair value: the Black-76 price on the chain's own forward at the volatility its neighbouring strikes imply. Rich = it can be sold above fair value, cheap = it can be bought below it. A statistical edge (prices tend to come back in line), not a locked-in profit.",
     how: 'Rich: sell the option and buy the next strike further out of the money, so you collect the overpricing with a capped risk. Cheap: buy the option and sell the next strike further out. You gain when the price returns to fair value (often within minutes: take the deviation as the target and exit), or at expiry if the mispricing held. For a pure fair-value trade hedge the remaining delta with futures; without a hedge a move in Nifty can outweigh the edge.',
     dirs: ['rich', 'cheap'], cooldown: 15,
+    ease: { rank: 2, why: 'The most frequent signal and only two legs, close to the money.', watch: 'Not risk-free: the gain comes only if the price returns to fair value, and a move in Nifty can outweigh it.' },
     params: [P('minEdge', 'Min deviation', 2, 0.5, 'pts'), P('minPct', 'Min deviation', 5, 1, '% of fair'), P('band', 'Strikes ± ATM', 10, 1, '', 1), ...FILL],
     detect(c, p) {
       if (c.late) return [];
@@ -471,15 +476,16 @@ function suggest(hit, given) {
   return t ? t.suggest(hit, params(hit.type, given)) : { legs: [] };
 }
 
-// Public description of the detectors for the page.
+// Public description of the detectors for the page. `ease` = how tradable the type is (rank 1 = easiest to
+// execute without slippage), why, and what to watch for.
 // templates[dir][side] = the suggested trade for that direction (side matters only when `sided`).
-const catalog = () => TYPES.map(({ id, name, group, desc, how, dirs, params: ps, cooldown, suggest: sg }) => {
+const catalog = () => TYPES.map(({ id, name, group, desc, how, dirs, params: ps, cooldown, ease, suggest: sg }) => {
   const templates = Object.fromEntries(dirs.map((d) => [d, {
     CE: sg({ type: id, dir: d, side: 'CE', strike: 0 }, params(id)),
     PE: sg({ type: id, dir: d, side: 'PE', strike: 0 }, params(id)),
   }]));
   const sided = dirs.some((d) => JSON.stringify(templates[d].CE) !== JSON.stringify(templates[d].PE));
-  return { id, name, group, desc, how, dirs, params: ps, cooldown, templates, sided };
+  return { id, name, group, desc, how, dirs, params: ps, cooldown, ease, templates, sided };
 });
 
 // Worst value at expiry of a set of resolved legs ({dir, type, strike, qty: lots, px}), over a spot grid.

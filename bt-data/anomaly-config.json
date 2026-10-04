@@ -1,0 +1,55 @@
+{
+ "enabled": {
+  "varb": true,
+  "fly": true,
+  "box": true,
+  "cal": true,
+  "fv": true
+ },
+ "params": {
+  "varb": {
+   "minEdge": 0.25,
+   "band": 10,
+   "maxGap": 20,
+   "minLots": 1,
+   "fresh": 1,
+   "minPx": 0.05,
+   "cooldown": 10
+  },
+  "fly": {
+   "minEdge": 0.25,
+   "wing": 1,
+   "band": 10,
+   "minLots": 1,
+   "fresh": 1,
+   "minPx": 0.05,
+   "cooldown": 10
+  },
+  "box": {
+   "minEdge": 1,
+   "band": 8,
+   "maxGap": 6,
+   "minLots": 1,
+   "fresh": 1,
+   "minPx": 0.05,
+   "cooldown": 15
+  },
+  "cal": {
+   "minEdge": 0.25,
+   "band": 5,
+   "minLots": 1,
+   "fresh": 1,
+   "minPx": 0.05,
+   "cooldown": 15
+  },
+  "fv": {
+   "minEdge": 1,
+   "minPct": 3,
+   "band": 10,
+   "minLots": 1,
+   "fresh": 1,
+   "minPx": 0.05,
+   "cooldown": 15
+  }
+ }
+}

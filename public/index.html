@@ -117,20 +117,24 @@
 
   <!-- ===== Arbitrage (anomaly scanner) ===== -->
   <main id="an" class="an-screen hidden">
-    <aside class="panel an-types">
-      <div class="bt-edit-head">
-        <div class="cmp-head"><b>Arbitrage types</b>
-          <span><button class="btn-sm ghost" id="anAll">All</button> <button class="btn-sm ghost" id="anNone">None</button></span></div>
-        <div class="muted small">Tick the types to scan, tune thresholds, then scan live or across history.</div>
-      </div>
-      <div id="anTypes" class="an-type-list"></div>
-      <div class="an-types-foot"><button class="btn-sm ghost" id="anSaveCfg" title="Use these types and thresholds for the live scanner (saved on the server)">Use for live scanner</button> <span id="anCfgMsg" class="muted small"></span></div>
-    </aside>
-    <section class="bt-main">
-      <div class="panel an-bar">
+    <div class="panel an-bar">
+      <div class="an-bar-row">
         <div class="seg" id="anMode"><button data-m="live">Live</button><button data-m="hist">History scan</button></div>
-        <span class="muted small" id="anModeHint"></span>
+        <div id="anChips" class="an-chips" title="Click a type to switch it on or off. The number is how easy it is to trade: 1 = easiest to fill without slippage."></div>
+        <span class="an-bar-end">
+          <span class="muted small">Strictness</span>
+          <span class="seg sm" id="anPreset" title="Strict: bigger edge and more quantity on the book. Loose: smaller edges too."><button data-p="strict">Strict</button><button data-p="balanced">Balanced</button><button data-p="loose">Loose</button></span>
+          <button class="btn-sm ghost" id="anTuneBtn" title="Edit each type's thresholds">⚙ Tune</button>
+          <button class="btn-sm ghost" id="anAlertBtn" title="Sound and a desktop notification when a new opportunity that is profitable after costs appears">🔔 Alerts off</button>
+        </span>
       </div>
+      <div class="muted small"><span id="anModeHint"></span> <span id="anCfgMsg"></span></div>
+    </div>
+    <div class="panel an-tune hidden" id="anTune">
+      <div class="chart-head"><h3>Types and thresholds</h3><span class="muted small">ordered by how easy each is to trade · changes apply to the live scanner as you make them</span></div>
+      <div id="anTypes" class="an-type-list"></div>
+    </div>
+    <section class="bt-main">
       <div id="anLive" class="bt-results"></div>
       <div id="anHist" class="bt-results hidden">
         <div class="panel bt-settings" id="anSettings"></div>

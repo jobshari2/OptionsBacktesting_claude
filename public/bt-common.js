@@ -37,10 +37,12 @@
     if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
     return j;
   }
-  async function runJob(path, body, onProgress) {
+  // ctl (optional): set ctl.stop = true to ask the server to stop the job (kinds that support it end early with what they have).
+  async function runJob(path, body, onProgress, ctl) {
     let job = await api(path, body);
     while (job.status === 'running') {
       onProgress?.(job.progress);
+      if (ctl?.stop && !ctl.sent) { ctl.sent = true; await api('/api/bt/job/stop', { id: job.id }); }
       await sleep(200);
       job = await api('/api/bt/job?id=' + job.id);
     }
@@ -453,7 +455,8 @@
   }
 
   // ---------- period / costs bar ----------
-  function createSettings(el, { runLabel = 'Run backtest', onRun, key = 'settings' }) {
+  // onStop (optional): adds a Stop button next to the run button while a run is busy.
+  function createSettings(el, { runLabel = 'Run backtest', onRun, onStop, key = 'settings' }) {
     const def = { from: null, to: null, expiries: null, slippage: 0.5, brokerage: 20, taxes: true, lotMode: 'fixed', lotSize: null, capital: null };
     const S = { ...def, ...store.get(key, {}) };
     let busy = false;
@@ -494,6 +497,7 @@
             <div class="exp-pop hidden"></div>
           </div>
           <span class="spacer"></span>
+          ${onStop ? `<button type="button" class="btn-sm ghost danger${busy ? '' : ' hidden'}" data-act="stop" title="Stop now and keep what has been found so far">■ Stop</button>` : ''}
           <button type="button" class="btn-sm run" data-act="run" ${busy ? 'disabled' : ''}>▶ ${esc(runLabel)}</button>
         </div>
         <div class="set-row costs">
@@ -577,6 +581,10 @@
         save();
         renderPop();
         el.querySelector('[data-act="exp"]').textContent = expLabel() + ' ▾';
+      } else if (b.dataset.act === 'stop') {
+        b.disabled = true;
+        b.textContent = 'Stopping…';
+        onStop();
       } else if (b.dataset.act === 'run') {
         el.querySelector('.exp-pop')?.classList.add('hidden');
         onRun?.();
@@ -605,6 +613,8 @@
         busy = v;
         const btn = el.querySelector('[data-act="run"]');
         if (btn) btn.disabled = v;
+        const stop = el.querySelector('[data-act="stop"]');
+        if (stop) { stop.classList.toggle('hidden', !v); stop.disabled = false; stop.textContent = '■ Stop'; }
         el.querySelector('.progress')?.classList.toggle('hidden', !v);
       },
       progress(p) {

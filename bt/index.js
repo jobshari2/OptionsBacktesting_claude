@@ -427,10 +427,25 @@ function createBacktester({ getToken, upstoxGet, cacheDir, storeFile, logError }
     return overviewJob;
   }
 
+  // The last history scan of the Arbitrage screen is kept in bt-data/anomaly-scan.json, so the screen opens on it
+  // without scanning again.
+  const lastScanFile = path.join(path.dirname(storeFile), 'anomaly-scan.json');
+  let lastScan; // undefined = not read yet
+  function savedScan() {
+    if (lastScan === undefined) { try { lastScan = JSON.parse(fs.readFileSync(lastScanFile, 'utf8')); } catch { lastScan = null; } }
+    return lastScan;
+  }
   function startScan(cfg) {
     return startJob('scan', async (job) => {
-      const r = await runScan(data, hist, cfg, (p) => { job.progress = p; });
-      return { view: { ...r, hits: r.hits.slice(-5000), hitsTotal: r.hits.length } };
+      const t0 = Date.now();
+      const r = await runScan(data, hist, cfg, (p) => { job.progress = p; }, () => Boolean(job.stop));
+      lastScan = { ...r, hits: r.hits.slice(-5000), hitsTotal: r.hits.length, savedAt: Date.now(), ms: Date.now() - t0 };
+      try {
+        fs.mkdirSync(path.dirname(lastScanFile), { recursive: true });
+        fs.writeFileSync(lastScanFile + '.tmp', JSON.stringify(lastScan));
+        fs.renameSync(lastScanFile + '.tmp', lastScanFile);
+      } catch (e) { logError('anomaly-scan', e); }
+      return { view: lastScan };
     });
   }
 
@@ -657,6 +672,7 @@ function createBacktester({ getToken, upstoxGet, cacheDir, storeFile, logError }
         deleteStrategy(id);
         return sendJson(res, 200, { ok: true, strategy: findStrategy(id) });
       }
+      if (p === '/api/bt/scan/last') return sendJson(res, 200, { scan: savedScan() });
       if (p === '/api/bt/scan' && req.method === 'POST') return sendJson(res, 200, await settle(startScan(await readJson(req)), 3000));
       if (p === '/api/sb/days') return sendJson(res, 200, await builderDays(url.searchParams.get('expiry'), url.searchParams.get('from')));
       if (p === '/api/sb/day') {
@@ -698,6 +714,11 @@ function createBacktester({ getToken, upstoxGet, cacheDir, storeFile, logError }
         return sendJson(res, 200, await settle(startCompare(b.strategies.slice(0, 30), b.opts || {})));
       }
       if (p === '/api/bt/prefetch' && req.method === 'POST') return sendJson(res, 200, jobView(startPrefetch(await readJson(req))));
+      if (p === '/api/bt/job/stop' && req.method === 'POST') { // the job ends at its next checkpoint, with what it has so far
+        const job = jobs.get((await readJson(req)).id);
+        if (job) job.stop = true;
+        return sendJson(res, 200, { ok: Boolean(job) });
+      }
       if (p === '/api/bt/job') {
         const job = jobs.get(url.searchParams.get('id'));
         if (!job) return sendJson(res, 404, { error: 'Job not found (the server may have restarted) — run it again' });

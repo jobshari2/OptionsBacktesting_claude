@@ -68,7 +68,8 @@
       "Bash(PYTHONIOENCODING=utf-8 python -c ' *)",
       "Bash(node -e \"const {LIBRARY}=require\\('./bt/library'\\);console.log\\(LIBRARY.filter\\(x=>x.id.startsWith\\('lib-biweekly'\\)\\).map\\(x=>x.name\\).join\\(' | '\\)\\)\")",
       "PowerShell(node --check public/payoff.js)",
-      "Bash(npm view *)"
+      "Bash(npm view *)",
+      "WebSearch"
     ]
   }
 }

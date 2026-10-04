@@ -12,7 +12,11 @@ const MIN_OF = (t) => {
   return Math.max(0, Math.min(MPD - 1, h * 60 + m - 555));
 };
 
-async function runScan(data, hist, raw, onProgress = () => {}) {
+// Lets the server answer other requests (progress polls, Stop) during a scan whose data is all cached.
+const breathe = () => new Promise((r) => setImmediate(r));
+
+// stopped(): true once the user pressed Stop — the scan then ends with what it has found so far.
+async function runScan(data, hist, raw, onProgress = () => {}, stopped = () => false) {
   const cal = await data.expiryCalendar();
   if (!cal.expired.length) throw new Error('Upstox returned no expired Nifty expiries');
   const last = cal.expired[cal.expired.length - 1];
@@ -41,6 +45,8 @@ async function runScan(data, hist, raw, onProgress = () => {}) {
 
   for (const day of scanDays) {
     onProgress({ phase: `Scanning ${day}`, done, total: scanDays.length, api: data.apiStats() });
+    await breathe();
+    if (stopped()) break;
     done++;
     const ei = cal.all.findIndex((e) => e >= day);
     const exp = cal.all[ei];
@@ -76,13 +82,13 @@ async function runScan(data, hist, raw, onProgress = () => {}) {
   onProgress({ phase: 'Measuring outcomes', done: 0, total: hits.length, api: data.apiStats() });
   let k = 0;
   for (const h of hits) {
-    h.out = await outcome(data, cal, h, endM).catch(() => null);
+    h.out = stopped() ? null : await outcome(data, cal, h, endM).catch(() => null);
     delete h._s;
     delete h._next;
-    if (++k % 50 === 0) onProgress({ phase: 'Measuring outcomes', done: k, total: hits.length, api: data.apiStats() });
+    if (++k % 50 === 0 && !stopped()) { onProgress({ phase: 'Measuring outcomes', done: k, total: hits.length, api: data.apiStats() }); await breathe(); }
   }
 
-  return { opts: { from, to, start: hhmm(startM), end: hhmm(endM), step, lot, types: types.map((t) => ({ id: t.id, params: t.params, cooldown: t.cooldown, side: t.side, dir: t.dir })) }, days: scanDays.length, hits, summary: summarise(hits, lot), skipped: skipped.slice(0, 100), horizons: HORIZONS };
+  return { opts: { from, to, start: hhmm(startM), end: hhmm(endM), step, lot, types: types.map((t) => ({ id: t.id, params: t.params, cooldown: t.cooldown, side: t.side, dir: t.dir })) }, days: stopped() ? done : scanDays.length, stopped: stopped(), daysTotal: scanDays.length, hits, summary: summarise(hits, lot), skipped: skipped.slice(0, 100), horizons: HORIZONS };
 }
 
 const r2 = (x) => Math.round(x * 100) / 100;
@@ -116,7 +122,7 @@ async function outcome(data, cal, h, endM) {
     if (!a || !(a[m0 * 4] > 0)) return null;
     legs.push({ a, dir: def.action === 'B' ? 1 : -1, lots: def.lots || 1, entry: a[m0 * 4] / 100, strike, type: def.type, expiry });
   }
-  const res = { entry: legs.map((l) => ({ s: l.strike, t: l.type, d: l.dir * l.lots, px: l.entry })) };
+  const res = { entry: legs.map((l) => ({ s: l.strike, t: l.type, d: l.dir * l.lots, px: l.entry, e: l.expiry })) };
   for (const H of HORIZONS) {
     const m1 = H === 'eod' ? endM : Math.min(endM, m0 + H);
     if (H !== 'eod' && m0 + H > endM) { res[H] = null; continue; }
