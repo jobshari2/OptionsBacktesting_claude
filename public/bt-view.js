@@ -17,7 +17,7 @@
   let topTab = 'summary';
   let saved = []; // saved backtests (headline numbers), for the Summary tab
   let sumSort = { k: 'roi', dir: -1 };
-  let sumAll = false; // Summary: every saved backtest instead of the top 5 of the bi-weekly hedge and of its reverse
+  let sumAll = false; // Summary: every saved backtest instead of the Bi-weekly screen's top 5 of the hedge and of its reverse
   let adjBusy = false;
   let scSort = { k: 'total', dir: -1 };
   let result = null; // full run of the selected scenario
@@ -251,13 +251,15 @@
         return renderSummary();
       }
       const open = e.target.closest('[data-open]');
-      if (open) openSaved(open.dataset.open);
+      if (open) return openSaved(open.dataset.open);
+      const v = e.target.closest('[data-bwfam] [data-var]');
+      if (v) BWView.open(v.closest('[data-bwfam]').dataset.bwfam, v.dataset.var);
     });
   }
   function renderTop() {
     const el = $('btTop');
     if (!el) return;
-    const tabs = [['summary', 'Summary', 'The saved backtests: the top 5 of the bi-weekly hedge and of its reverse'], ['details', 'Details', 'Scenarios, months, trades and equity curve of one strategy'],
+    const tabs = [['summary', 'Summary', 'The top 5 of the bi-weekly hedge and of its reverse (as on the Bi-weekly screen), and the saved backtests'], ['details', 'Details', 'Scenarios, months, trades and equity curve of one strategy'],
       ['adjust', `Adjustments${adj ? ` (${adj.rows.length})` : ''}`, 'The strategy with one adjustment changed at a time, each backtested with the same settings']];
     el.innerHTML = tabs.map(([t, l, tip]) => `<button data-top="${t}" class="${topTab === t ? 'on' : ''}" title="${tip}">${l}</button>`).join('');
     $('btPaneSummary').classList.toggle('hidden', topTab !== 'summary');
@@ -268,6 +270,7 @@
   // ---------- summary: saved backtests ----------
   async function loadSaved() {
     try { saved = (await BT.api('/api/bt/results')).results; } catch { saved = []; }
+    await window.BWView?.load();
     renderTop();
     renderSummary();
     // the strategy in the editor has a saved backtest and nothing is shown yet: put it in Details (nothing is run)
@@ -301,7 +304,9 @@
     const el = $('btPaneSummary');
     if (!el) return;
     const all = `<button class="btn-sm ghost" id="btAll" title="Backtest every saved and built-in strategy with the settings in the bar above and save the results. Takes a few minutes the first time.">Backtest all strategies</button>`;
-    if (!saved.length) {
+    // The bi-weekly top 5 is the Bi-weekly screen's own (one saved result, one ranking), so the two always agree.
+    const bwTop = window.BWView?.topHtml() || '';
+    if (!saved.length && !bwTop) {
       el.innerHTML = `<div class="panel empty"><h3>No saved backtests yet</h3>
         <p>Nothing is backtested when this screen opens. Press <b>Run backtest</b> for the strategy on the left, or ${all} — every result is saved and shown here next time, best strategy first.</p></div>`;
       return;
@@ -314,18 +319,11 @@
       if (x == null || y == null) return (x == null) - (y == null);
       return (x - y) * dir;
     });
-    // Listed: the five best of the bi-weekly hedge and the five best of its reverse (by % profit as defined). The
-    // family is read from the legs: a position entered at the start of a series whose first short leg is hedged by a
-    // bought call (hedge) or put (reverse) measured from it. Everything else sits behind "Show all strategies".
-    const family = (r) => {
-      const h = r.strategy.legs.find((l) => l.action === 'B' && l.strike.by === 'leg' && l.strike.ref === 0);
-      return r.strategy.entry?.after >= 2 && h ? (h.type === 'PE' ? 'rev' : 'hedge') : null;
-    };
+    // Listed: the Bi-weekly screen's top 5; the saved backtests of this screen sit behind "Show all saved backtests".
     const byRoi = (list) => list.filter((r) => r.own.stats.trades).sort((a, b) => (b.own.stats.roi ?? -1e9) - (a.own.stats.roi ?? -1e9));
-    const top5 = { hedge: byRoi(saved.filter((r) => family(r) === 'hedge')).slice(0, 5), rev: byRoi(saved.filter((r) => family(r) === 'rev')).slice(0, 5) };
-    const families = top5.hedge.length + top5.rev.length > 0;
-    const shown = sumAll || !families ? saved : [...top5.hedge, ...top5.rev];
-    const top = byRoi(shown)[0];
+    const listAll = sumAll || !bwTop;
+    const shown = saved;
+    const top = listAll ? byRoi(shown)[0] : null;
     let card = '';
     if (top) {
       const st = top.own.stats;
@@ -370,11 +368,9 @@
         <div class="tbl-wrap"><table class="grid-tbl cmp-tbl scen-tbl sum-tbl">${head}<tbody>${rows.filter((r) => list.includes(r)).map(rowHtml).join('') || '<tr><td colspan="14" class="l muted">None backtested yet.</td></tr>'}</tbody></table></div>
       </div>`;
     const hint = 'as each is defined · click a row to see it in Details and Adjustments (nothing is run again) · click a column to sort';
-    const more = families ? `<button class="btn-sm ghost" id="btSumAll">${sumAll ? 'Show only the top 5 of each' : `Show all ${saved.length} strategies`}</button>` : '';
+    const more = bwTop && saved.length ? `<button class="btn-sm ghost" id="btSumAll">${sumAll ? 'Show only the bi-weekly top 5' : `Show all ${saved.length} saved backtests`}</button>` : '';
     el.innerHTML = `${card}
-      ${sumAll || !families ? table('All saved backtests', `${saved.length} strategies · ${hint}`, saved)
-        : table('Bi-weekly Hedge — top 5', `the 5 with the highest % profit of ${saved.filter((r) => family(r) === 'hedge').length} backtested · ${hint}`, top5.hedge)
-          + table('Bi-weekly Hedge Reverse — top 5', `the 5 with the highest % profit of ${saved.filter((r) => family(r) === 'rev').length} backtested · ${hint}`, top5.rev)}
+      ${listAll ? table('All saved backtests', `${saved.length} strategies · ${hint}${bwTop ? '' : ' · the bi-weekly top 5 is shown here once the variations are backtested on the Bi-weekly screen'}`, saved) : bwTop}
       <div class="panel top-bar sum-foot">${more} ${all} <span class="muted small">Run backtest replaces a strategy's saved result.</span></div>`;
   }
 

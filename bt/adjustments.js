@@ -1,6 +1,7 @@
 // Adjustment variations for the Backtest screen's "Adjustments" tab: the loaded strategy with one adjustment
 // changed at a time (take profit, overall stop, leg stops and re-entry, exit, roll timing, closing in the first
-// week instead of rolling, entry filters, the mirror-image position). Each one is a complete strategy, so picking
+// week instead of rolling, the put side on its own, entry filters, the mirror-image position) and a few of them
+// together. Each one is a complete strategy, so picking
 // it shows the same details (scenarios, months, trades, equity) as the strategy itself.
 // Which variations exist depends on the strategy: roll / week-1 ones need a rolled leg, "% of capital" stops need
 // the strategy to use that unit, and so on.
@@ -85,6 +86,31 @@ function buildAdjustments(strategy) {
     add('leg100-re', 'Leg stops', 'Short legs: stop at +100%, re-sell a fresh strike once', 'The stopped short is sold again at the strike the strategy would pick now (rolling the tested side away).', (s) => each(s, (l) => { l.sl = { type: 'pct', value: 100 }; l.re = { on: 'sl', mode: 'atm', max: 1 }; }));
     for (const v of [1.5, 2]) add(`nifty${v}`, 'Leg stops', `Short legs: stop when Nifty moves ${v}% against them`, 'Only the stopped leg is closed.', (s) => each(s, (l) => { l.sl = { type: 'upct', value: v }; }));
     add('nifty2-all', 'Leg stops', 'Nifty moves 2% against a short leg: exit everything', 'A leg stop closes the whole position.', (s) => { each(s, (l) => { l.sl = { type: 'upct', value: 2 }; }); s.risk.onLegSl = 'all'; });
+  }
+
+  // ---- the put side: a stop on the short puts only, and short puts further out ----
+  // Falls are faster than rallies, and the put side is where a short strangle loses. The short put is cut early and
+  // its bought put kept (it gains if the fall goes on); the call side is left alone (a stop there costs more than it saves).
+  const sPuts = shorts.filter((i) => base.legs[i].type === 'PE');
+  const putStop = sPuts.length > 0 && sPuts.length < shorts.length && shorts.every((i) => base.legs[i].sl.type === 'none');
+  const stopPuts = (s, v) => sPuts.forEach((i) => { s.legs[i].sl = { type: 'pct', value: v }; });
+  if (putStop) for (const v of [35, 45]) add(`put${v}`, 'Leg stops', `Short put: stop at +${v}% of its premium`, 'Only the short put is closed; its bought put and the call side stay.', (s) => stopPuts(s, v));
+  const farPuts = sPuts.length > 0 && sPuts.every((i) => base.legs[i].strike.by === 'pts');
+  const further = (s, d) => sPuts.forEach((i) => { s.legs[i].strike.value += d; });
+  if (farPuts) for (const d of [100, 200]) add(`put+${d}`, 'Strikes', `Short put ${d} pts further out of the money`, 'A hedge measured from it moves with it. Less credit, more room on the side that falls fastest.', (s) => further(s, d));
+  if (cap) for (const v of [3, 4].filter((x) => x !== base.risk.tgt)) add(`tgt${v}`, 'Take profit', `Target ${v}% of capital`, 'Whole position booked at this profit.', (s) => { s.risk.tgt = v; s.risk.tgtPrem = null; });
+
+  // ---- the adjustments that held up together ----
+  // Put stop + a wider target, then the hedge rolled on its expiry day and / or the short put further out. In testing
+  // each of these helped whatever the others were set to, and the put stop gave about the same result from 30% to 45%.
+  if (putStop && cap) {
+    const tuned = (s) => { stopPuts(s, 35); s.risk.tgt = 4; s.risk.tgtPrem = null; };
+    const onDay = (s) => s.legs.forEach((l) => { if (l.roll) l.roll.dteDays = 0; });
+    const late = rolled >= 0 && base.legs[rolled].roll.dteDays !== 0;
+    add('put35-t4', 'Combination', 'Put stop 35%, target 4% of capital', 'The short put is cut early, the rest runs to a wider target.', tuned);
+    if (late) add('put35-t4-roll0', 'Combination', 'Put stop 35%, target 4%, roll on the day the hedge expires', 'The same, with the hedge rolled a day later: one day less of the dearer hedge.', (s) => { tuned(s); onDay(s); });
+    if (farPuts) add('put35-t4-far', 'Combination', 'Put stop 35%, target 4%, short put 200 pts further out', 'The same, with more room on the downside.', (s) => { tuned(s); further(s, 200); });
+    if (farPuts && late) add('put35-t4-far-roll0', 'Combination', 'Put stop 35%, target 4%, short put 200 pts further out, roll on the day', 'All four together.', (s) => { tuned(s); further(s, 200); onDay(s); });
   }
 
   // ---- exit ----

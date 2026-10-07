@@ -39,8 +39,11 @@
       BT.store.set('bw-settings', { from: first, to: c.expired[c.expired.length - 1], capital: 500000 });
     }
     settings = BT.createSettings($('bwSettings'), { onRun: runAll, runLabel: 'Backtest all variations', key: 'bw-settings' });
-    try { st = (await BT.api('/api/bt/bw/state')).state; } catch { st = null; }
+    await loadState();
     render();
+  }
+  async function loadState() {
+    try { st = (await BT.api('/api/bt/bw/state')).state; } catch { /* keep what is shown */ }
   }
 
   async function runAll() {
@@ -182,8 +185,6 @@
     const best = f.best && rowOf(f.id, f.best);
     const tested = f.rows.filter((r) => r.stats?.trades);
     const riskyTop = tested.filter((r) => r.risky && best && r.stats.total > best.stats.total).sort((a, b) => b.stats.total - a.stats.total)[0];
-    const own = f.rows.find((r) => r.key === 'own');
-    const top = f.top.map((k) => rowOf(f.id, k));
     const card = !best ? '<div class="panel empty"><h3>No variation with limited risk made a trade</h3></div>' : `<div class="panel res-head best-card">
         <div class="res-title scen-sel"><h3>Best variation: ${esc(best.key === 'own' ? `As defined (${f.base})` : best.name)}</h3><span class="cat-pill">${esc(best.group)}</span>
           <span class="spacer"></span><button class="btn-sm" data-var="${esc(best.key)}">Open details ▸</button></div>
@@ -193,12 +194,16 @@
         ${kpis(best.stats, capNote(f))}
         ${riskyTop ? `<span class="dep-warn">${esc(riskyTop.name)} made more (${inrS(riskyTop.stats.total)}) but leaves short options uncovered, so its loss is not limited: it is listed under Adjustments and never picked as the best.</span>` : ''}
       </div>`;
-    return `${card}
-      <div class="panel scen-panel">
-        <div class="chart-head"><h3>${esc(f.name)} — top 5 variations</h3><span class="muted small">limited risk only, highest net P&amp;L first · click a row to see it in Details · all ${f.rows.length} are under Adjustments</span></div>
+    return `${card}${topPanel(f, `click a row to see it in Details · all ${f.rows.length} are under Adjustments`, footnote(f))}`;
+  }
+  // The top 5 of a family (and the strategy as defined, when it is not one of them): also the Backtest screen's Summary.
+  function topPanel(f, hint, foot) {
+    const own = f.rows.find((r) => r.key === 'own');
+    return `<div class="panel scen-panel" data-bwfam="${f.id}">
+        <div class="chart-head"><h3>${esc(f.name)} — top 5 variations</h3><span class="muted small">limited risk only, highest net P&amp;L first · ${hint}</span></div>
         <div class="tbl-wrap"><table class="grid-tbl cmp-tbl scen-tbl"><thead><tr><th>#</th><th class="l">Variation</th>${headCells()}</tr></thead>
-          <tbody>${varRows(f, top, null)}${own && !f.top.includes('own') ? `<tr data-var="own"><td class="muted">·</td>${nameCell(f, own)}${statCells(own.stats)}</tr>` : ''}</tbody></table></div>
-        ${footnote(f)}
+          <tbody>${varRows(f, f.top.map((k) => rowOf(f.id, k)), null)}${own && !f.top.includes('own') ? `<tr data-var="own"><td class="muted">·</td>${nameCell(f, own)}${statCells(own.stats)}</tr>` : ''}</tbody></table></div>
+        ${foot}
       </div>`;
   }
 
@@ -488,6 +493,24 @@
     if (e.target.id === 'bwOverlap') { overlap = e.target.checked; BT.store.set('bw-overlap', overlap); renderStrikes(); }
   });
   $('bwResults').addEventListener('change', (e) => { if (e.target.id === 'bwSort') { tradeSort = e.target.value; renderTab(); } });
+
+  // For the Backtest screen's Summary: the same top 5 of the hedge and of its reverse, from the same saved result.
+  window.BWView = {
+    load: loadState,
+    topHtml() {
+      if (!st) return '';
+      const foot = `<div class="muted small pad">Backtested on the Bi-weekly screen with its own settings, not those in the bar above: ${dayLabel(st.opts.from)} → ${dayLabel(st.opts.to)} · capital ${st.opts.capital ? inr(st.opts.capital) : 'est. margin'} · ${strikeTxt(st.strikes)} · ${overlapTxt(st.overlap)} · backtested ${when(st.at)}.</div>`;
+      return ['hedge', 'rev'].map((id) => topPanel(family(id), `${family(id).rows.length} variations backtested · click a row to open it on the Bi-weekly screen`, foot)).join('');
+    },
+    open(id, key) { // a variation in Details
+      fam = id;
+      BT.store.set('bw-fam', fam);
+      sel[id] = key;
+      tab = 'details';
+      window.app.setView('bw');
+      if (settings && settings !== true) render();
+    },
+  };
 
   window.addEventListener('viewchange', (e) => { if (e.detail === 'bw') init(); });
   if (window.app.state.view === 'bw') init();

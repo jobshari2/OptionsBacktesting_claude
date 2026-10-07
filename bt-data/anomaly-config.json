@@ -1,10 +1,10 @@
 {
  "enabled": {
-  "varb": true,
-  "fly": true,
-  "box": true,
-  "cal": true,
-  "fv": true
+  "varb": false,
+  "fly": false,
+  "box": false,
+  "cal": false,
+  "fv": false
  },
  "params": {
   "varb": {
