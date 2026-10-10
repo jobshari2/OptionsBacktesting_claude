@@ -2,10 +2,10 @@
 // day, who is actually trading (buyers vs sellers), and how Nifty moved after the book leaned one way.
 // Samples the snapshot history every 15 s (full day, seeded from today's tape after a restart).
 // Needs the tick feed: entries carry [10-17] bid/ask/queues and [6-9] aggressor volume.
+const { istDate } = require('./lib/time');
+
 const MIN = 60_000;
 const SAMPLE_MS = 15_000;
-const IST_OFFSET = 5.5 * 3600_000;
-const istDate = (ts) => new Date(ts + IST_OFFSET).toISOString().slice(0, 10);
 
 function createBook({ strikesAround = 10, pressureStrikes = 5 }) {
   const samples = []; // { t, spot, atm, bull, k: { strike: [ceBuyPct, peBuyPct, ceSprPct, peSprPct] }, agg }

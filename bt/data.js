@@ -6,8 +6,9 @@
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
+const { createUpstox } = require('../lib/upstox');
+const { istDate: istToday } = require('../lib/time');
 
-const BASE = 'https://api.upstox.com';
 const NIFTY = 'NSE_INDEX|Nifty 50';
 const VIX = 'NSE_INDEX|India VIX';
 const MPD = 375; // minutes per trading day, 09:15 .. 15:29
@@ -16,64 +17,18 @@ const CHUNK_DAYS = 28; // span of one option-candle request
 const LOOKBACK_DAYS = 35; // first download of a contract covers this many days before its expiry
 const MEM_CONTRACTS = 1500; // contracts kept in memory (≈ 150 KB each)
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const istToday = () => new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10);
 const addDays = (day, n) => new Date(Date.parse(day + 'T00:00:00Z') + n * 86400_000).toISOString().slice(0, 10);
 const minuteOf = (ts) => Number(ts.slice(11, 13)) * 60 + Number(ts.slice(14, 16)) - OPEN_MIN;
 
-// Upstox limits standard APIs to 50/s, 500/min and 2000/30 min per user; stay a little under each.
-function createLimiter(windows = [[1000, 25], [60_000, 450], [1_800_000, 1900]]) {
-  const stamps = [];
-  let waitingSince = 0;
-  let total = 0;
-  let chain = Promise.resolve();
-  async function take() {
-    for (;;) {
-      const now = Date.now();
-      while (stamps.length && now - stamps[0] > 1_800_000) stamps.shift();
-      let wait = 0;
-      for (const [ms, max] of windows) {
-        const inWin = stamps.filter((t) => now - t < ms);
-        if (inWin.length >= max) wait = Math.max(wait, ms - (now - inWin[0]) + 5);
-      }
-      if (!wait) break;
-      if (!waitingSince) waitingSince = now;
-      await sleep(Math.min(wait, 2000));
-    }
-    waitingSince = 0;
-    stamps.push(Date.now());
-    total++;
-  }
-  return {
-    // Serialised so concurrent callers don't all pass the same check at once.
-    take: () => (chain = chain.then(take)),
-    stats: () => ({ requests: total, lastMinute: stamps.filter((t) => Date.now() - t < 60_000).length, waitingSec: waitingSince ? Math.round((Date.now() - waitingSince) / 1000) : 0 }),
-  };
-}
-
-function createData({ getToken, cacheDir, logError = () => {} }) {
-  const limiter = createLimiter();
+// upstox: the app's Upstox client (lib/upstox.js); left out, the data layer makes its own (tests, scripts).
+function createData({ getToken, upstox = createUpstox({ getToken }), cacheDir, logError = () => {} }) {
+  const limiter = upstox.limiter;
   const inflight = new Map();
   fs.mkdirSync(cacheDir, { recursive: true });
 
   async function api(pathname) {
-    const token = getToken();
-    if (!token) throw new Error('Not logged in to Upstox');
-    if (token === 'demo') throw new Error('Backtesting needs real Upstox data (not available in demo mode)');
-    for (let attempt = 0; ; attempt++) {
-      await limiter.take();
-      const res = await fetch(BASE + pathname, { headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } });
-      const body = await res.json().catch(() => ({}));
-      // Rate limited (e.g. another app on the same account): back off up to ~3 minutes in total.
-      const limited = res.status === 429 || /too many/i.test(body?.errors?.[0]?.message || '');
-      if ((limited && attempt < 9) || (res.status >= 500 && attempt < 4)) {
-        await sleep(limited ? 4000 * (attempt + 1) : 800 * 2 ** attempt);
-        continue;
-      }
-      if (res.status === 401) throw new Error('Upstox session expired — log in again');
-      if (!res.ok || body.status !== 'success') throw new Error(body?.errors?.[0]?.message || `Upstox HTTP ${res.status}`);
-      return body.data;
-    }
+    if (getToken() === 'demo') throw new Error('Backtesting needs real Upstox data (not available in demo mode)');
+    return upstox.bulk(pathname);
   }
   // One request per key at a time; later callers share the first one's promise.
   function once(key, fn) {

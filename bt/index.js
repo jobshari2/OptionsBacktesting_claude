@@ -17,9 +17,11 @@ const A = require('./anomalies');
 const { createResearch } = require('./research');
 const { createBiweekly } = require('./biweekly');
 const { MPD } = require('./data');
+const { istDate: istToday } = require('../lib/time');
 
-function createBacktester({ getToken, upstoxGet, cacheDir, storeFile, logError }) {
-  const data = createData({ getToken, cacheDir, logError });
+// upstox: the app's Upstox client; getRestChain(expiry, maxAgeMs): the server's REST chain of a live expiry.
+function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile, logError }) {
+  const data = createData({ getToken, upstox, cacheDir, logError });
   const hist = createHistChain(data);
   const levels = createLevels();
   const ext = { hist, levels };
@@ -128,7 +130,6 @@ function createBacktester({ getToken, upstoxGet, cacheDir, storeFile, logError }
   const findStrategy = (id) => library().find((x) => x.id === id) || saved().find((x) => x.id === id);
 
   // ---------- support / resistance ----------
-  const istToday = () => new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10);
   let liveLv = { at: 0, day: null, lv: null };
   // Levels for `day` (default today) from the sessions before it.
   async function levelsFor(day) {
@@ -514,24 +515,8 @@ function createBacktester({ getToken, upstoxGet, cacheDir, storeFile, logError }
   const bw = createBiweekly({ data, ext, dir: path.dirname(storeFile), startJob, settle, breathe, findStrategy, library, logError });
 
   // ---------- live deployment on the current chain ----------
-  const chainCache = new Map();
-  async function liveChain(expiry) {
-    const hit = chainCache.get(expiry);
-    if (hit && Date.now() - hit.at < 15_000) return hit;
-    const rows = await upstoxGet('/option/chain', { instrument_key: data.NIFTY, expiry_date: expiry });
-    const side = (o) => ({
-      ltp: o?.market_data?.ltp ?? null, bid: o?.market_data?.bid_price || null, ask: o?.market_data?.ask_price || null,
-      oi: o?.market_data?.oi ?? 0, iv: o?.option_greeks?.iv ?? null, delta: o?.option_greeks?.delta ?? null,
-      gamma: o?.option_greeks?.gamma ?? null, theta: o?.option_greeks?.theta ?? null, vega: o?.option_greeks?.vega ?? null,
-    });
-    const out = {
-      at: Date.now(),
-      spot: rows?.[0]?.underlying_spot_price ?? null,
-      rows: (rows || []).map((r) => ({ strike: r.strike_price, ce: side(r.call_options), pe: side(r.put_options) })).sort((a, b) => a.strike - b.strike),
-    };
-    chainCache.set(expiry, out);
-    return out;
-  }
+  // The REST chain of a live expiry, at most 15 s old (fetched and cached by the server, shared with its screens).
+  const liveChain = (expiry) => getRestChain(expiry, 15_000);
 
   // hitIn: an anomaly picked on the Anomalies screen (its strike / ref feed "signal" strikes).
   async function resolveLive(rawStrategy, shift = 0, hitIn = null) {

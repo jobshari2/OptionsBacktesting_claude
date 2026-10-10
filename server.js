@@ -2,7 +2,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { createSignals, signalConfig, isMarketOpen } = require('./signals');
+const { createSignals, signalConfig } = require('./signals');
 const { logError, LOG_FILE } = require('./errorlog');
 const { createFeed } = require('./feed');
 const { createFlow, flowConfig } = require('./flow');
@@ -15,11 +15,13 @@ const { buildStats } = require('./sigstats');
 const { createBacktester } = require('./bt');
 const { createAnomalyLive } = require('./anomaly-live');
 const { execFile } = require('child_process');
+const { istDate, isMarketOpen } = require('./lib/time');
+const { loadEnv, num } = require('./lib/env');
+const { createUpstox, parseChain } = require('./lib/upstox');
 
 loadEnv(path.join(__dirname, '.env'));
 
 const env = process.env;
-const num = (v, d) => (v === undefined || v === '' || isNaN(Number(v)) ? d : Number(v));
 
 // DEMO=1 serves synthetic data so the UI can be tried without credentials or outside market hours.
 const DEMO = env.DEMO === '1';
@@ -48,7 +50,7 @@ const IDLE_STOP_MS = 30_000; // outside market hours, stop calling Upstox when n
 
 // ---------- state ----------
 let token = DEMO ? 'demo' : env.UPSTOX_ACCESS_TOKEN || readSavedToken();
-let expiries = { list: [], fetchedAt: 0 };
+let contracts = { expiries: [], lot: 65, fetchedAt: 0 }; // live Nifty option contracts: expiries from today on, lot size
 let activeExpiry = null; // expiry the browser is viewing
 const sideExpiries = new Map(); // expiry -> last time the Builder asked for it (/api/live), tracked besides the chain's
 const restChains = new Map(); // expiry -> { fetchedAt, spot, rows } from the REST option chain
@@ -75,7 +77,7 @@ const pulse = createPulse({
 const book = createBook({ strikesAround: num(env.BOOK_STRIKES, 10), pressureStrikes: num(env.PULSE_STRIKES, 5) });
 // Give the pulse and the order-book view today's context after a restart.
 try {
-  const todayTape = readTape(CFG.signals.dir, new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10));
+  const todayTape = readTape(CFG.signals.dir, istDate());
   pulse.seed(todayTape);
   book.seed(todayTape);
 } catch (e) {
@@ -86,62 +88,40 @@ let lastClientAt = 0;
 let polling = false;
 
 // ---------- Upstox helpers ----------
+// One client for the whole app (lib/upstox.js): the live calls below and the historical downloads of the
+// backtester and the hedge planner count against the same rate limits.
+const upstoxClient = createUpstox({ getToken: () => token, onUnauthorized: clearToken });
 async function upstox(pathname, params = {}) {
   if (DEMO) return demoData(pathname);
-  if (!token) throw new Error('Not logged in');
-  const url = new URL(API + pathname);
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
-  });
-  const body = await res.json().catch(() => ({}));
-  if (res.status === 401) {
-    clearToken();
-    throw new Error('Upstox session expired — please log in again');
-  }
-  if (!res.ok || body.status !== 'success') {
-    throw new Error(body?.errors?.[0]?.message || `Upstox HTTP ${res.status}`);
-  }
-  return body.data;
+  return upstoxClient.live(pathname, params);
 }
 
-async function getExpiries() {
-  // Re-read hourly and whenever the IST day changes, so newly listed expiries appear and past ones drop off.
-  const today = new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10);
-  if (expiries.list.length && expiries.day === today && Date.now() - expiries.fetchedAt < 60 * 60_000) return expiries.list;
+
+
+// Expiries and lot size of the live Nifty options. Re-read hourly and whenever the IST day changes, so newly listed
+// expiries appear and past ones drop off.
+async function getContracts() {
+  const today = istDate();
+  if (contracts.expiries.length && contracts.day === today && Date.now() - contracts.fetchedAt < 60 * 60_000) return contracts;
   const data = await upstox('/option/contract', { instrument_key: NIFTY_KEY });
-  const list = [...new Set((data || []).map((c) => c.expiry))].filter((e) => e >= today).sort();
-  expiries = { list, fetchedAt: Date.now(), day: today };
-  return list;
+  const expiries = [...new Set((data || []).map((c) => c.expiry))].filter((e) => e >= today).sort();
+  contracts = { expiries, lot: (data || []).find((c) => c.lot_size)?.lot_size || 65, fetchedAt: Date.now(), day: today };
+  return contracts;
 }
-
-function side(o) {
-  const m = o?.market_data || {};
-  const g = o?.option_greeks || {};
-  return {
-    key: o?.instrument_key || null,
-    ltp: m.ltp ?? null,
-    close: m.close_price ?? null,
-    vol: m.volume ?? 0,
-    oi: m.oi ?? 0,
-    prevOi: m.prev_oi ?? 0,
-    iv: g.iv ?? null,
-    delta: g.delta ?? null,
-    bid: m.bid_price || null,
-    ask: m.ask_price || null,
-    bidQ: m.bid_qty ?? null,
-    askQ: m.ask_qty ?? null,
-  };
-}
+const getExpiries = async () => (await getContracts()).expiries;
 
 // REST option chain: gives the strike list, instrument keys, prev OI and IV. While the WebSocket feed
 // is live it is refreshed every REST_WITH_FEED_MS; otherwise it is the data source, polled every POLL_MS.
 async function fetchChain(expiry) {
   const data = await upstox('/option/chain', { instrument_key: NIFTY_KEY, expiry_date: expiry });
-  const rows = (data || [])
-    .map((r) => ({ strike: r.strike_price, ce: side(r.call_options), pe: side(r.put_options) }))
-    .sort((a, b) => a.strike - b.strike);
-  restChains.set(expiry, { fetchedAt: Date.now(), spot: data?.[0]?.underlying_spot_price ?? null, rows });
+  restChains.set(expiry, { fetchedAt: Date.now(), ...parseChain(data) });
+}
+
+// The REST chain of any live expiry, at most maxAgeMs old: what the hedge planner, the strategy deploy and the
+// calendar-arbitrage scan price from (the chain screen's expiries are kept fresh by the poll loop anyway).
+async function restChain(expiry, maxAgeMs) {
+  if (Date.now() - (restChains.get(expiry)?.fetchedAt || 0) >= maxAgeMs) await fetchChain(expiry);
+  return restChains.get(expiry);
 }
 
 // Latest tick (if subscribed) laid over the REST values.
@@ -423,7 +403,8 @@ async function handleCallback(res, code) {
 // cached under bt-cache/, saved strategies in bt-data/strategies.json.
 const backtester = createBacktester({
   getToken: () => token,
-  upstoxGet: upstox,
+  upstox: upstoxClient,
+  getRestChain: restChain,
   cacheDir: env.BT_CACHE_DIR ? path.resolve(env.BT_CACHE_DIR) : path.join(__dirname, 'bt-cache'),
   storeFile: path.join(__dirname, 'bt-data', 'strategies.json'),
   logError,
@@ -438,11 +419,8 @@ const anomalyLive = createAnomalyLive({
   getNextChain: async () => {
     const list = await getExpiries();
     if (!list[1]) return null;
-    const rows = await upstox('/option/chain', { instrument_key: NIFTY_KEY, expiry_date: list[1] });
-    return {
-      expiry: list[1], spot: rows?.[0]?.underlying_spot_price ?? null,
-      rows: (rows || []).map((r) => ({ strike: r.strike_price, ce: side(r.call_options), pe: side(r.put_options) })).sort((a, b) => a.strike - b.strike),
-    };
+    const c = await restChain(list[1], 30_000); // the scanner asks every 30 s
+    return { expiry: list[1], spot: c.spot, rows: c.rows };
   },
   data: backtester.data,
   isMarketOpen,
@@ -454,12 +432,11 @@ const anomalyLive = createAnomalyLive({
 backtester.attachLive(anomalyLive);
 
 // Portfolio hedge planner (Hedge screen): holdings from an .xlsx uploaded on the screen (starts empty),
-// chains and history from Upstox.
+// option chains from the server's own, price history from Upstox.
 const hedge = createHedge({
-  upstoxGet: (p) => {
-    const [pathname, qs] = p.split('?');
-    return upstox(pathname, Object.fromEntries(new URLSearchParams(qs || '')));
-  },
+  getContracts,
+  getRestChain: restChain,
+  upstoxBulk: (p) => upstoxClient.bulk('/v2' + p), // price history for betas and the hedge backtest
   getSpot: () => feed.tick(NIFTY_KEY)?.ltp ?? (nearestExpiry ? snapshots.get(nearestExpiry)?.spot : null) ?? null,
   cacheDir: path.join(__dirname, 'hedge-cache'),
   logError,
@@ -689,6 +666,15 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
+  // Option pricing shared with the page (public/bt-common.js): the file the server itself prices with.
+  if (p === '/lib/pricing.js') {
+    return fs.readFile(path.join(__dirname, 'lib/pricing.js'), (err, buf) => {
+      if (err) return sendJson(res, 404, { error: 'Not found' });
+      res.writeHead(200, { 'Content-Type': 'text/javascript' });
+      res.end(buf);
+    });
+  }
+
   // Chart.js, served from node_modules so the page works without a CDN.
   if (p === '/vendor/chart.js') {
     return fs.readFile(path.join(__dirname, 'node_modules/chart.js/dist/chart.umd.min.js'), (err, buf) => {
@@ -744,19 +730,9 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
 }
 
 // ---------- utils ----------
-function loadEnv(file) {
-  if (!fs.existsSync(file)) return;
-  for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
-    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/i);
-    if (m && !line.trim().startsWith('#') && process.env[m[1]] === undefined) {
-      process.env[m[1]] = m[2].replace(/^["']|["']$/g, '');
-    }
-  }
-}
-
 // Upstox tokens expire at ~3:30 AM IST the next day, so a saved token is only reused on the same IST day.
 function istDay() {
-  return new Date(Date.now() + 5.5 * 3600_000 - 3.5 * 3600_000).toISOString().slice(0, 10);
+  return istDate(Date.now() - 3.5 * 3600_000);
 }
 
 function readSavedToken() {

@@ -6,14 +6,14 @@ const fs = require('fs');
 const path = require('path');
 const A = require('./bt/anomalies');
 const { createHistChain } = require('./bt/histchain');
+const { IST_OFFSET, istDate: istDay } = require('./lib/time');
 
 const SAMPLE_MS = 5000;
 const KEEP_MS = 46 * 60_000;
 const STRIKES = 15;
 
-const istNow = (ts = Date.now()) => new Date(ts + 5.5 * 3600_000);
-const istDay = (ts) => istNow(ts).toISOString().slice(0, 10);
-const istMinute = (ts) => { const d = istNow(ts); return d.getUTCHours() * 60 + d.getUTCMinutes() + d.getUTCSeconds() / 60 - 555; };
+// minutes since the 09:15 open
+const istMinute = (ts) => { const d = new Date(ts + IST_OFFSET); return d.getUTCHours() * 60 + d.getUTCMinutes() + d.getUTCSeconds() / 60 - 555; };
 const addDays = (day, n) => new Date(Date.parse(day + 'T00:00:00Z') + n * 86400_000).toISOString().slice(0, 10);
 
 function createAnomalyLive({ getChain, getNextChain, data, isMarketOpen, demo, configFile, logDir, logError }) {

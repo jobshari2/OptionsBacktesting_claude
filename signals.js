@@ -4,6 +4,8 @@
 const fs = require('fs');
 const path = require('path');
 const { signalKind } = require('./sigstats');
+const { istDate, istTime } = require('./lib/time');
+const { num } = require('./lib/env');
 
 const MIN = 60_000;
 const BASELINE_SPAN_MIN = 15; // "normal" volume = average per-minute volume over the previous 15 minutes
@@ -25,7 +27,6 @@ const TICKS_CSV_HEADER = [
 
 // Signal thresholds from the environment (.env); dir = where recordings go.
 function signalConfig(env, dir) {
-  const num = (v, d) => (v === undefined || v === '' || isNaN(Number(v)) ? d : Number(v));
   return {
     spikeRatio: num(env.SPIKE_RATIO, 3), // strike spike: last-minute volume ≥ this × its normal per-minute volume
     spikeMinQty: num(env.SPIKE_MIN_QTY, 25000), // ...and at least this many units traded in that minute
@@ -373,18 +374,6 @@ function volAdded(list, strikes, idx) {
 }
 
 // ---------- utils ----------
-const IST_OFFSET = 5.5 * 3600_000;
-const istDate = (ts) => new Date(ts + IST_OFFSET).toISOString().slice(0, 10);
-const istTime = (ts) => new Date(ts + IST_OFFSET).toISOString().slice(11, 19);
-
-// NSE F&O trading hours: Mon–Fri 09:15–15:30 IST (exchange holidays not accounted for).
-function isMarketOpen(ts = Date.now()) {
-  const ist = new Date(ts + IST_OFFSET);
-  const day = ist.getUTCDay();
-  const mins = ist.getUTCHours() * 60 + ist.getUTCMinutes();
-  return day >= 1 && day <= 5 && mins >= 9 * 60 + 15 && mins <= 15 * 60 + 30;
-}
-
 const fmtPct = (p) => `${p >= 0 ? '+' : ''}${p.toFixed(1)}%`;
 const round = (n) => (n == null ? '' : Math.round(n * 100) / 100);
 
@@ -403,4 +392,4 @@ function compact(n) {
   return String(Math.round(n));
 }
 
-module.exports = { createSignals, signalConfig, isMarketOpen };
+module.exports = { createSignals, signalConfig };

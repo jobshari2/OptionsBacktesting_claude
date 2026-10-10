@@ -14,6 +14,8 @@ const path = require('path');
 const { createSignals, signalConfig } = require('./signals');
 const { buildStats, sessionTape, tapeOutcomes, summarise, RULE } = require('./sigstats');
 const { tapeDays, replaySnapshots } = require('./tape');
+const { istTime } = require('./lib/time');
+const { loadEnv } = require('./lib/env');
 
 // Thresholds that can be overridden for a what-if run.
 const TUNABLE = ['spikeRatio', 'spikeMinQty', 'broadRatio', 'broadPct', 'spotFastPts', 'spotMovePts', 'priceSpikePct', 'bothRisePct', 'cooldownMin'];
@@ -73,7 +75,7 @@ if (require.main === module) {
   const r = backtestSignals(dir, picked.length ? picked : tapeDays(dir), signalConfig(process.env, dir), overrides);
   if (args.includes('--json')) { process.stdout.write(JSON.stringify(r)); return; } // for the server
   if (!r.days.length) { console.log(`No market-hours tape found in ${dir}`); process.exit(1); }
-  const T = (t) => new Date(t + 5.5 * 3600_000).toISOString().slice(11, 16);
+  const T = (t) => istTime(t).slice(0, 5);
   const pc = (x) => `${Math.round(x * 100)}%`.padStart(4);
   for (const d of r.days) {
     console.log(`${d.day}: tape ${T(d.from)}–${T(d.to)}, ${d.signals} signals now${d.recorded != null ? ` (recorded live: ${d.recorded})` : ''}`);
@@ -88,12 +90,4 @@ if (require.main === module) {
     console.log(`${(o.high ? '★ ' : '  ') + o.label.padEnd(42)}${(o.dir === 'up' ? 'rises' : 'falls').padEnd(11)} ${pc(o.p)}   ${`${o.hits}/${o.n}`.padStart(7)}  ${pc(o.base).padStart(10)}   ${was}`);
   }
   if (r.errors.length) console.log('\nErrors:', r.errors);
-}
-
-function loadEnv(file) {
-  if (!fs.existsSync(file)) return;
-  for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
-    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/i);
-    if (m && !line.trim().startsWith('#') && process.env[m[1]] === undefined) process.env[m[1]] = m[2].replace(/^["']|["']$/g, '');
-  }
 }

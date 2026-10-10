@@ -5,6 +5,7 @@
 // the number of weeks used. Results are cached in <cacheDir>/betas.json and refreshed on demand.
 const fs = require('fs');
 const path = require('path');
+const { istDate } = require('../lib/time');
 
 const DAY = 86_400_000;
 const YEARS = 3;
@@ -100,7 +101,7 @@ function createBetas({ upstoxGet, cacheDir, logError }) {
   }
 
   async function refresh(holdings) {
-    const to = new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10);
+    const to = istDate();
     const from = new Date(Date.now() - YEARS * 365 * DAY).toISOString().slice(0, 10);
     const nifty = await upstoxWeekly('NSE_INDEX|Nifty 50', from, to);
     const weeks = [...nifty.keys()].sort();

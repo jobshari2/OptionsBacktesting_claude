@@ -35,7 +35,7 @@ const { normCondition, evaluate } = require('./conditions');
 const A = require('./anomalies');
 const { nearest: nearestLevels } = require('./levels');
 
-const RATE = 0.065; // risk-free rate for implied vol / delta
+const { RATE, ncdf, bsm } = require('../lib/pricing'); // RATE: risk-free rate for implied vol / delta
 const MIN_OF = (t) => {
   const [h, m] = String(t || '09:15').split(':').map(Number);
   return h * 60 + m - (9 * 60 + 15);
@@ -48,20 +48,8 @@ const hhmm = (m) => {
 const weekday = (day) => new Date(day + 'T00:00:00Z').getUTCDay();
 const r2 = (x) => Math.round(x * 100) / 100;
 
-// ---------- Black-Scholes ----------
-function ncdf(x) {
-  const t = 1 / (1 + 0.2316419 * Math.abs(x));
-  const d = 0.3989423 * Math.exp((-x * x) / 2);
-  const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
-  return x > 0 ? 1 - p : p;
-}
-function bs(S, K, T, v, call) {
-  if (T <= 0 || v <= 0) return Math.max(0, call ? S - K : K - S);
-  const sq = v * Math.sqrt(T);
-  const d1 = (Math.log(S / K) + (RATE + (v * v) / 2) * T) / sq;
-  const d2 = d1 - sq;
-  return call ? S * ncdf(d1) - K * Math.exp(-RATE * T) * ncdf(d2) : K * Math.exp(-RATE * T) * ncdf(-d2) - S * ncdf(-d1);
-}
+// ---------- Black-Scholes (lib/pricing.js) at the fixed rate, no dividend ----------
+const bs = (S, K, T, v, call) => bsm(S, K, T, v, call, RATE, 0);
 function impliedVol(price, S, K, T, call) {
   let lo = 0.005;
   let hi = 3;

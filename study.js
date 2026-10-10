@@ -5,10 +5,10 @@
 // baseline across several different days — one trending day proves nothing.
 const path = require('path');
 const { readTape } = require('./tape');
+const { istTime } = require('./lib/time');
 
 const MIN = 60_000;
 const NEAR = 5; // strikes either side of ATM for book / flow readings
-const IST = 5.5 * 3600_000;
 
 function study(dir, day) {
   const E = readTape(dir, day);
@@ -103,7 +103,7 @@ if (require.main === module) {
   const res = study(dir, day);
   if (!res) { console.log(`No tape for ${day}`); process.exit(1); }
   const { E, rows } = res;
-  const T = (t) => new Date(t + IST).toISOString().slice(11, 16);
+  const T = (t) => istTime(t).slice(0, 5);
   const cover = (k) => rows.filter((x) => x[k] != null).length;
   console.log(`${day}: tape ${T(E[0].t)}–${T(E[E.length - 1].t)}, Nifty ${E[0].spot} → ${E[E.length - 1].spot}, ${rows.length} minutes scored`);
   console.log(`Data available: aggressor flow ${cover('aggr')} min, order book ${cover('bookLevel')} min\n`);

@@ -651,27 +651,16 @@
   }
   const COLORS = ['#58a6ff', '#d6af4c', '#3fb68b', '#f0716b', '#b392f0', '#56d4dd', '#ff9f43', '#e86fb5', '#9aa5b1', '#7ee787'];
 
-  // ---------- option maths (Black-Scholes, r = 6.5%) ----------
-  const RATE = 0.065;
-  function ncdf(x) {
-    const t = 1 / (1 + 0.2316419 * Math.abs(x));
-    const d = 0.3989423 * Math.exp((-x * x) / 2);
-    const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
-    return x > 0 ? 1 - p : p;
-  }
-  function bs(S, K, T, v, call) {
-    if (T <= 1e-6 || !(v > 0)) return Math.max(0, call ? S - K : K - S);
-    const sq = v * Math.sqrt(T);
-    const d1 = (Math.log(S / K) + (RATE + (v * v) / 2) * T) / sq;
-    const d2 = d1 - sq;
-    return call ? S * ncdf(d1) - K * Math.exp(-RATE * T) * ncdf(d2) : K * Math.exp(-RATE * T) * ncdf(-d2) - S * ncdf(-d1);
-  }
+  // ---------- option maths (Black-Scholes at r = 6.5%: /lib/pricing.js, the file the server prices with) ----------
+  const { RATE, ncdf, bsm } = window.Pricing;
+  // At expiry, or without a usable volatility, an option is worth its intrinsic value.
+  const bs = (S, K, T, v, call) => (T <= 1e-6 || !(v > 0) ? Math.max(0, call ? S - K : K - S) : bsm(S, K, T, v, call, RATE, 0));
 
   window.BT = {
     $, esc, sleep, store, inr, inrS, kinr, pct, num, cls, dayLabel, dayShort, WD, MONTHS, REASON,
     api, runJob, on, emit, meta, loadMeta, allStrategies, findStrategy, clone, saveStrategy, deleteStrategy, resetStrategy, anomalyType,
     strikeLabel, legLabel, legChips, timingLabel, condLabel, EXP_LABEL, createEditor, createSettings, blankStrategy, complete,
-    chart, COLORS, bs, ncdf,
+    chart, COLORS, bs, ncdf, RATE,
   };
 
   // Load the strategy list and calendar once a backtest screen is opened.

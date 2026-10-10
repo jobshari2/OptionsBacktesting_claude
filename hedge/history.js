@@ -2,6 +2,7 @@
 // Cached in <cacheDir>/history.json; only the missing tail is fetched again (at most every 6 hours).
 const fs = require('fs');
 const path = require('path');
+const { istDate: istToday } = require('../lib/time');
 
 const DAY = 86_400_000;
 const KEYS = { nifty: 'NSE_INDEX|Nifty 50', vix: 'NSE_INDEX|India VIX' };
@@ -10,7 +11,6 @@ const CHUNK_DAYS = 300; // keep each request inside the API's range limit for da
 const REFRESH_MS = 6 * 3600_000;
 
 const ymd = (t) => new Date(t).toISOString().slice(0, 10);
-const istToday = () => ymd(Date.now() + 5.5 * 3600_000);
 
 function createHistory({ upstoxGet, cacheDir, logError }) {
   const file = path.join(cacheDir, 'history.json');

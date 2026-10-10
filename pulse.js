@@ -5,15 +5,13 @@
 // summary once a minute to <dir>/<date>/pulse.jsonl.
 const fs = require('fs');
 const path = require('path');
+const { istDate } = require('./lib/time');
 
 const MIN = 60_000;
 const SAMPLE_MS = 15_000;
 const KEEP_MS = 100 * MIN;
 const COMPUTE_MS = 5000;
 const LOG_MS = MIN;
-const IST_OFFSET = 5.5 * 3600_000;
-const istDate = (ts) => new Date(ts + IST_OFFSET).toISOString().slice(0, 10);
-const istTime = (ts) => new Date(ts + IST_OFFSET).toISOString().slice(11, 16);
 
 // OI build-up classes: what option traders did, given the change in OI and in the option's price.
 const CLASSES = {
@@ -310,4 +308,4 @@ function createPulse({ dir, buildupStrikes = 5, oiWindowMin = 15, logError }) {
   };
 }
 
-module.exports = { createPulse, PULSE_CLASSES: CLASSES, istTime };
+module.exports = { createPulse, PULSE_CLASSES: CLASSES };

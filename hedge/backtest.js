@@ -10,6 +10,9 @@
 // early) and re-opened, and marked to model every day. Premiums come out of / go into cash
 // (no interest); the hedged value = holdings + cash + open options.
 
+const { bsm } = require('../lib/pricing');
+const { num } = require('../lib/env');
+
 const DAY = 86_400_000;
 
 // Template strategies (same families as the live planner), with strikes as % of spot.
@@ -24,22 +27,8 @@ const TEMPLATES = {
 };
 
 // ---------- pricing ----------
-// Standard normal CDF (Abramowitz–Stegun 7.1.26, error < 1.5e-7)
-function ncdf(x) {
-  const t = 1 / (1 + 0.3275911 * Math.abs(x) / Math.SQRT2);
-  const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-(x * x) / 2);
-  return x >= 0 ? (1 + y) / 2 : (1 - y) / 2;
-}
-
-function bs(type, S, K, T, r, q, v) {
-  if (T <= 0 || v <= 0) return Math.max(0, type === 'PE' ? K - S : S - K);
-  const sq = v * Math.sqrt(T);
-  const d1 = (Math.log(S / K) + (r - q + (v * v) / 2) * T) / sq;
-  const d2 = d1 - sq;
-  return type === 'PE'
-    ? K * Math.exp(-r * T) * ncdf(-d2) - S * Math.exp(-q * T) * ncdf(-d1)
-    : S * Math.exp(-q * T) * ncdf(d1) - K * Math.exp(-r * T) * ncdf(d2);
-}
+// Black-Scholes-Merton (lib/pricing.js) with the rate and dividend yield of the run.
+const bs = (type, S, K, T, r, q, v) => bsm(S, K, T, v, type !== 'PE', r, q);
 
 // Volatility for one strike: base level, term structure, then skew.
 function legVol(base, K, S, T, p) {
@@ -231,7 +220,6 @@ const yearly = (eq, days) => periodic(eq, days, 4);
 const monthly = (eq, days) => periodic(eq, days, 7);
 
 const ymd = (t) => new Date(t).toISOString().slice(0, 10);
-const num = (v, d) => (v === undefined || v === null || v === '' || isNaN(Number(v)) ? d : Number(v));
 const opt = (v) => (v === undefined || v === null || v === '' || !(Number(v) > 0) ? null : Number(v));
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 

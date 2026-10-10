@@ -8,6 +8,7 @@
 const fs = require('fs');
 const path = require('path');
 const { readTape } = require('./tape');
+const { istDate } = require('./lib/time');
 
 const MIN = 60_000;
 const HORIZON_MIN = 5; // how long after the signal the outcome is judged
@@ -148,7 +149,7 @@ function summarise(days) {
 
 // Track record per kind across every finished day (today is left out: it isn't over yet).
 function buildStats(dir, { rebuild = false, logError = () => {} } = {}) {
-  const today = new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10);
+  const today = istDate();
   const cacheFile = path.join(dir, 'signal-odds.json');
   let cache = { version: CACHE_VERSION, horizonMin: HORIZON_MIN, movePts: MOVE_PTS, days: {} };
   if (!rebuild) {

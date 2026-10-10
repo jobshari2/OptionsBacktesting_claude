@@ -5,8 +5,7 @@
 // today (T+0) and, with the "days ahead" control, T+N. The IV control shifts every leg's IV for the curves
 // that still have time value. Greeks are Black-Scholes per leg, in rupees for the whole position.
 (() => {
-  const { inr, inrS, kinr, num, cls, bs, ncdf } = BT;
-  const RATE = 0.065;
+  const { inr, inrS, kinr, num, cls, bs, ncdf, RATE } = BT;
   const dirOf = (l) => (l.action === 'B' ? 1 : -1);
   const qty = (l) => dirOf(l) * l.lots * l.lot;
   const intrinsic = (l, x) => Math.max(0, l.type === 'CE' ? x - l.strike : l.strike - x);
