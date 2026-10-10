@@ -206,6 +206,7 @@ function render() {
   buildWindowButtons(d.windows);
   document.querySelectorAll('.win-label').forEach((el) => (el.textContent = state.win + 'm'));
 
+  window.BT?.chainArb?.(d); // before the chain: "Fit screen" measures the height this list leaves it
   let rows = visibleRows(d);
   renderChain(d, rows);
   if (state.range === 'auto' && state.view === 'chain') {

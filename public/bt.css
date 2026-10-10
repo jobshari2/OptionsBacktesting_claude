@@ -269,7 +269,12 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 }
 
 /* ---------- chain: support / resistance ---------- */
-.main-col { grid-template-rows: minmax(0, 1fr) !important; }
+.main-col { grid-template-rows: minmax(0, 1fr) auto !important; }
+/* chain screen: live vertical-spread arbitrage under the option chain (rows are styled with the Builder's list below) */
+.ch-arb { max-height: 230px; }
+#chArbHead { cursor: pointer; user-select: none; }
+.ch-arb-panel.collapsed .ch-arb { display: none; }
+.ch-arb-panel.collapsed .panel-head { border-bottom: 0; }
 .levels-panel { flex: 0 1 40%; }
 .levels-panel.collapsed { flex: none; }
 .levels-panel.collapsed .lv-body { display: none; }
@@ -544,3 +549,6 @@ body.nc-window { height: 100vh; padding: 8px; }
 .sb-exps .nav:disabled { opacity: .35; cursor: default; }
 .sb-trades-tbl tbody tr.sel td { background: rgba(88,166,255,.14); }
 .sb-trades-tbl td.legs-cell { min-width: 240px; }
+/* vertical spreads closest to an arbitrage, listed when none clears the minimum edge */
+.arb-row.near { border-left-color: var(--muted); opacity: .8; }
+.arb-pnl { flex-basis: 100%; }

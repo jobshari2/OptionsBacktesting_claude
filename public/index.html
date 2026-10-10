@@ -96,6 +96,14 @@
         </table>
       </div>
     </section>
+    <!-- live vertical-spread arbitrage of the expiry shown in the chain: filled by arb.js -->
+    <section class="panel ch-arb-panel" id="chArbPanel">
+      <div class="panel-head" id="chArbHead" title="Click the header to collapse / expand the list">
+        <h3><span id="chArbCaret">▾</span> Vertical spread arbitrage <span class="muted small" id="chArbInfo"></span></h3>
+        <label class="mini" title="Lots you want to trade: a spread is marked ✔ when both legs can fill that many at the quoted price. Also the lots opened in the Builder.">Lots <input class="num xs" type="number" id="chArbLots" min="1" step="1"></label>
+      </div>
+      <div class="sb-arb ch-arb" id="chArb"></div>
+    </section>
 
     </div>
     <aside class="side">
@@ -260,6 +268,7 @@
   <script src="/vendor/lightweight-charts.js"></script>
   <script src="app.js"></script>
   <script src="bt-common.js"></script>
+  <script src="arb.js"></script>
   <script src="chain-chart.js"></script>
   <script src="payoff.js"></script>
   <script src="bt-view.js"></script>

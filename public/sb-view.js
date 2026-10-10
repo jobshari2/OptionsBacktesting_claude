@@ -30,6 +30,7 @@
   const loadingKeys = new Set();
   const failedKeys = new Set(); // viewed expiries with no data for the current day
   let liveTimer = null;
+  const LIVE_MS = 1000; // live chain refresh
   let playTimer = null;
   let levels = new Map(); // day -> levels
   let research = null;
@@ -60,13 +61,14 @@
   const newestFirst = (list) => [...list].sort().reverse();
   const nearestFirst = (list) => [...list].sort();
   const viewedExp = () => (S.chainExp && chainExpiries().includes(S.chainExp) ? S.chainExp : primary());
-  // Strikes either side of ATM scanned for vertical-spread arbitrage (its own toggle, not the chain's width).
+  // Strikes either side of ATM listed in the vertical-spread arbitrage panel (its own toggle, not the chain's width).
+  // The scan itself always covers the widest range, so the toggle's counts are all live.
   const ARB_WIDTHS = [10, 20, 30];
   const arbWidth = () => (ARB_WIDTHS.includes(S.arbWidth) ? S.arbWidth : 10);
   async function loadDay(day, force, exp = S.expiry) {
     const key = `${exp}|${day}`;
     const need = [...new Set([...S.legs, ...(pending?.legs || [])].filter((l) => (l.expiry || primary()) === exp).map((l) => l.strike))];
-    const width = Math.max(15, S.width, arbWidth()); // strikes beyond the day's Nifty range: enough for the chain's and the arbitrage scan's ATM ± width
+    const width = Math.max(15, S.width, ...ARB_WIDTHS); // strikes beyond the day's Nifty range: enough for the chain's ATM ± width and the arbitrage scan's ATM ± 30
     const have = dayCache.get(key);
     if (have && !force && have.width >= width && need.every((k) => have.ks.includes(k))) return have;
     const d = { ...(await BT.api(`/api/sb/day?expiry=${exp}&day=${day}&width=${width}&extra=${need.join(',')}`)), width };
@@ -76,9 +78,12 @@
   }
   // Other expiries needed besides the main one: those held in legs and the one viewed in the chain.
   const extraExps = () => [...new Set([...S.legs.filter((l) => l.open).map(legExp), viewedExp()])].filter((e) => e && e !== primary());
+  // The streamed chain (ticks folded in every 500 ms, with order-book depth), as on the Chain screen; a server
+  // without /api/live falls back to the REST chain, which the server refreshes every 15 s.
   async function fetchLive(exp) {
-    const c = await BT.api('/api/bt/chain?expiry=' + exp);
-    liveMap.set(exp, { at: Date.now(), spot: c.spot, rows: c.rows.filter((r) => r.ce.ltp || r.pe.ltp) });
+    let c;
+    try { c = await BT.api('/api/live?expiry=' + exp); } catch { c = await BT.api('/api/bt/chain?expiry=' + exp); }
+    liveMap.set(exp, { at: c.updatedAt || Date.now(), spot: c.spot, rows: c.rows.filter((r) => [r.ce, r.pe].some((q) => q.ltp || (q.bid && q.ask))) });
   }
   async function loadLive() {
     if (!S.liveExpiry) return;
@@ -741,7 +746,19 @@
       $('sbChain').innerHTML = '<div class="muted pad">Loading the live chain…</div>';
       await loadLive();
       loadLevels(null).then(render);
-      liveTimer = setInterval(async () => { if (window.app.state.view !== 'sb' || S.src !== 'live') return; await loadLive(); record(); render(); }, 5000);
+      // prices every second (redrawn only when the snapshot moved); the P&L history keeps a point every 5 s
+      let inFlight = false;
+      let recordedAt = 0;
+      liveTimer = setInterval(async () => {
+        if (inFlight || window.app.state.view !== 'sb' || S.src !== 'live') return;
+        inFlight = true;
+        try {
+          const before = liveMap.get(S.liveExpiry)?.at;
+          await loadLive();
+          if (Date.now() - recordedAt >= 5000) { recordedAt = Date.now(); record(); }
+          if (liveMap.get(S.liveExpiry)?.at !== before) render();
+        } finally { inFlight = false; }
+      }, LIVE_MS);
       record();
     }
     render();
@@ -830,88 +847,13 @@
   }
 
   // ---------- vertical-spread arbitrage ----------
-  // For one expiry and one option type, a vertical spread can never be worth less than 0 or more than its width
-  // (strike gap). Prices that break those bounds are a risk-free gain at expiry, before costs:
-  //   calls: C(lo) < C(hi)  -> buy lo, sell hi (paid to take a spread that cannot lose)
-  //          C(lo) - C(hi) > hi - lo -> sell lo, buy hi (credit above the most it can ever cost)
-  //   puts : P(lo) > P(hi)  -> sell lo, buy hi
-  //          P(hi) - P(lo) > hi - lo -> sell hi, buy lo
-  // Live prices use what you would really get (sell at bid, buy at ask) when the book is there; replay uses closes.
-  const ARB_MIN = 0.5; // smallest edge (index points) worth showing
-  let arbs = []; // everything found
+  // The scan and its list are in arb.js (BT.arb), shared with the Chain screen.
   let arbsShown = []; // after the CE / PE filter, in the order listed
-  const nq = (n) => (n == null ? '—' : window.app?.compact ? window.app.compact(n) : String(n));
-  function findArbs(M) {
-    const out = [];
-    const live = S.src === 'live';
-    const book = (k, t) => (live ? M.quote(k, t) : null);
-    const sellPx = (k, t) => { const q = book(k, t); return q?.bid > 0 ? q.bid : M.px(k, t); };
-    const buyPx = (k, t) => { const q = book(k, t); return q?.ask > 0 ? q.ask : M.px(k, t); };
-    // Order-book depth behind a leg: selling needs buyers at the bid, buying needs sellers at the ask.
-    const leg = (act, k, t) => {
-      const q = book(k, t);
-      return { act, k, px: act === 'S' ? sellPx(k, t) : buyPx(k, t), qty: q ? (act === 'S' ? q.bidQ : q.askQ) ?? null : null, buyers: q?.tbq ?? null, sellers: q?.tsq ?? null };
-    };
-    for (const t of ['CE', 'PE']) {
-      // only the strikes within the selected ATM ± range, and only sane prices (stale prints below intrinsic value are not tradeable)
-      const at = M.ks.indexOf(atmOf(M));
-      const ks = M.ks.slice(Math.max(0, at - arbWidth()), at + arbWidth() + 1).filter((k) => M.px(k, t) > 0.05 && ivOf(M.px(k, t), M.spot, k, M.T, t === 'CE') != null);
-      for (let i = 0; i < ks.length; i++) {
-        for (let j = i + 1; j < ks.length; j++) {
-          const lo = ks[i];
-          const hi = ks[j];
-          const w = hi - lo;
-          let a = null;
-          if (t === 'CE') {
-            const order = sellPx(hi, t) - buyPx(lo, t); // buy lo, sell hi for a credit
-            const width = sellPx(lo, t) - buyPx(hi, t) - w; // sell lo, buy hi for more than the width
-            if (order >= ARB_MIN) a = { kind: 'free credit', edge: order, legs: [['B', lo], ['S', hi]] };
-            else if (width >= ARB_MIN) a = { kind: 'credit above width', edge: width, legs: [['S', lo], ['B', hi]] };
-          } else {
-            const order = sellPx(lo, t) - buyPx(hi, t); // sell lo, buy hi for a credit
-            const width = sellPx(hi, t) - buyPx(lo, t) - w; // sell hi, buy lo for more than the width
-            if (order >= ARB_MIN) a = { kind: 'free credit', edge: order, legs: [['S', lo], ['B', hi]] };
-            else if (width >= ARB_MIN) a = { kind: 'credit above width', edge: width, legs: [['S', hi], ['B', lo]] };
-          }
-          if (!a) continue;
-          const info = a.legs.map(([act, k]) => leg(act, k, t));
-          const qtys = info.map((x) => x.qty);
-          // lots both legs can fill at the quoted price (live only; the replay has no order book)
-          const fit = live && qtys.every((x) => x != null) ? Math.floor(Math.min(...qtys) / M.lot) : null;
-          out.push({ ...a, type: t, lo, hi, expiry: M.expiry, info, fit, dist: Math.min(Math.abs(lo - M.spot), Math.abs(hi - M.spot)) });
-        }
-      }
-    }
-    // nearest the money first, then the bigger edge
-    return out.sort((x, y) => x.dist - y.dist || y.edge - x.edge);
-  }
   function renderArb(M) {
-    arbs = findArbs(M);
-    const el = $('sbArb');
-    const f = S.arbType || 'ALL';
-    const cnt = { ALL: arbs.length, CE: arbs.filter((a) => a.type === 'CE').length, PE: arbs.filter((a) => a.type === 'PE').length };
-    const filt = `<span class="seg sm" id="sbArbFilter">${['ALL', 'CE', 'PE'].map((v) => `<button data-af="${v}" class="${f === v ? 'on' : ''}">${v === 'ALL' ? 'All' : v} ${cnt[v]}</button>`).join('')}</span> <span class="seg sm" id="sbArbWidth" title="Strikes either side of ATM that are scanned for arbitrage">${ARB_WIDTHS.map((w) => `<button data-aw="${w}" class="${arbWidth() === w ? 'on' : ''}">ATM ± ${w}</button>`).join('')}</span>`;
-    if (!arbs.length) { el.innerHTML = `<div class="arb-head">${filt} <span class="muted small">Vertical-spread arbitrage: none found within ATM ± ${arbWidth()} strikes on this expiry (call and put prices respect the no-arbitrage bounds).</span></div>`; arbsShown = []; return; }
-    arbsShown = arbs.filter((a) => f === 'ALL' || a.type === f);
-    const shown = arbsShown.slice(0, 8);
     const live = S.src === 'live';
-    // how many strikes each leg is from the at-the-money strike: ATM, ATM+2, ATM-3 …
-    const atmK = atmOf(M);
-    const atmI = M.ks.indexOf(atmK);
-    const atmTag = (k) => { const d = M.ks.indexOf(k) - atmI; return d === 0 ? 'ATM' : `ATM${d > 0 ? '+' : '-'}${Math.abs(d)}`; };
-    const row = (a, i) => {
-      const depth = a.info.map((x) => `<span class="${x.act === 'B' ? 'pos' : 'neg'}">${x.act === 'S' ? 'SELL' : 'BUY'} ${x.k}</span> ${x.act === 'S' ? 'buyers' : 'sellers'} at ${x.px?.toFixed(2)}: <b>${nq(x.qty)}</b> <span class="muted">(book ${nq(x.buyers)} buy / ${nq(x.sellers)} sell)</span>`).join(' · ');
-      const badge = !live ? '<span class="arb-fit na" title="The replay has no order book">depth n/a (replay)</span>'
-        : a.fit == null ? '<span class="arb-fit na" title="No depth in the quote">depth unknown</span>'
-          : `<span class="arb-fit ${a.fit >= chainLots() ? 'ok' : a.fit > 0 ? 'thin' : 'none'}" title="Lots both legs can fill at the quoted price">${a.fit >= chainLots() ? '✔' : '⚠'} ${a.fit} lot${a.fit === 1 ? '' : 's'} fillable</span>`;
-      return `<div class="arb-row"><span class="arb-leg">${a.legs.map(([act, k]) => `<b class="${act === 'B' ? 'pos' : 'neg'}">${act === 'B' ? 'BUY' : 'SELL'}</b> ${k} ${a.type} <span class="muted small" title="Strikes away from the at-the-money strike (${atmK})">(${atmTag(k)})</span>`).join(' + ')}</span>
-        <span class="muted small">${a.kind} · ${a.dist === 0 ? 'at the money' : `${Math.round(a.dist)} pts from Nifty`}</span> <b class="pos" title="Guaranteed minimum gain per lot">+${a.edge.toFixed(2)} pts · ${inr(a.edge * M.lot)}/lot</b> ${badge}
-        <button class="btn-sm ghost" data-arb="${i}" title="Add both legs to the position and payoff chart">Add to position</button>
-        ${live ? `<div class="arb-depth small">${depth}</div>` : ''}</div>`;
-    };
-    el.innerHTML = `<div class="arb-head">${filt} <b>⚡ ${arbsShown.length} vertical-spread arbitrage${arbsShown.length === 1 ? '' : 's'}</b> <span class="muted small">nearest the money first · risk-free at expiry before brokerage and slippage${live ? '; priced at bid/ask' : '; replay uses last traded prices, so a stale print can look like an arbitrage'}</span></div>`
-      + (shown.length ? shown.map(row).join('') : '<div class="muted small">None of this type.</div>')
-      + (arbsShown.length > shown.length ? `<div class="muted small">+${arbsShown.length - shown.length} farther from the money</div>` : '');
+    const r = BT.arb.html(BT.arb.find(M, { live, basis: S.arbBasis }), M, { live, basis: S.arbBasis, width: arbWidth(), type: S.arbType || 'ALL', lots: chainLots(), btn: 'Add to position', btnTip: 'Add both legs to the position and payoff chart' });
+    arbsShown = r.shown;
+    $('sbArb').innerHTML = r.html;
   }
   const EXP_SHOWN = 4; // expiries visible at a time in the chain's expiry strip
   const expWin = { start: 0, seen: '', html: '' };
@@ -1260,19 +1202,17 @@
     if (!openLegs().length) { S.atmIvEntry = null; S.spotEntry = null; }
     record(); save(); render();
   }
-  async function setArbWidth(w) {
+  function setArbWidth(w) {
     S.arbWidth = w;
     save();
-    render();
-    if (S.src !== 'hist' || !S.day) return;
-    // a wider scan than the downloaded strikes: fetch the extra ones for the main and the other shown / held expiries
-    busy = true;
-    try { for (const exp of [S.expiry, ...extraExps()]) await loadDay(S.day, false, exp).catch(() => {}); } finally { busy = false; }
-    render();
+    const Mv = market(viewedExp());
+    if (Mv) renderArb(Mv);
   }
   $('sbArb').addEventListener('click', (e) => {
     const aw = e.target.closest('button[data-aw]');
     if (aw) { setArbWidth(Number(aw.dataset.aw)); return; }
+    const ab = e.target.closest('button[data-ab]');
+    if (ab) { S.arbBasis = ab.dataset.ab; save(); const Mv = market(viewedExp()); if (Mv) renderArb(Mv); return; }
     const b = e.target.closest('button[data-arb]');
     const f = e.target.closest('button[data-af]');
     if (f) { S.arbType = f.dataset.af; save(); const Mv = market(viewedExp()); if (Mv) renderArb(Mv); return; }

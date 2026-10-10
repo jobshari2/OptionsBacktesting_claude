@@ -62,6 +62,7 @@ const IDLE_STOP_MS = 30_000; // outside market hours, stop calling Upstox when n
 let token = DEMO ? 'demo' : env.UPSTOX_ACCESS_TOKEN || readSavedToken();
 let expiries = { list: [], fetchedAt: 0 };
 let activeExpiry = null; // expiry the browser is viewing
+const sideExpiries = new Map(); // expiry -> last time the Builder asked for it (/api/live), tracked besides the chain's
 const restChains = new Map(); // expiry -> { fetchedAt, spot, rows } from the REST option chain
 const snapshots = new Map(); // expiry -> latest snapshot (REST + ticks)
 // expiry -> [{ t, spot, d: { strike: [ceLtp, ceVol, ceOi, peLtp, peVol, peOi, (ceBuy, ceSell, peBuy, peSell)] } }]
@@ -173,13 +174,19 @@ function buildSnapshot(expiry) {
   return { hist, snap };
 }
 
-// Signals always watch the nearest expiry; the expiry open in the browser is tracked too if different.
+// Signals always watch the nearest expiry; the expiry open in the browser is tracked too if different, and so are
+// the expiries the Builder asked for in the last IDLE_STOP_MS.
 let nearestExpiry = null;
 function targetExpiries() {
-  const watching = Date.now() - lastClientAt < IDLE_STOP_MS;
+  const now = Date.now();
+  const watching = now - lastClientAt < IDLE_STOP_MS;
   const list = [nearestExpiry];
-  if (watching && activeExpiry && activeExpiry !== nearestExpiry) list.push(activeExpiry);
-  return list.filter(Boolean);
+  if (watching && activeExpiry) list.push(activeExpiry);
+  for (const [e, at] of sideExpiries) {
+    if (now - at < IDLE_STOP_MS) list.push(e);
+    else sideExpiries.delete(e);
+  }
+  return [...new Set(list.filter(Boolean))];
 }
 
 function snapshotAll() {
@@ -438,6 +445,28 @@ const server = http.createServer(async (req, res) => {
       lastError = e.message;
       logError('api', e);
       return sendJson(res, 200, { apiVersion: API_VERSION, loggedIn: Boolean(token), error: e.message });
+    }
+  }
+
+  // The streamed chain (REST + ticks, rebuilt every TICK_SNAPSHOT_MS) of any live expiry, for the Builder. Unlike
+  // /api/chain it does not change the expiry the Chain screen follows; the expiry is tracked while it is asked for.
+  if (p === '/api/live') {
+    lastClientAt = Date.now();
+    try {
+      if (!token) throw new Error('Not logged in');
+      const list = await getExpiries();
+      const expiry = url.searchParams.get('expiry');
+      if (!list.includes(expiry)) throw new Error('Not a live expiry: ' + expiry);
+      sideExpiries.set(expiry, Date.now());
+      if (!snapshots.has(expiry)) {
+        await fetchChain(expiry);
+        buildSnapshot(expiry);
+        updateSubscriptions();
+      }
+      const s = snapshots.get(expiry);
+      return sendJson(res, 200, { expiry, updatedAt: s.updatedAt, spot: s.spot, rows: s.rows, feed: DEMO ? null : feed.status().connected });
+    } catch (e) {
+      return sendJson(res, 400, { error: e.message });
     }
   }
 
