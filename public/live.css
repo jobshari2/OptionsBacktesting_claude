@@ -10,7 +10,7 @@
   grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr));
 }
 .chart-card { min-height: 0; }
-.chart-card .chart-box, .flow-charts .chart-box, .p-side .chart-box, .book-stack .chart-box { flex: 1; }
+.chart-card .chart-box, .flow-charts .chart-box, .book-stack .chart-box { flex: 1; }
 .small-seg button { padding: 2px 8px !important; font-size: 11px !important; }
 .heat-box { display: flex; }
 .heatmap { flex: 1; display: grid; gap: 2px; font-size: 10px; min-height: 0; }
@@ -141,7 +141,11 @@
 .cl.long-buildup { background: var(--accent); } .cl.short-buildup { background: var(--atm); }
 .cl.short-covering { background: #b392f0; } .cl.long-unwinding { background: var(--muted); }
 .p-oi-legend { display: flex; gap: 12px; flex-wrap: wrap; padding: 6px 12px 10px; }
-.p-side .chart-box { min-height: 120px; }
+/* right column: key levels above the Nifty chart (the Chain screen's, see .nifty-panel in bt.css) */
+.p-side { display: flex; flex-direction: column; gap: 12px; min-height: 0; min-width: 0; }
+.p-side > .panel:first-child { flex: none; }
+.p-side .lv-nearest { padding-top: 6px; }
+.p-side .nc-legend { display: none; } /* the Chain screen explains the lines; here the room goes to the candles */
 .p-levels { padding: 6px 14px 8px; font-size: 12.5px; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
 .p-levels .lk { color: var(--muted); }
 @media (max-width: 1100px) {
@@ -149,6 +153,7 @@
   .ph-tiles { border-left: 0; border-top: 1px solid var(--line); }
   .pulse-grid { grid-template-columns: 1fr; }
   .pulse-grid .panel { min-height: 320px; }
+  .p-side > .panel:first-child { min-height: 0; }
 }
 
 /* ---------- order book screen ---------- */

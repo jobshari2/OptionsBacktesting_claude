@@ -178,6 +178,7 @@
     $('hSelSub').textContent = '';
     $('hLegs').innerHTML = '';
     $('hCustomise').classList.add('hidden');
+    $('hBuilder').classList.add('hidden');
     $('hEditor').classList.add('hidden');
     if (hs.chart) { hs.chart.data.labels = []; hs.chart.data.datasets.forEach((x) => { x.data = []; }); hs.chart.update('none'); }
     for (const id of ['hScenHead', 'hScenBody', 'hFamHead', 'hFamily', 'hMoveVal', 'hMoveSum']) $(id).innerHTML = '';
@@ -274,6 +275,7 @@
     }
     $('hLegs').closest('.h-legs-wrap').classList.toggle('hidden', hs.editing);
     $('hCustomise').classList.toggle('hidden', hs.editing || !c);
+    $('hBuilder').classList.toggle('hidden', hs.editing || !c);
     renderChart(d);
     renderScenarios(d);
   }
@@ -392,6 +394,15 @@
 
   const editAndPlan = () => { save('custom', hs.custom); hs.dirty = true; hs.selected = 'custom'; clearTimeout(hs.timer); hs.timer = setTimeout(plan, 250); };
   $('hCustomise').addEventListener('click', startEditing);
+  // The selected hedge as a paper position in the Builder, on the live chain of its expiry.
+  $('hBuilder').addEventListener('click', () => {
+    const c = hs.data?.selected;
+    if (!c?.legs?.length) return;
+    window.BT.emit('open-builder', {
+      src: 'live', expiry: c.expiry, note: `Hedge: ${nameOf(c, hs.data)}`,
+      legs: c.legs.map((l) => ({ action: l.action === 'buy' ? 'B' : 'S', type: l.type, strike: l.strike, expiry: c.expiry, lots: l.lots })),
+    });
+  });
   $('hNew').addEventListener('click', startNew);
   $('hEdSave').addEventListener('click', () => saveDraft(false));
   $('hEdSaveNew').addEventListener('click', () => saveDraft(true));

@@ -1,6 +1,7 @@
 // Hedge backtest: replays option hedges over historical daily Nifty closes.
 //
-// No historical option prices are available, so every leg is priced with Black-Scholes:
+// Hedges run for months and the history goes back to 2008; real option prices exist for the last ~2 years only
+// (expired weekly and monthly contracts, see bt/data.js), so every leg is priced with Black-Scholes:
 //   volatility = India VIX of that day (or realised volatility, or a fixed level) × multiplier,
 //   + skew (vol points per 10% out of the money; puts usually dearer than calls),
 //   optionally pulled toward the long-run average for longer expiries (term structure),

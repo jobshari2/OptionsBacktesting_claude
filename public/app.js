@@ -633,6 +633,16 @@ function lvBadge(k, rows) {
   return `<span class="lv-tag ${res ? 'r' : 's'}${major ? ' major' : ''}" title="${esc(tip)}">${res ? 'R' : 'S'}</span>`;
 }
 
+// The nearest major and minor resistance and support around `spot` (price levels, not OI), as the four cells of a
+// .lv-nearest grid. Shown on the Chain screen and on Market Pulse.
+function nearestLevelsHtml(spot) {
+  const lv = state.levels?.levels || [];
+  const near = (side, cls) => lv.filter((l) => l.cls === cls && (side === 'S' ? l.price < spot : l.price > spot))
+    .sort((a, b) => Math.abs(a.price - spot) - Math.abs(b.price - spot))[0];
+  const cell = (label, l, side) => `<div class="lvn ${side === 'S' ? 's' : 'r'}"><span>${label}</span><b>${l ? l.price : '—'}</b><span class="muted">${l ? (l.price - spot >= 0 ? '+' : '') + Math.round(l.price - spot) + ' pts' : ''}</span></div>`;
+  return cell('Major R', near('R', 'major'), 'R') + cell('Minor R', near('R', 'minor'), 'R') + cell('Minor S', near('S', 'minor'), 'S') + cell('Major S', near('S', 'major'), 'S');
+}
+
 function renderLevels(d) {
   loadLevels();
   const L = state.levels;
@@ -640,10 +650,7 @@ function renderLevels(d) {
   if (!L) { $('lvLadder').innerHTML = '<div class="muted small pad">Loading levels…</div>'; return; }
   $('lvAsOf').textContent = L.error ? 'price levels unavailable' : `from ${L.sessions} sessions to ${L.basedOn}`;
   const all = [...(L.levels || []).map((l) => ({ ...l })), ...oiLevels(d).map((l) => ({ ...l, cls: l.cls, isOi: true }))];
-  const near = (side, cls) => all.filter((l) => !l.isOi && (cls === 'any' || l.cls === cls) && (side === 'S' ? l.price < spot : l.price > spot))
-    .sort((a, b) => Math.abs(a.price - spot) - Math.abs(b.price - spot))[0];
-  const cell = (label, l, side) => `<div class="lvn ${side === 'S' ? 's' : 'r'}"><span>${label}</span><b>${l ? l.price : '—'}</b><span class="muted">${l ? (l.price - spot >= 0 ? '+' : '') + Math.round(l.price - spot) + ' pts' : ''}</span></div>`;
-  $('lvNearest').innerHTML = cell('Major R', near('R', 'major'), 'R') + cell('Minor R', near('R', 'minor'), 'R') + cell('Minor S', near('S', 'minor'), 'S') + cell('Major S', near('S', 'major'), 'S');
+  $('lvNearest').innerHTML = nearestLevelsHtml(spot);
   all.sort((a, b) => b.price - a.price);
   let html = '';
   let spotDone = false;
@@ -759,7 +766,7 @@ $('tabs').addEventListener('click', (e) => {
 });
 $('subtabs').addEventListener('click', (e) => { if (e.target.dataset.view) setView(e.target.dataset.view); });
 
-window.app = { state, compact, pctText, render, istClock, esc, setView, setError, price, TYPE_LABEL };
+window.app = { state, compact, pctText, render, istClock, esc, setView, setError, price, TYPE_LABEL, nearestLevelsHtml };
 setView(state.view);
 
 // Top-bar clock with milliseconds, plus how old the last fetched data is.

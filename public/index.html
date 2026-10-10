@@ -372,12 +372,16 @@
           <span><i class="cl long-unwinding"></i>long unwinding</span>
         </div>
       </section>
-      <section class="panel p-side">
-        <div class="chart-head"><h3>Key levels</h3></div>
-        <div id="pLevels" class="p-levels"></div>
-        <div class="chart-head"><h3>Nifty, last 100 min</h3><span class="muted small" id="pRange"></span></div>
-        <div class="chart-box"><canvas id="cPulseSpot"></canvas></div>
-      </section>
+      <div class="p-side">
+        <section class="panel">
+          <div class="chart-head"><h3>Key levels</h3><span class="muted small" id="pRange"></span></div>
+          <!-- nearest support / resistance: the same levels as on the Chain screen -->
+          <div id="pNearest" class="lv-nearest"></div>
+          <div id="pLevels" class="p-levels"></div>
+        </section>
+        <!-- the Chain screen's Nifty chart (chain-chart.js), opening on 1-minute candles -->
+        <section class="panel nifty-panel" id="pulseChart"></section>
+      </div>
     </div>
   </main>
 
@@ -463,7 +467,7 @@
       <section class="panel h-detail">
         <div class="chart-head">
           <h3 id="hSelTitle">Selected hedge</h3>
-          <span><button class="btn-sm" id="hCustomise" title="Edit these legs as your own structure">Customise</button> <button class="btn-sm" id="hNew" title="Start a structure from scratch">+ New structure</button></span>
+          <span><button class="btn-sm ghost" id="hBuilder" title="Open these legs in the Builder as a paper position on the live chain: payoff on any date, Greeks and adjustment suggestions">Builder ▸</button> <button class="btn-sm" id="hCustomise" title="Edit these legs as your own structure">Customise</button> <button class="btn-sm" id="hNew" title="Start a structure from scratch">+ New structure</button></span>
         </div>
         <div class="muted small h-selsub" id="hSelSub"></div>
         <div class="h-legs-wrap"><table class="h-legs"><thead><tr><th>Action</th><th>Qty</th><th>Strike</th><th>Expiry</th><th>Price</th><th>Bid / Ask</th><th>OI</th><th>Value</th></tr></thead><tbody id="hLegs"></tbody></table></div>
@@ -603,7 +607,7 @@
         <div class="chart-head"><h3 id="hbTradesTitle">Trades</h3><span class="muted small" id="hbTradesSub"></span></div>
         <div class="h-family-wrap hb-trades-wrap"><table class="h-family hb-table"><thead><tr><th>Opened</th><th>Closed</th><th>Why</th><th>Nifty in → out</th><th>IV</th><th>Legs (entry → exit)</th><th>Cost</th><th>Got back</th><th>Hedge P&amp;L</th><th>Holdings P&amp;L</th><th>Net</th></tr></thead><tbody id="hbTrades"></tbody></table></div>
       </section>
-      <div class="muted small h-note">Upstox has no history of option prices, so every option is priced with Black-Scholes from the Nifty close and that day's India VIX (or the volatility you pick), with the skew, bid/ask spread and charges above. Holdings are assumed to move beta × Nifty. Premiums come out of cash (no interest on it); margin for sold legs is ignored. Real fills, skew and liquidity in a crash will differ — use this to compare strategies, not to predict exact rupees. Not investment advice.</div>
+      <div class="muted small h-note">These hedges run for months and the test goes back to 2008, far beyond the ~2 years of real option prices Upstox keeps (those drive Strategies › Backtest), so every option is priced with Black-Scholes from the Nifty close and that day's India VIX (or the volatility you pick), with the skew, bid/ask spread and charges above. Holdings are assumed to move beta × Nifty. Premiums come out of cash (no interest on it); margin for sold legs is ignored. Real fills, skew and liquidity in a crash will differ — use this to compare strategies, not to predict exact rupees. Not investment advice.</div>
     </div>
   </main>
 
