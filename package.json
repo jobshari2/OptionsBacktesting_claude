@@ -2,7 +2,7 @@
   "name": "option-live-data",
   "version": "0.1.0",
   "private": true,
-  "description": "Nifty options strategy backtester and live option chain using the Upstox API",
+  "description": "Nifty options lab on the Upstox API: live chain and analysis, strategy backtester, portfolio hedge",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
