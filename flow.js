@@ -3,6 +3,8 @@
 // and score the prediction. Everything is saved to <dir>/<date>/predictions.csv / .jsonl.
 const fs = require('fs');
 const path = require('path');
+const { istDate, istTime } = require('./lib/time');
+const { num } = require('./lib/env');
 
 const MIN = 60_000;
 const SERIES_EVERY_MS = 5000; // chart sample rate
@@ -288,7 +290,6 @@ function predictionRow(p) {
 
 // Settings from .env (FLOW_*), with optional overrides (used by replays to test other values).
 function flowConfig(env, overrides = {}) {
-  const num = (v, d) => (v === undefined || v === '' || isNaN(Number(v)) ? d : Number(v));
   return {
     imbalance: num(env.FLOW_IMBALANCE, 0.2), // predict when (CE − PE) / (CE + PE) of 1-min volume is ≥ this (CE share ≥ 60%)
     holdSec: num(env.FLOW_HOLD_SEC, 10), // ...and the imbalance holds for this many seconds
@@ -303,9 +304,6 @@ function flowConfig(env, overrides = {}) {
 }
 
 // ---------- utils ----------
-const IST_OFFSET = 5.5 * 3600_000;
-const istDate = (ts) => new Date(ts + IST_OFFSET).toISOString().slice(0, 10);
-const istTime = (ts) => new Date(ts + IST_OFFSET).toISOString().slice(11, 19);
 const round = (n) => (n == null ? '' : Math.round(n * 100) / 100);
 const round0 = (n) => (n == null ? '' : Math.round(n));
 

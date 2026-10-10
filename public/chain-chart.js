@@ -1,4 +1,4 @@
-// Nifty candlestick chart: on the Chain screen and, with the full tool set, in its own window (chart.html).
+// Nifty candlestick chart: on the Chain and Market Pulse screens and, with the full tool set, in its own window (chart.html).
 // History comes from /api/bt/candles (the cached 1-minute files, a block of sessions at a time: scrolling back
 // loads more); today's candles are re-read every 30 s and in between the last candle follows the live tick
 // from /api/nifty/ltp. Support / resistance levels are drawn across it (hover one for its details).
@@ -146,8 +146,9 @@
     },
   };
 
-  function mount(root, { full = false } = {}) {
-    const pre = full ? 'ncw.' : 'nc.'; // the pop-out window remembers its own settings
+  // store: prefix of this chart's saved settings (each place remembers its own); tf0: the timeframe it first opens on.
+  function mount(root, { full = false, store = full ? 'ncw.' : 'nc.', tf0 = '5' } = {}) {
+    const pre = store;
     const get = (k, d) => { try { return localStorage.getItem(pre + k) ?? d; } catch { return d; } };
     const set = (k, v) => { try { localStorage.setItem(pre + k, v); } catch { /* storage unavailable */ } };
     const getJson = (k, d) => { try { return JSON.parse(get(k, '')) ?? d; } catch { return d; } };
@@ -179,7 +180,7 @@
     const el = {};
     root.querySelectorAll('[data-r]').forEach((n) => { el[n.dataset.r] = n; });
 
-    let tf = TF_TITLE[get('tf', '5')] ? get('tf', '5') : '5';
+    let tf = TF_TITLE[get('tf', tf0)] ? get('tf', tf0) : tf0;
     let type = TYPES.some(([v]) => v === get('type', 'candle')) && el.type.querySelector(`[value="${get('type', 'candle')}"]`) ? get('type', 'candle') : 'candle';
     let showLevels = get('sr', '1') === '1';
     let logScale = full && get('log', '0') === '1';
@@ -704,7 +705,12 @@
     tick();
   }
 
+  const MISSING = '<div class="pad err">Chart library missing: run <code>npm install</code> and restart the server.</div>';
   const panel = document.getElementById('niftyPanel');
   if (panel && LC) mount(panel, { full: document.body.classList.contains('nc-window') });
-  else if (panel) panel.innerHTML = '<div class="pad err">Chart library missing: run <code>npm install</code> and restart the server.</div>';
+  else if (panel) panel.innerHTML = MISSING;
+  // Market Pulse: the same chart, opening on 1-minute candles.
+  const pulsePanel = document.getElementById('pulseChart');
+  if (pulsePanel && LC) mount(pulsePanel, { store: 'ncp.', tf0: '1' });
+  else if (pulsePanel) pulsePanel.innerHTML = MISSING;
 })();

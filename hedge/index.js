@@ -4,16 +4,20 @@ const path = require('path');
 const { parseHoldings } = require('./holdings');
 const { createBetas } = require('./betas');
 const engine = require('./engine');
+const { num } = require('../lib/env');
+const { createHistory } = require('./history');
+const backtest = require('./backtest');
 
-const NIFTY_KEY = 'NSE_INDEX|Nifty 50';
-const CHAIN_TTL_MS = 60_000;
+const CHAIN_TTL_MS = 60_000; // prices older than this are fetched again
 
-function createHedge({ upstoxGet, getSpot, cacheDir, logError }) {
+// From the server: getContracts() -> { expiries, lot } of the live Nifty options, getRestChain(expiry, maxAgeMs) ->
+// that expiry's REST option chain, upstoxBulk(path) -> rate-limited historical requests (betas, history).
+function createHedge({ getContracts, getRestChain, upstoxBulk, getSpot, cacheDir, logError }) {
   const uploaded = path.join(cacheDir, 'holdings.xlsx');
-  const betas = createBetas({ upstoxGet, cacheDir, logError });
+  const betas = createBetas({ upstoxGet: upstoxBulk, cacheDir, logError });
+  const history = createHistory({ upstoxGet: upstoxBulk, cacheDir, logError });
   let book = null; // { asOf, holdings, file }
-  let contracts = null; // { at, expiries, lot }
-  const chains = new Map(); // expiry -> { at, data }
+  const chains = new Map(); // expiry -> the chains priced so far (strikes for the leg editor)
   let betaJob = null;
 
   // Starts empty: holdings come only from an uploaded .xlsx (kept in hedge-cache until cleared).
@@ -33,33 +37,19 @@ function createHedge({ upstoxGet, getSpot, cacheDir, logError }) {
     await betaJob;
   }
 
-  async function getContracts() {
-    if (contracts && Date.now() - contracts.at < 3600_000) return contracts;
-    const data = await upstoxGet(`/option/contract?instrument_key=${encodeURIComponent(NIFTY_KEY)}`);
-    const today = new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10);
-    const expiries = [...new Set(data.map((c) => c.expiry))].filter((e) => e >= today).sort();
-    contracts = { at: Date.now(), expiries, lot: data.find((c) => c.lot_size)?.lot_size || 65 };
-    return contracts;
-  }
-
   // Days to expiry (expiry at 15:30 IST).
   const daysTo = (e) => (Date.parse(`${e}T15:30:00+05:30`) - Date.now()) / 86_400_000;
 
   async function getChain(expiry) {
-    const hit = chains.get(expiry);
-    if (hit && Date.now() - hit.at < CHAIN_TTL_MS) return hit.data;
-    const raw = await upstoxGet(`/option/chain?instrument_key=${encodeURIComponent(NIFTY_KEY)}&expiry_date=${expiry}`);
-    const side = (o) => {
-      const m = o?.market_data || {};
-      return { bid: m.bid_price || null, ask: m.ask_price || null, ltp: m.ltp || null, oi: m.oi ?? null, iv: o?.option_greeks?.iv ?? null };
-    };
+    const raw = await getRestChain(expiry, CHAIN_TTL_MS);
+    const side = (o) => ({ bid: o.bid, ask: o.ask, ltp: o.ltp || null, oi: o.oi, iv: o.iv });
     const data = {
       expiry,
       days: Math.max(0.1, daysTo(expiry)),
-      spot: raw?.[0]?.underlying_spot_price ?? null,
-      strikes: (raw || []).map((r) => ({ strike: r.strike_price, ce: side(r.call_options), pe: side(r.put_options) })).sort((a, b) => a.strike - b.strike),
+      spot: raw.spot,
+      strikes: raw.rows.map((r) => ({ strike: r.strike, ce: side(r.ce), pe: side(r.pe) })),
     };
-    chains.set(expiry, { at: Date.now(), data });
+    chains.set(expiry, data);
     return data;
   }
 
@@ -191,7 +181,7 @@ function createHedge({ upstoxGet, getSpot, cacheDir, logError }) {
     const strikesFor = (c) => c.strikes.map((r) => r.strike).filter((k) => k % 50 === 0 && Math.abs(k / spot - 1) <= 0.25);
     const editor = {
       expiries: expiries.filter((e) => daysTo(e) >= 1 && daysTo(e) <= 800).map((e) => ({ expiry: e, days: Math.round(daysTo(e)) })),
-      strikes: Object.fromEntries([...chains.values()].map((x) => [x.data.expiry, strikesFor(x.data)])),
+      strikes: Object.fromEntries([...chains.values()].map((c) => [c.expiry, strikesFor(c)])),
     };
     return {
       asOf: book.asOf,
@@ -224,8 +214,16 @@ function createHedge({ upstoxGet, getSpot, cacheDir, logError }) {
     };
   }
 
+  // Backtest tab: replay strategies over daily Nifty + India VIX history (see backtest.js).
+  async function runBacktest(q) {
+    const hist = await history.load();
+    const r = backtest.run(hist, q);
+    return { ...r, available: { from: hist[0].date, to: hist[hist.length - 1].date } };
+  }
+
   return {
     plan,
+    backtest: runBacktest,
     saveStructure,
     deleteStructure,
     reload: () => loadHoldings(),
@@ -245,7 +243,6 @@ function createHedge({ upstoxGet, getSpot, cacheDir, logError }) {
 
 const idOf = (c) => `${c.family}|${c.expiry}|${c.legs.map((l) => `${l.action[0]}${l.type}${l.strike}x${l.lots}`).join(',')}`;
 const pos = (v) => (v === undefined || v === null || v === '' || !(Number(v) > 0) ? null : Number(v));
-const num = (v, d) => (v === undefined || v === null || v === '' || isNaN(Number(v)) ? d : Number(v));
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 
 module.exports = { createHedge };

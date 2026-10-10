@@ -1,12 +1,11 @@
-// "Market Pulse" tab: renders the live market read computed on the server (state.pulse).
+// "Market Pulse" screen: renders the live market read computed on the server (state.pulse). Its Nifty chart is the
+// Chain screen's (chain-chart.js mounts it on #pulseChart).
 (function () {
   const $ = (id) => document.getElementById(id);
-  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   const { state, compact, istClock, esc } = window.app;
   const ACT = { 'long-buildup': 'Long build-up', 'short-buildup': 'Writing', 'short-covering': 'Short covering', 'long-unwinding': 'Unwinding' };
   const pts = (n) => (n == null ? '—' : `${n > 0 ? '+' : ''}${n.toFixed(0)}`);
   const cls = (n) => (n == null || n === 0 ? '' : n > 0 ? 'pos' : 'neg');
-  let chart = null;
 
   function tile(label, value, note, valueCls = '') {
     return `<div class="st"><span class="s">${label}</span><span class="v ${valueCls}">${value}</span><span class="n">${note}</span></div>`;
@@ -67,6 +66,8 @@
 
   function renderLevels(p) {
     const l = p.levels;
+    $('pRange').textContent = p.trend.dayLow != null ? `day range ${p.trend.dayLow.toFixed(0)}–${p.trend.dayHigh.toFixed(0)}` : '';
+    $('pNearest').innerHTML = window.app.nearestLevelsHtml(p.spot);
     const list = (a) => a.map((x) => `${x.strike} <span class="muted">(${x.added > 0 ? '+' : ''}${compact(x.added)})</span>`).join(', ');
     $('pLevels').innerHTML = `
       <span class="lk">Fresh call writing</span><span>${l.resistance ? `${l.resistance.strike} <span class="muted">+${compact(l.resistance.doi)} in ${p.oi.windowMin}m</span>` : '—'}</span>
@@ -75,31 +76,6 @@
       <span class="lk">Largest put OI</span><span>${l.maxPe.strike} <span class="muted">(${compact(l.maxPe.oi)})</span></span>
       <span class="lk">Calls added today</span><span>${list(l.addedCe)}</span>
       <span class="lk">Puts added today</span><span>${list(l.addedPe)}</span>`;
-  }
-
-  function renderChart(p) {
-    const fmt = (ts) => new Date(ts + 5.5 * 3600_000).toISOString().slice(11, 16);
-    const data = p.history.map((h) => ({ x: h.t, y: h.spot }));
-    if (!data.length) return;
-    $('pRange').textContent = p.trend.dayLow != null ? `day range ${p.trend.dayLow.toFixed(0)}–${p.trend.dayHigh.toFixed(0)}` : '';
-    if (!chart) {
-      chart = new Chart($('cPulseSpot'), {
-        type: 'line',
-        data: { datasets: [{ label: 'Nifty', data: [], borderColor: css('--accent'), borderWidth: 2, pointRadius: 0, pointHoverRadius: 3, tension: 0.2 }] },
-        options: {
-          interaction: { mode: 'nearest', intersect: false },
-          scales: {
-            x: { type: 'linear', grid: { display: false }, ticks: { maxTicksLimit: 5, callback: (v) => fmt(v) } },
-            y: { grid: { color: 'rgba(139,148,158,.12)' }, border: { display: false } },
-          },
-          plugins: { legend: { display: false }, tooltip: { callbacks: { title: (i) => fmt(i[0].raw.x), label: (c) => ` Nifty ${c.raw.y.toFixed(1)}` } } },
-        },
-      });
-    }
-    chart.data.datasets[0].data = data;
-    chart.options.scales.x.min = data[0].x;
-    chart.options.scales.x.max = data[data.length - 1].x;
-    chart.update('none');
   }
 
   window.onPulseRender = () => {
@@ -113,11 +89,10 @@
     renderBullets(p);
     renderOi(p);
     renderLevels(p);
-    renderChart(p);
   };
 
-  // The one-line pulse on the main screen opens this tab.
+  // The one-line pulse on the chain screen opens this screen.
   document.getElementById('pulseLine').addEventListener('click', () => {
-    document.querySelector('#tabs [data-view="pulse"]').click();
+    window.app.setView('pulse');
   });
 })();

@@ -5,10 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
-
-const IST_OFFSET = 5.5 * 3600_000;
-const istDate = (ts) => new Date(ts + IST_OFFSET).toISOString().slice(0, 10);
-const istTime = (ts) => new Date(ts + IST_OFFSET).toISOString().slice(11, 19);
+const { istDate, istTime } = require('./lib/time');
 
 function createTape({ dir, everyMs = 1000, strikesAround = 15, logError }) {
   let out = null; // { day, gz }

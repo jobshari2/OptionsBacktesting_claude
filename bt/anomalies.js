@@ -9,7 +9,7 @@
 // puts at a strike get consistent vols and the smile is read from out-of-the-money options. Time is
 // counted in trading minutes (252 sessions of 375 minutes a year): with calendar time, IV appears to
 // triple through expiry day and can't be compared with realised vol or across the day.
-const RATE = 0.065;
+const { RATE, ncdf, b76, b76iv } = require('../lib/pricing');
 const YEAR_MIN = 252 * 375;
 
 // Trading years from minute `minute` (0 = 09:15) of `day` to 15:30 on `expiry`, counting weekdays.
@@ -29,32 +29,7 @@ function tradingYears(expiry, day, minute) {
   return (Math.max(0, 375 - minute) + 375 * full) / YEAR_MIN;
 }
 
-// ---------- Black-76 ----------
-function ncdf(x) {
-  const t = 1 / (1 + 0.2316419 * Math.abs(x));
-  const d = 0.3989423 * Math.exp((-x * x) / 2);
-  const p = d * t * (0.3193815 + t * (-0.3565638 + t * (1.781478 + t * (-1.821256 + t * 1.330274))));
-  return x > 0 ? 1 - p : p;
-}
-function b76(F, K, T, v, call, df) {
-  if (T <= 0 || v <= 0) return df * Math.max(0, call ? F - K : K - F);
-  const sq = v * Math.sqrt(T);
-  const d1 = (Math.log(F / K) + (sq * sq) / 2) / sq;
-  const d2 = d1 - sq;
-  return call ? df * (F * ncdf(d1) - K * ncdf(d2)) : df * (K * ncdf(-d2) - F * ncdf(-d1));
-}
-function b76iv(price, F, K, T, call, df) {
-  const intrinsic = df * Math.max(0, call ? F - K : K - F);
-  if (!(price > intrinsic + 0.01) || T <= 0) return null;
-  let lo = 0.01;
-  let hi = 3;
-  if (b76(F, K, T, hi, call, df) < price) return null;
-  for (let i = 0; i < 26; i++) {
-    const mid = (lo + hi) / 2;
-    if (b76(F, K, T, mid, call, df) > price) hi = mid; else lo = mid;
-  }
-  return (lo + hi) / 2;
-}
+// ---------- Black-76 (b76, b76iv: lib/pricing.js) ----------
 const d1Of = (F, K, T, v) => (Math.log(F / K) + (v * v * T) / 2) / (v * Math.sqrt(T));
 
 // ---------- chain context ----------

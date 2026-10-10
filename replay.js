@@ -11,6 +11,8 @@ const fs = require('fs');
 const path = require('path');
 const { createFlow, flowConfig, CSV_HEADER, predictionRow } = require('./flow');
 const { readTape, replaySnapshots } = require('./tape');
+const { istTime: t } = require('./lib/time');
+const { loadEnv } = require('./lib/env');
 
 function replayFlow(dir, day, cfg) {
   const entries = readTape(dir, day);
@@ -84,7 +86,6 @@ if (require.main === module) {
   fs.writeFileSync(out, '﻿' + [CSV_HEADER.join(','), ...[...r.predictions].reverse().map(predictionRow)].join('\n') + '\n');
 
   const s = r.stats;
-  const t = (ts) => new Date(ts + 5.5 * 3600_000).toISOString().slice(11, 19);
   console.log(`Replayed ${day}: ${r.tape.snapshots} snapshots, ${t(r.tape.from)}–${t(r.tape.to)} IST`);
   console.log(`Settings: mode ${cfg.mode}, bull/bear share ≥ ${50 + cfg.imbalance * 50}% for ${cfg.holdSec}s, min ${cfg.minQty} in 1m, HIT/MISS at ${cfg.reactPts} pts, horizon ${cfg.horizonMin}m`);
   console.log(`Predictions ${s.total}: ${s.hit} hit, ${s.miss} miss, ${s.flat} flat, ${s.pending} unfinished — hit rate ${pct(s.hitRate)}`);
@@ -92,12 +93,4 @@ if (require.main === module) {
   if (r.recorded) console.log(`Live run that day recorded ${r.recorded.total} predictions (${r.recorded.hit} hit, ${r.recorded.miss} miss)`);
   if (r.errors.length) console.log('Errors:', r.errors);
   console.log(`Saved ${path.relative(__dirname, out)}`);
-}
-
-function loadEnv(file) {
-  if (!fs.existsSync(file)) return;
-  for (const line of fs.readFileSync(file, 'utf8').split(/\r?\n/)) {
-    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/i);
-    if (m && !line.trim().startsWith('#') && process.env[m[1]] === undefined) process.env[m[1]] = m[2].replace(/^["']|["']$/g, '');
-  }
 }

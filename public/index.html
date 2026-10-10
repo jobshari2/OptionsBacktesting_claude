@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Nifty Options Lab</title>
   <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="live.css" />
+  <link rel="stylesheet" href="hedge.css" />
   <link rel="stylesheet" href="bt.css" />
   <link rel="stylesheet" href="themes.css" />
   <script>try { document.documentElement.dataset.theme = localStorage.getItem("nifty-theme") || "night"; } catch (e) {}</script>
@@ -13,15 +15,10 @@
   <header class="topbar">
     <div class="brand">NIFTY 50 <span id="source" class="source hidden"></span></div>
     <nav class="tabs" id="tabs">
-      <button data-view="chain" class="on" title="Live option chain with support and resistance">Chain</button>
-      <button data-view="an" title="Option arbitrage and fair-value deviations: live scanner and history scan">Arbitrage</button>
-      <button data-view="lib" title="Ready-made and saved strategies; deploy one on the live chain">Strategies</button>
-      <button data-view="bt" title="Backtest a strategy on historical 1-minute option data">Backtest</button>
-      <button data-view="bw" title="The bi-weekly hedge, its reverse and the two combined: every variation backtested over the whole history">Bi-weekly</button>
-      <button data-view="cmp" title="Backtest several strategies on the same period and rank them">Compare</button>
-      <button data-view="sb" title="Build and trade a position on a historical replay or the live chain, with payoff and adjustment suggestions">Builder</button>
-      <button data-view="tr" title="Trades saved from the Builder: live paper trades and replays; load one back into the Builder">Trades</button>
-      <button data-view="data" title="Historical data availability and cache">Data</button>
+      <button data-group="live" class="on" title="Live market: option chain, volume surge, flow, pulse, order book and the signals">Live</button>
+      <button data-group="strat" title="Option strategies: arbitrage scanner, library, backtests, builder and saved trades">Strategies</button>
+      <button data-group="port" title="Your portfolio: hedge it with Nifty options">Portfolio</button>
+      <button data-group="data" title="Historical data availability and cache">Data</button>
     </nav>
     <div class="stat"><span class="label">Spot</span><span id="spot" class="value big">—</span></div>
     <div class="stat chain-only"><span class="label">ATM</span><span id="atm" class="value">—</span></div>
@@ -56,6 +53,33 @@
     </div>
     <div id="status" class="status"><span class="dot"></span><span id="statusText">Connecting…</span></div>
   </header>
+
+  <!-- the screens of the group picked in the top bar -->
+  <nav class="subtabs" id="subtabs">
+    <span class="sub-group" data-group="live">
+      <button data-view="chain" title="Live option chain with support and resistance">Chain</button>
+      <button data-view="charts" title="Surge charts: five views of the volume added per strike">Surge</button>
+      <button data-view="flow" title="Volume flow predictions, live and replayed from a recorded day">Flow</button>
+      <button data-view="pulse" title="Market pulse: a plain-language read of trend, option writers and order flow">Pulse</button>
+      <button data-view="book" title="Order book: bid / ask queues and how Nifty reacted">Book</button>
+      <button data-view="sigtest" title="Test the signals on recorded days: hit rate per kind of signal">Signal test</button>
+    </span>
+    <span class="sub-group" data-group="strat">
+      <button data-view="an" title="Option arbitrage and fair-value deviations: live scanner and history scan">Arbitrage</button>
+      <button data-view="lib" title="Ready-made and saved strategies; deploy one on the live chain">Strategies</button>
+      <button data-view="bt" title="Backtest a strategy on historical 1-minute option data">Backtest</button>
+      <button data-view="bw" title="The bi-weekly hedge, its reverse and the two combined: every variation backtested over the whole history">Bi-weekly</button>
+      <button data-view="cmp" title="Backtest several strategies on the same period and rank them">Compare</button>
+      <button data-view="sb" title="Build and trade a position on a historical replay or the live chain, with payoff and adjustment suggestions">Builder</button>
+      <button data-view="tr" title="Trades saved from the Builder: live paper trades and replays; load one back into the Builder">Trades</button>
+    </span>
+    <span class="sub-group" data-group="port">
+      <button data-view="hedge" title="Hedge your portfolio with Nifty options: planner and backtest">Hedge</button>
+    </span>
+    <span class="sub-group" data-group="data">
+      <button data-view="data" title="Historical data availability and cache">Data</button>
+    </span>
+  </nav>
 
   <div id="login" class="login hidden">
     <h2>Connect to Upstox</h2>
@@ -96,17 +120,52 @@
         </table>
       </div>
     </section>
-    <!-- live vertical-spread arbitrage of the expiry shown in the chain: filled by arb.js -->
-    <section class="panel ch-arb-panel" id="chArbPanel">
-      <div class="panel-head" id="chArbHead" title="Click the header to collapse / expand the list">
-        <h3><span id="chArbCaret">▾</span> Vertical spread arbitrage <span class="muted small" id="chArbInfo"></span></h3>
-        <label class="mini" title="Lots you want to trade: a spread is marked ✔ when both legs can fill that many at the quoted price. Also the lots opened in the Builder.">Lots <input class="num xs" type="number" id="chArbLots" min="1" step="1"></label>
-      </div>
-      <div class="sb-arb ch-arb" id="chArb"></div>
-    </section>
-
+    <!-- below the chain: live vertical-spread arbitrage (arb.js) or the volume surge of the window picked above -->
+    <div class="pane-box" id="chBottom">
+      <div class="pane-switch"><span class="seg sm" id="chBottomSeg"><button type="button" data-p="arb" title="Vertical-spread arbitrage on the expiry shown in the chain">Arbitrage</button><button type="button" data-p="surge" title="Volume added per strike in the selected window">Volume surge</button></span></div>
+      <section class="panel ch-arb-panel" id="chArbPanel">
+        <div class="panel-head" id="chArbHead" title="Click the header to collapse / expand the list">
+          <h3><span id="chArbCaret">▾</span> Vertical spread arbitrage <span class="muted small" id="chArbInfo"></span></h3>
+          <label class="mini" title="Lots you want to trade: a spread is marked ✔ when both legs can fill that many at the quoted price. Also the lots opened in the Builder.">Lots <input class="num xs" type="number" id="chArbLots" min="1" step="1"></label>
+        </div>
+        <div class="sb-arb ch-arb" id="chArb"></div>
+      </section>
+      <section class="panel surge-panel hidden" id="surgePanel">
+        <div class="surge-side">
+          <div class="surge-title">
+            <h3>Volume Surge</h3>
+            <span class="muted small">last <b class="win-label">5m</b> · window in the chain header</span>
+          </div>
+          <div class="surge-tools">
+            <span class="muted">Bars</span>
+            <div class="seg" id="metricSeg">
+              <button data-m="qty">Qty</button><button data-m="pct">%</button>
+            </div>
+            <span class="muted">Highlight ≥</span>
+            <div class="seg" id="thSeg">
+              <button data-t="0">Off</button><button data-t="5">5%</button><button data-t="10">10%</button><button data-t="25">25%</button><button data-t="50">50%</button>
+            </div>
+          </div>
+          <div id="tracking" class="tracking"></div>
+          <div class="split">
+            <div class="split-labels"><span class="ce-t">Calls Δ <b id="ceTotal">0</b></span><span class="pe-t"><b id="peTotal">0</b> Puts Δ</span></div>
+            <div class="split-bar"><div id="ceShare" class="ce-fill"></div><div id="peShare" class="pe-fill"></div></div>
+          </div>
+          <div class="top-lists">
+            <div><div class="list-title ce-t">Top call surges <span class="muted" id="topBy"></span></div><ol id="topCe"></ol></div>
+            <div><div class="list-title pe-t">Top put surges</div><ol id="topPe"></ol></div>
+          </div>
+          <div id="thCount" class="muted small"></div>
+        </div>
+        <div class="surge-chart">
+          <div class="cols-legend"><span><i class="sw ce"></i>CE volume added ▲</span><span><i class="sw pe"></i>PE volume added ▼</span></div>
+          <div id="bars" class="cols"></div>
+        </div>
+      </section>
+    </div>
     </div>
     <aside class="side">
+    <div class="pane-switch"><span class="seg sm" id="chSideSeg"><button type="button" data-p="chart" title="Nifty chart with support and resistance">Chart &amp; levels</button><button type="button" data-p="signals" title="Volume and price signals on the nearest expiry, with their track record">Signals<span class="pane-badge hidden" id="sigBadge"></span></button></span></div>
     <!-- Nifty candlestick chart: filled by chain-chart.js (also used by chart.html, its pop-out window) -->
     <section class="panel nifty-panel" id="niftyPanel"></section>
     <section class="panel levels-panel" id="levelsPanel">
@@ -120,7 +179,436 @@
         <div class="muted small pad">Major: clustered daily swing highs/lows (last ~120 sessions). Minor: 15-minute swings of the last 5 sessions, previous day's high/low/close and floor pivots. OI: strikes with the most open interest on this expiry. Levels below spot act as support, above as resistance.</div>
       </div>
     </section>
+    <section class="panel signals-panel hidden" id="signalsPanel">
+      <div class="panel-head">
+        <h3>Signals <span class="muted small" id="signalsExpiry"></span></h3>
+        <span id="rec" class="rec hidden" title="Saving data around the latest spike. Stops once volume and price have been calm for a while (or at the max length)."></span>
+      </div>
+      <div id="pulseLine" class="pulse-line hidden" title="Open the Market Pulse screen"></div>
+      <div id="broadBanner" class="broad-banner hidden"></div>
+      <div id="oddsBanner" class="odds-banner hidden"></div>
+      <div class="breadth">
+        <div class="breadth-labels">
+          <span>Volume breadth <span class="muted">· strikes near ATM trading above normal (last 1m)</span></span>
+          <b id="breadthVal">—</b>
+        </div>
+        <div class="breadth-bar"><div id="breadthFill" class="fill"></div><div id="breadthMark" class="mark"></div></div>
+        <div id="breadthNote" class="muted small"></div>
+      </div>
+      <div id="premium" class="premium"></div>
+      <div class="events-head">
+        <span>Today's spikes</span>
+        <span class="muted small">saved to <code id="eventsDir">events/</code></span>
+      </div>
+      <ul id="events" class="events"></ul>
+    </section>
     </aside>
+  </main>
+
+  <!-- ===== Surge charts ===== -->
+  <main id="charts" class="charts hidden">
+    <div class="charts-bar">
+      <span class="muted">Window</span><div class="seg" id="chartWinSeg"></div>
+      <span class="muted">Time buckets</span>
+      <div class="seg" id="bucketSeg"><button data-b="30">30s</button><button data-b="60">1m</button><button data-b="120">2m</button></div>
+      <span class="muted">Strikes</span>
+      <div class="seg" id="aroundSeg"><button data-a="6">±6</button><button data-a="10">±10</button><button data-a="15">±15</button></div>
+      <span class="muted small" id="chartsNote"></span>
+    </div>
+    <div class="charts-grid">
+      <section class="panel chart-card">
+        <div class="chart-head"><h3>1 · Calls vs puts by strike</h3><span class="muted small">Volume added in the window — CE up, PE down</span></div>
+        <div class="chart-box"><canvas id="cDiverging"></canvas></div>
+      </section>
+      <section class="panel chart-card">
+        <div class="chart-head">
+          <h3>2 · Where and when</h3>
+          <div class="seg small-seg" id="heatSideSeg"><button data-s="total">CE+PE</button><button data-s="ce">CE</button><button data-s="pe">PE</button></div>
+        </div>
+        <div class="chart-box heat-box"><div id="heatmap" class="heatmap"></div></div>
+      </section>
+      <section class="panel chart-card">
+        <div class="chart-head"><h3>3 · Volume added over time</h3><span class="muted small">All shown strikes, per time bucket</span></div>
+        <div class="chart-box"><canvas id="cTimeline"></canvas></div>
+      </section>
+      <section class="panel chart-card">
+        <div class="chart-head"><h3>4 · Volume vs price move</h3><span class="muted small">Bubble size = volume added · height = premium change %</span></div>
+        <div class="chart-box"><canvas id="cBubble"></canvas></div>
+      </section>
+      <section class="panel chart-card">
+        <div class="chart-head"><h3>5 · Volume growth % by strike</h3><span class="muted small">Dashed line = highlight threshold</span></div>
+        <div class="chart-box"><canvas id="cGrowth"></canvas></div>
+      </section>
+      <section class="panel chart-card chart-guide">
+        <div class="chart-head"><h3>How to read these</h3></div>
+        <ul class="guide">
+          <li><b>1</b> shows which strikes are getting the most new volume and whether it is calls or puts.</li>
+          <li><b>2</b> shows when each strike got active. Brighter = more volume in that time bucket; the newest bucket is on the right.</li>
+          <li><b>3</b> shows whether call or put activity is speeding up or fading.</li>
+          <li><b>4</b> combines volume and price: big bubbles high up = heavy buying pushing the premium up; big bubbles below zero = heavy volume while the premium falls (likely writing).</li>
+          <li><b>5</b> shows growth relative to each strike's own volume, so quieter strikes that suddenly wake up stand out.</li>
+        </ul>
+      </section>
+    </div>
+  </main>
+
+  <!-- ===== Volume flow ===== -->
+  <main id="flow" class="flow hidden">
+    <div class="charts-bar flow-bar">
+      <span class="muted">Day</span>
+      <select id="flowDay"><option value="live">Live (today)</option></select>
+      <span class="muted">Replay with</span>
+      <label>mode <select id="rpMode">
+        <option value="aggressor">Aggressor (bid/ask)</option>
+        <option value="premium">Premium direction</option>
+        <option value="volume">Raw CE vs PE volume</option>
+      </select></label>
+      <label>share ≥ <input id="rpShare" type="number" min="51" max="95" step="1">%</label>
+      <label>for <input id="rpHold" type="number" min="1" max="120" step="1">s</label>
+      <label>min <input id="rpMin" type="number" min="0" step="10000"> qty/1m</label>
+      <label>HIT/MISS at <input id="rpReact" type="number" min="1" max="100" step="1"> pts</label>
+      <label>within <input id="rpHorizon" type="number" min="1" max="30" step="1"> min</label>
+      <button id="rpRun" class="btn-sm">Replay</button>
+      <span id="flowMode" class="muted small"></span>
+    </div>
+    <div class="flow-top">
+      <section class="panel flow-live">
+        <div class="chart-head"><h3 id="flowTitle">Live flow · last 1 min</h3><span class="muted small" id="flowScope"></span></div>
+        <div class="flow-gauge">
+          <div class="fg-labels"><span><span id="fgLeft">Bullish</span> <b id="fgCe">—</b> <span class="muted" id="fgCeShare"></span></span><span><span class="muted" id="fgPeShare"></span> <b id="fgPe">—</b> <span id="fgRight">Bearish</span></span></div>
+          <div class="fg-bar"><div id="fgFill" class="fg-ce"></div><div class="fg-pe"></div>
+            <div class="fg-mark" id="fgMarkLo"></div><div class="fg-mark mid"></div><div class="fg-mark" id="fgMarkHi"></div></div>
+          <div class="fg-scale muted small"><span>bullish side heavy → predict UP</span><span id="fgRule"></span><span>bearish side heavy → predict DOWN</span></div>
+          <div id="fgRaw" class="muted small"></div>
+        </div>
+        <div id="flowStatus" class="flow-status"></div>
+      </section>
+      <section class="panel flow-stats" id="flowStats"></section>
+    </div>
+    <section class="panel flow-chart-card">
+      <div class="chart-head"><h3>Nifty with predictions</h3><span class="muted small">▲ / ▼ = prediction · filled = HIT · hollow = MISS · grey = FLAT or pending — last 60 min</span></div>
+      <div class="flow-charts">
+        <div class="chart-box"><canvas id="cFlowSpot"></canvas></div>
+        <div class="chart-box"><canvas id="cFlowImb"></canvas></div>
+      </div>
+    </section>
+    <section class="panel flow-table-card">
+      <div class="chart-head"><h3>Predictions today</h3><span class="muted small">saved to <code id="flowFile">events/&lt;date&gt;/predictions.csv</code></span></div>
+      <div class="flow-table-wrap">
+        <table class="flow-table">
+          <thead><tr>
+            <th>Flow build start</th><th>Signal</th><th>Prediction</th>
+            <th>Flow</th><th>CE 1m</th><th>PE 1m</th><th>Nifty</th>
+            <th>Reaction start</th><th>Result</th><th>Best / worst</th>
+            <th>Nifty +1m</th><th>Nifty end</th><th>ATM CE</th><th>ATM PE</th>
+          </tr></thead>
+          <tbody id="flowBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <!-- ===== Signal test (signals replayed over recorded days) ===== -->
+  <main id="sigtest" class="sbt hidden">
+    <div class="charts-bar flow-bar" title="Thresholds apply to the backtest only. They start at the live values from .env.">
+      <span class="muted">Days</span>
+      <select id="sbtDay"><option value="all">All recorded days</option></select>
+      <span class="muted">Test with</span>
+      <label>spike ≥ <input id="sbtSpikeRatio" type="number" min="1" step="0.5">×</label>
+      <label>and ≥ <input id="sbtSpikeMinQty" type="number" min="0" step="5000"> qty/1m</label>
+      <label>premium ≥ <input id="sbtPricePct" type="number" min="1" step="1">%</label>
+      <label>Nifty ≥ <input id="sbtFastPts" type="number" min="1" step="1"> pts/20s</label>
+      <label>or ≥ <input id="sbtMovePts" type="number" min="1" step="1"> pts/1m</label>
+      <label>cooldown <input id="sbtCooldown" type="number" min="1" step="1"> min</label>
+      <button id="sbtRun" class="btn-sm">Run backtest</button>
+      <span id="sbtNote" class="muted small"></span>
+    </div>
+    <section class="panel flow-stats hidden" id="sbtTiles"></section>
+    <div class="sbt-grid">
+      <section class="panel">
+        <div class="chart-head"><h3>Hit rate by kind of signal</h3><span class="muted small" id="sbtRule"></span></div>
+        <div class="flow-table-wrap" id="sbtKinds">
+          <p class="muted sbt-hint">Pick the days and press <b>Run backtest</b>. The recorded tape is run through the signal logic as it is now
+            (the <code>signals.js</code> on disk, so code changes are tested without restarting the server) and every signal it raises is
+            scored by what Nifty did next. It takes a few seconds per day.</p>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="chart-head"><h3 id="sbtListTitle">Signals</h3><a href="#" id="sbtAll" class="small hidden">show all</a></div>
+        <div id="sbtListSub" class="muted small sbt-sub"></div>
+        <ul id="sbtList" class="events"></ul>
+      </section>
+    </div>
+  </main>
+
+  <!-- ===== Market pulse ===== -->
+  <main id="pulse" class="pulse hidden">
+    <section class="panel pulse-head">
+      <div class="ph-main">
+        <div class="ph-title"><span class="muted small">MARKET PULSE · nearest expiry · updates every 5s</span><span id="pBias" class="bias-pill"></span></div>
+        <div id="pHeadline" class="ph-headline">Collecting data…</div>
+        <div id="pVotes" class="ph-votes"></div>
+      </div>
+      <div class="ph-tiles" id="pTiles"></div>
+    </section>
+    <div class="pulse-grid">
+      <section class="panel">
+        <div class="chart-head"><h3>What’s happening</h3><span class="muted small" id="pAsOf"></span></div>
+        <ul id="pBullets" class="p-bullets"></ul>
+        <div class="muted small p-note">Describes what the data shows. It is not a recommendation to trade.</div>
+      </section>
+      <section class="panel">
+        <div class="chart-head"><h3 id="pOiTitle">Option writers &amp; buyers</h3><span class="muted small">OI change + price change per strike</span></div>
+        <div class="p-oi-wrap">
+          <table class="p-oi">
+            <thead><tr><th>CE activity</th><th>CE OI Δ</th><th>CE price</th><th class="k">Strike</th><th>PE price</th><th>PE OI Δ</th><th>PE activity</th></tr></thead>
+            <tbody id="pOiBody"></tbody>
+          </table>
+        </div>
+        <div class="p-oi-legend muted small">
+          <span><i class="cl long-buildup"></i>long build-up = buying</span>
+          <span><i class="cl short-buildup"></i>short build-up = writing</span>
+          <span><i class="cl short-covering"></i>short covering</span>
+          <span><i class="cl long-unwinding"></i>long unwinding</span>
+        </div>
+      </section>
+      <div class="p-side">
+        <section class="panel">
+          <div class="chart-head"><h3>Key levels</h3><span class="muted small" id="pRange"></span></div>
+          <!-- nearest support / resistance: the same levels as on the Chain screen -->
+          <div id="pNearest" class="lv-nearest"></div>
+          <div id="pLevels" class="p-levels"></div>
+        </section>
+        <!-- the Chain screen's Nifty chart (chain-chart.js), opening on 1-minute candles -->
+        <section class="panel nifty-panel" id="pulseChart"></section>
+      </div>
+    </div>
+  </main>
+
+  <!-- ===== Order book ===== -->
+  <main id="book" class="book hidden">
+    <section class="panel book-tiles" id="bTiles"></section>
+    <div class="book-grid">
+      <section class="panel chart-card">
+        <div class="chart-head"><h3>1 · Who is waiting, by strike</h3><span class="muted small">% of each queue on the buy side · 50% = balanced</span></div>
+        <div class="chart-box"><canvas id="bBuyPct"></canvas></div>
+      </section>
+      <section class="panel chart-card">
+        <div class="chart-head">
+          <h3>2 · Queue size by strike</h3>
+          <div class="seg small-seg" id="bQueueSide"><button data-s="ce">CE</button><button data-s="pe">PE</button></div>
+        </div>
+        <div class="chart-box"><canvas id="bQueue"></canvas></div>
+      </section>
+      <section class="panel chart-card">
+        <div class="chart-head"><h3>3 · Book pressure vs Nifty</h3><span class="muted small">bullish share of waiting qty (calls to buy + puts to sell), ATM ±5</span></div>
+        <div class="book-stack">
+          <div class="chart-box"><canvas id="bSpot"></canvas></div>
+          <div class="chart-box"><canvas id="bPressure"></canvas></div>
+        </div>
+      </section>
+      <section class="panel chart-card">
+        <div class="chart-head">
+          <h3>4 · Buy share of the queue over time</h3>
+          <div class="seg small-seg" id="bHeatSide"><button data-s="ce">CE</button><button data-s="pe">PE</button></div>
+        </div>
+        <div class="chart-box heat-box"><div id="bHeat" class="heatmap"></div></div>
+      </section>
+      <section class="panel chart-card">
+        <div class="chart-head"><h3>5 · Who actually traded</h3><span class="muted small">per minute · up = CE bought + PE sold · down = PE bought + CE sold</span></div>
+        <div class="chart-box"><canvas id="bTrades"></canvas></div>
+      </section>
+      <section class="panel chart-card">
+        <div class="chart-head"><h3>6 · How Nifty reacted</h3><span class="muted small" id="bReactNote"></span></div>
+        <div class="chart-box"><canvas id="bReact"></canvas></div>
+      </section>
+    </div>
+  </main>
+
+  <!-- ===== Portfolio hedge: planner and backtest ===== -->
+  <main id="hedge" class="hedge hidden">
+    <div class="h-tabs">
+      <div class="seg" id="hTabs"><button data-t="plan" class="on">Planner</button><button data-t="bt">Backtest</button></div>
+      <span class="muted small" id="hTabNote"></span>
+    </div>
+    <div class="h-plan" id="hPlanPane">
+    <div class="charts-bar hedge-bar">
+      <label>Protect against Nifty falling <input id="hFall" type="number" min="3" max="40" step="1" value="15">%</label>
+      <label>keep my loss within <input id="hMaxLoss" type="number" min="0" max="30" step="0.5" value="5">% of portfolio</label>
+      <label>Period <select id="hPeriod">
+        <option value="20-45">~1 month</option>
+        <option value="60-120" selected>~3 months</option>
+        <option value="150-200">~6 months</option>
+        <option value="300-400">~1 year</option>
+        <option value="20-400">Any</option>
+      </select></label>
+      <label>Upside <select id="hCap">
+        <option value="" selected>No cap</option>
+        <option value="20">Cap only above +20%</option>
+        <option value="15">Cap only above +15%</option>
+        <option value="10">Cap only above +10%</option>
+      </select></label>
+      <label>Beta <select id="hBeta"><option value="downside" selected>Downside</option><option value="beta">Normal</option></select></label>
+      <label>Prices <select id="hPricing"><option value="market" selected>Bid / ask</option><option value="ltp">LTP</option></select></label>
+      <label>Max hedge <select id="hMaxRatio"><option value="1" selected>100% of exposure</option><option value="0.75">75%</option><option value="0.5">50%</option></select></label>
+      <label class="btn-sm h-upload" for="hFile" title="Calculate everything from a holdings .xlsx (broker statement with Symbol, ISIN, Quantity Available, Previous Closing Price)">Upload holdings .xlsx</label>
+      <input type="file" id="hFile" accept=".xlsx" hidden>
+      <span id="hStatus" class="muted small"></span>
+    </div>
+    <section class="panel hedge-tiles" id="hTiles"></section>
+    <div class="hedge-grid" id="hGrid">
+      <section class="panel">
+        <div class="chart-head">
+          <div class="seg small-seg" id="hListMode"><button data-m="board">Strategies</button><button data-m="cheapest">Cheapest overall</button></div>
+          <span class="muted small" id="hFound"></span>
+        </div>
+        <div id="hList" class="h-list"></div>
+      </section>
+      <section class="panel h-detail">
+        <div class="chart-head">
+          <h3 id="hSelTitle">Selected hedge</h3>
+          <span><button class="btn-sm ghost" id="hBuilder" title="Open these legs in the Builder as a paper position on the live chain: payoff on any date, Greeks and adjustment suggestions">Builder ▸</button> <button class="btn-sm" id="hCustomise" title="Edit these legs as your own structure">Customise</button> <button class="btn-sm" id="hNew" title="Start a structure from scratch">+ New structure</button></span>
+        </div>
+        <div class="muted small h-selsub" id="hSelSub"></div>
+        <div class="h-legs-wrap"><table class="h-legs"><thead><tr><th>Action</th><th>Qty</th><th>Strike</th><th>Expiry</th><th>Price</th><th>Bid / Ask</th><th>OI</th><th>Value</th></tr></thead><tbody id="hLegs"></tbody></table></div>
+        <div class="h-editor hidden" id="hEditor">
+          <div class="h-ed-top">
+            <input id="hEdName" class="h-ed-name" type="text" maxlength="60" placeholder="Name this structure">
+            <span class="muted">expiry</span> <select id="hEdExpiry"></select>
+            <button class="btn-sm" id="hEdAdd">+ Add leg</button>
+            <button class="btn-sm" id="hEdSave" title="Save this structure">Save</button>
+            <button class="btn-sm hidden" id="hEdSaveNew" title="Keep the saved one and save this as another">Save as new</button>
+            <button class="btn-sm h-ed-close" id="hEdClose">Close editor</button>
+            <span class="muted small" id="hEdErr"></span>
+          </div>
+          <table class="h-legs"><thead><tr><th>Action</th><th>Type</th><th>Strike</th><th>Lots</th><th>Price</th><th>Bid / Ask</th><th></th></tr></thead><tbody id="hEdLegs"></tbody></table>
+        </div>
+        <div class="chart-box h-chart"><canvas id="cHedge"></canvas></div>
+        <div class="h-scen-wrap"><table class="h-scen"><thead id="hScenHead"></thead><tbody id="hScenBody"></tbody></table></div>
+      </section>
+      <section class="panel h-hold" id="hHold">
+        <button class="h-hold-strip" id="hHoldShow" title="Show your holdings">◂ Your holdings</button>
+        <div class="chart-head"><h3>Your holdings</h3><span><span class="muted small" id="hHoldSub"></span> <button class="btn-sm h-min" id="hHoldHide" title="Minimise the holdings panel">▸ Hide</button></span></div>
+        <div class="h-hold-tools">
+          <label class="btn-sm h-upload" for="hFile" title="Calculate everything from a holdings .xlsx">Upload .xlsx</label>
+          <button class="btn-sm" id="hReload" title="Read the uploaded file again">Reload</button>
+          <button class="btn-sm" id="hBetas" title="Recalculate betas from 3 years of weekly prices">Refresh betas</button>
+          <button class="btn-sm h-clear hidden" id="hClear" title="Remove the uploaded holdings">Clear</button>
+        </div>
+        <div class="h-hold-wrap"><table class="h-holdings"><thead><tr><th></th><th>Holding</th><th>Value</th><th title="Edit to override the measured beta">Beta</th><th>Exposure</th></tr></thead><tbody id="hHoldings"></tbody></table></div>
+      </section>
+    </div>
+    <section class="panel h-all">
+      <div class="chart-head"><h3>All options at a glance</h3><span class="muted small">Portfolio P&amp;L after hedge cost if Nifty has moved this much by the hedge's expiry · highlighted column = your fall · dotted = worse than your loss limit · click a row to select it</span></div>
+      <div class="h-slider">
+        <div class="h-slider-bar">
+          <span class="lbl">Where is Nifty at expiry?</span>
+          <div class="h-range">
+            <input type="range" id="hMove" min="-40" max="40" step="1" value="-10" aria-label="Nifty move by expiry">
+            <div class="h-ticks" id="hMoveTicks"><span data-m="-40">−40%</span><span data-m="-30">−30%</span><span data-m="-20">−20%</span><span data-m="-10">−10%</span><span data-m="0">0</span><span data-m="10">+10%</span><span data-m="20">+20%</span><span data-m="30">+30%</span><span data-m="40">+40%</span></div>
+          </div>
+          <span class="val" id="hMoveVal"></span>
+        </div>
+        <div class="h-move-sum" id="hMoveSum"></div>
+      </div>
+      <div class="h-family-wrap"><table class="h-family"><thead id="hFamHead"></thead><tbody id="hFamily"></tbody></table></div>
+    </section>
+    <div class="muted small h-note">Calculated from live Upstox prices at expiry, using each holding's historical beta to the Nifty 50. Beta is an estimate; non-index holdings won't track Nifty exactly. Sold legs need margin, and short calls in a collar or seagull can cap gains above their strike. This is a calculator, not investment advice — check prices, margin and charges with your broker before trading.</div>
+    </div>
+
+    <div class="h-bt hidden" id="hBtPane">
+      <div class="hb-top">
+        <section class="panel hb-form" id="hbForm">
+          <div class="chart-head">
+            <h3>Backtest settings</h3>
+            <span><span class="muted small" id="hbStatus"></span> <button class="btn-sm" id="hbReset" title="Put every setting back to its default">Defaults</button> <button class="hb-run" id="hbRun">Run backtest</button></span>
+          </div>
+          <div class="hb-groups">
+            <fieldset>
+              <legend>Period</legend>
+              <label>From <input type="date" id="hbFrom"></label>
+              <label>To <input type="date" id="hbTo"></label>
+              <div class="hb-presets" id="hbPresets"><button data-y="1">1y</button><button data-y="3">3y</button><button data-y="5">5y</button><button data-y="10">10y</button><button data-y="0">Max</button></div>
+            </fieldset>
+            <fieldset>
+              <legend>Portfolio</legend>
+              <label title="₹ at the start, e.g. 1.2Cr, 50L or 2500000">Starting value <input type="text" id="hbValue" class="w-val" placeholder="e.g. 1Cr"></label>
+              <label title="Holdings move this many times Nifty each day">Beta to Nifty <input type="number" id="hbBeta" step="0.05" min="0" max="3"></label>
+              <label title="Share of the Nifty-equivalent exposure the hedge covers">Hedge size <input type="number" id="hbHedgePct" step="5" min="5" max="150">%</label>
+              <label title="Nifty lot size used to size the hedge">Lot size <input type="number" id="hbLot" step="1" min="1"></label>
+              <label class="chk"><input type="checkbox" id="hbWhole"> Whole lots only</label>
+            </fieldset>
+            <fieldset>
+              <legend>Rolling &amp; exits</legend>
+              <label title="Days to expiry of each hedge when it is bought">Expiry length <select id="hbTenor"><option value="30">1 month</option><option value="60">2 months</option><option value="90">3 months</option><option value="180">6 months</option><option value="365">1 year</option></select></label>
+              <label title="Close and replace the hedge when this many days are left (0 = hold to expiry)">Roll with <input type="number" id="hbRollLeft" min="0" step="1"> days left</label>
+              <label title="Sell the hedge and buy a fresh one when Nifty has fallen this much since it was opened (blank = never)">Take profit if Nifty falls <input type="number" id="hbExitFall" min="0" step="1" placeholder="off">%</label>
+              <label title="Sell the hedge and buy a fresh one when it is worth this many times what it cost (blank = never)">… or hedge worth <input type="number" id="hbExitMult" min="0" step="0.5" placeholder="off">× cost</label>
+              <label title="Stay unhedged while implied volatility is above this level (blank = always hedged)">Only buy when IV ≤ <input type="number" id="hbMaxVol" min="0" step="1" placeholder="any">%</label>
+            </fieldset>
+            <fieldset>
+              <legend>Strikes (strategies A–G)</legend>
+              <label title="Strike of the bought put, % from spot (0 = at the money, −5 = 5% below)">Put strike <input type="number" id="hbPutK" step="1">%</label>
+              <label title="Gap between the bought put and the sold lower put in spreads and seagulls">Spread width <input type="number" id="hbWidth" step="1" min="1">%</label>
+              <label title="Strike of the far crash put (tail hedge, spread + tail), % from spot">Tail put <input type="number" id="hbTailK" step="1">%</label>
+              <label title="Strike of the sold call in collars and seagulls, % above spot">Sold call <input type="number" id="hbCallK" step="1" min="0">%</label>
+              <label>Strike step <select id="hbStep"><option value="50">50</option><option value="100">100</option><option value="500">500</option></select></label>
+            </fieldset>
+            <fieldset>
+              <legend>Option pricing model</legend>
+              <label title="Where the implied volatility comes from each day">Volatility <select id="hbVolSrc"><option value="vix">India VIX</option><option value="realised">Realised vol</option><option value="fixed">Fixed</option></select></label>
+              <label class="hb-vol-vix hb-vol-realised" title="Multiply the volatility by this (e.g. 1.1 if options traded above VIX)">× <input type="number" id="hbVolMult" step="0.05" min="0.3" max="3"></label>
+              <label class="hb-vol-fixed">Fixed IV <input type="number" id="hbFixedVol" step="0.5" min="3">%</label>
+              <label class="hb-vol-realised">Window <input type="number" id="hbRvWin" step="1" min="5"> days</label>
+              <label title="Extra vol points per 10% below spot (puts are dearer than at-the-money)">Put skew <input type="number" id="hbPutSkew" step="0.5"> pts/10%</label>
+              <label title="Vol points per 10% above spot (usually negative)">Call skew <input type="number" id="hbCallSkew" step="0.5"> pts/10%</label>
+              <label class="chk" title="Longer expiries: volatility pulled toward its long-run average"><input type="checkbox" id="hbTerm"> Term structure</label>
+              <label title="Bid/ask spread as % of the premium: you buy half of it above the model price and sell half below">Bid/ask <input type="number" id="hbSpread" step="0.5" min="0">%</label>
+              <label title="Brokerage + exchange charges + GST per leg per order">Charges ₹<input type="number" id="hbCharges" step="5" min="0">/leg</label>
+              <label>Risk-free <input type="number" id="hbRate" step="0.25" min="0">%</label>
+              <label>Dividend yield <input type="number" id="hbDiv" step="0.1" min="0">%</label>
+            </fieldset>
+          </div>
+        </section>
+        <section class="panel hb-strats">
+          <div class="chart-head"><h3>Strategies to test</h3><span><button class="btn-sm" id="hbAll">All</button> <button class="btn-sm" id="hbNone">None</button></span></div>
+          <div class="hb-list" id="hbList"></div>
+          <div class="hb-custom" id="hbCustom">
+            <div class="hb-custom-head"><b>Custom legs</b> <span class="muted small">strike % from spot · size % of exposure</span>
+              <span class="hb-custom-tools"><button class="btn-sm" id="hbCAdd">+ Leg</button> <button class="btn-sm" id="hbCCopy" title="Copy the legs of the hedge selected in the Planner tab">Copy selected hedge</button></span></div>
+            <table class="h-legs"><thead><tr><th>Action</th><th>Type</th><th>Strike %</th><th>Size %</th><th></th></tr></thead><tbody id="hbCLegs"></tbody></table>
+          </div>
+        </section>
+      </div>
+      <section class="panel hedge-tiles hb-tiles" id="hbTiles"></section>
+      <section class="panel hb-chart-panel">
+        <div class="chart-head">
+          <div class="seg small-seg" id="hbChartMode"><button data-m="value" class="on">Portfolio value</button><button data-m="dd">Drawdown</button><button data-m="rel">vs no hedge</button></div>
+          <span class="muted small" id="hbChartNote">Click a name in the legend to hide it · click a table row to see its trades</span>
+        </div>
+        <div class="chart-box hb-chart"><canvas id="cBt"></canvas></div>
+      </section>
+      <section class="panel">
+        <div class="chart-head"><h3>How each strategy performed</h3><span class="muted small">click a column to sort · click a row for its trades</span></div>
+        <div class="h-family-wrap"><table class="h-family hb-table"><thead id="hbHead"></thead><tbody id="hbBody"></tbody></table></div>
+      </section>
+      <section class="panel">
+        <div class="chart-head"><h3>In the biggest Nifty falls</h3><span class="muted small">portfolio change from the peak to the bottom</span></div>
+        <div class="h-family-wrap"><table class="h-family hb-table"><thead id="hbCrisisHead"></thead><tbody id="hbCrisisBody"></tbody></table></div>
+      </section>
+      <section class="panel">
+        <div class="chart-head">
+          <span class="hb-per-title"><h3>Returns by period</h3> <span class="seg small-seg" id="hbPeriodMode"><button data-m="year">Yearly</button><button data-m="month">Monthly</button></span></span>
+          <span class="muted small" id="hbPeriodNote">% return of the portfolio in each period, newest first · <b>bold</b> = beat no hedge · click a strategy name for its trades</span>
+        </div>
+        <div class="h-family-wrap hb-period-wrap"><table class="h-family hb-table hb-period"><thead id="hbPerHead"></thead><tbody id="hbPerBody"></tbody><tfoot id="hbPerFoot"></tfoot></table></div>
+      </section>
+      <section class="panel">
+        <div class="chart-head"><h3 id="hbTradesTitle">Trades</h3><span class="muted small" id="hbTradesSub"></span></div>
+        <div class="h-family-wrap hb-trades-wrap"><table class="h-family hb-table"><thead><tr><th>Opened</th><th>Closed</th><th>Why</th><th>Nifty in → out</th><th>IV</th><th>Legs (entry → exit)</th><th>Cost</th><th>Got back</th><th>Hedge P&amp;L</th><th>Holdings P&amp;L</th><th>Net</th></tr></thead><tbody id="hbTrades"></tbody></table></div>
+      </section>
+      <div class="muted small h-note">These hedges run for months and the test goes back to 2008, far beyond the ~2 years of real option prices Upstox keeps (those drive Strategies › Backtest), so every option is priced with Black-Scholes from the Nifty close and that day's India VIX (or the volatility you pick), with the skew, bid/ask spread and charges above. Holdings are assumed to move beta × Nifty. Premiums come out of cash (no interest on it); margin for sold legs is ignored. Real fills, skew and liquidity in a crash will differ — use this to compare strategies, not to predict exact rupees. Not investment advice.</div>
+    </div>
   </main>
 
   <!-- ===== Arbitrage (anomaly scanner) ===== -->
@@ -267,6 +755,14 @@
   <script src="/vendor/chart.js"></script>
   <script src="/vendor/lightweight-charts.js"></script>
   <script src="app.js"></script>
+  <script src="charts.js"></script>
+  <script src="flow-view.js"></script>
+  <script src="signals-backtest.js"></script>
+  <script src="pulse-view.js"></script>
+  <script src="book-view.js"></script>
+  <script src="hedge-view.js"></script>
+  <script src="hedge-backtest.js"></script>
+  <script src="/lib/pricing.js"></script>
   <script src="bt-common.js"></script>
   <script src="arb.js"></script>
   <script src="chain-chart.js"></script>
