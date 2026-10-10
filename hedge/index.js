@@ -4,6 +4,8 @@ const path = require('path');
 const { parseHoldings } = require('./holdings');
 const { createBetas } = require('./betas');
 const engine = require('./engine');
+const { createHistory } = require('./history');
+const backtest = require('./backtest');
 
 const NIFTY_KEY = 'NSE_INDEX|Nifty 50';
 const CHAIN_TTL_MS = 60_000;
@@ -11,6 +13,7 @@ const CHAIN_TTL_MS = 60_000;
 function createHedge({ upstoxGet, getSpot, cacheDir, logError }) {
   const uploaded = path.join(cacheDir, 'holdings.xlsx');
   const betas = createBetas({ upstoxGet, cacheDir, logError });
+  const history = createHistory({ upstoxGet, cacheDir, logError });
   let book = null; // { asOf, holdings, file }
   let contracts = null; // { at, expiries, lot }
   const chains = new Map(); // expiry -> { at, data }
@@ -224,8 +227,16 @@ function createHedge({ upstoxGet, getSpot, cacheDir, logError }) {
     };
   }
 
+  // Backtest tab: replay strategies over daily Nifty + India VIX history (see backtest.js).
+  async function runBacktest(q) {
+    const hist = await history.load();
+    const r = backtest.run(hist, q);
+    return { ...r, available: { from: hist[0].date, to: hist[hist.length - 1].date } };
+  }
+
   return {
     plan,
+    backtest: runBacktest,
     saveStructure,
     deleteStructure,
     reload: () => loadHoldings(),

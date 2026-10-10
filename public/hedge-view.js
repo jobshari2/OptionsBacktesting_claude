@@ -680,8 +680,13 @@
   applyHoldMin();
 
   // Called by app.js on each refresh: first open → search; then refresh prices every 60 s.
+  // (Not while the Backtest tab is showing.)
   window.onHedgeRender = () => {
-    if (state.view !== 'hedge') return;
+    if (state.view !== 'hedge' || !$('hPlanPane') || $('hPlanPane').classList.contains('hidden')) return;
     if (!hs.data || Date.now() - hs.lastAt > 60_000) plan();
+    else if (hs.chart) hs.chart.resize();
   };
+
+  // Shared with hedge-backtest.js (the Backtest tab starts from the planner's portfolio and hedges).
+  window.hedgePlanner = { data: () => hs.data, selectedId: () => hs.data?.selected?.id ?? null, LETTERS, inr, parseInr };
 })();

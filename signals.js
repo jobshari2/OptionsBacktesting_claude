@@ -3,6 +3,7 @@
 // around each spike to <dir>/<YYYY-MM-DD>/ (a tick-level CSV per spike + a daily events.csv summary).
 const fs = require('fs');
 const path = require('path');
+const { signalKind } = require('./sigstats');
 
 const MIN = 60_000;
 const BASELINE_SPAN_MIN = 15; // "normal" volume = average per-minute volume over the previous 15 minutes
@@ -22,9 +23,36 @@ const TICKS_CSV_HEADER = [
   'pe_ltp', 'pe_volume', 'pe_vol_added', 'pe_oi', 'signal',
 ];
 
-function createSignals(cfg, logError = (src, e) => console.error(src, e)) {
+// Signal thresholds from the environment (.env); dir = where recordings go.
+function signalConfig(env, dir) {
+  const num = (v, d) => (v === undefined || v === '' || isNaN(Number(v)) ? d : Number(v));
+  return {
+    spikeRatio: num(env.SPIKE_RATIO, 3), // strike spike: last-minute volume ≥ this × its normal per-minute volume
+    spikeMinQty: num(env.SPIKE_MIN_QTY, 25000), // ...and at least this many units traded in that minute
+    broadRatio: num(env.BROAD_RATIO, 2), // a strike counts as "elevated" at ≥ this × normal volume
+    broadPct: num(env.BROAD_PCT, 60), // broad surge: ≥ this % of strikes near ATM elevated at once
+    spotMovePts: num(env.SPOT_MOVE_PTS, 25), // Nifty rise/fall: moves ≥ this many points within 1 minute...
+    spotFastPts: num(env.SPOT_FAST_PTS, 15), // ...or ≥ this many points within 20 seconds
+    priceSpikePct: num(env.PRICE_SPIKE_PCT, 10), // premium spike: a CE/PE near ATM rises ≥ this % within 1 minute
+    priceMinLtp: num(env.PRICE_MIN_LTP, 5), // ...ignoring options priced below this (₹), where % moves are noise
+    bothRisePct: num(env.BOTH_RISE_PCT, 3), // CE & PE both rising: both legs up ≥ this % within 1 minute...
+    bothRisePairs: num(env.BOTH_RISE_PAIRS, 3), // ...on at least this many of the 5 strikes around ATM
+    baselineMin: num(env.BASELINE_MIN, 5), // minutes of history needed before volume signals start
+    strikesAround: num(env.SIGNAL_STRIKES, 10), // strikes either side of ATM that are watched and recorded
+    beforeMin: num(env.CAPTURE_BEFORE_MIN, 5), // minutes of data saved before a spike
+    afterMin: num(env.CAPTURE_AFTER_MIN, 5), // max minutes of data saved after the last spike...
+    minAfterSec: num(env.CAPTURE_MIN_AFTER_SEC, 60), // ...but recording stops once at least this long has passed
+    calmSec: num(env.CAPTURE_CALM_SEC, 30), // ...and no signal condition has been true for this long (cooled off)
+    cooldownMin: num(env.SPIKE_COOLDOWN_MIN, 5), // the same signal won't repeat within this time
+    dir,
+  };
+}
+
+// odds = the track record of past signals (sigstats.buildStats); each new signal is tagged with its kind's record.
+// cfg.replay = backtest over a tape (signal-backtest.js): signals are only collected, nothing is recorded or saved.
+function createSignals(cfg, logError = (src, e) => console.error(src, e), odds = null) {
   const cooldowns = new Map(); // trigger key -> last time it fired
-  const events = loadDay(istDate(Date.now())); // newest first, shown in the UI
+  const events = cfg.replay ? [] : loadDay(istDate(Date.now())); // newest first, shown in the UI
   let capture = null;
   let breadth = { ready: false };
 
@@ -191,14 +219,16 @@ function createSignals(cfg, logError = (src, e) => console.error(src, e)) {
       ? `${l.strike} ${fmtPct(l.pct)} (${l.from.toFixed(2)} → ${l.to.toFixed(2)})`
       : `${l.strike} ${l.side} ${Number.isFinite(l.ratio) ? l.ratio.toFixed(1) + '×' : 'new'} (+${compact(l.lastRate)}/min)`));
     const label = isPremium ? tr.label : 'Volume spike';
-    return { type: tr.type, detail: `${label}: ${parts.join(', ')}${more}`, strikes: legs.map((l) => `${l.strike}${l.side}`) };
+    return { type: tr.type, detail: `${label}: ${parts.join(', ')}${more}`, strikes: legs.map((l) => `${l.strike}${l.side}`), lead: legs[0] };
   }
 
   function record(tr, hist, snap, now) {
-    const ev = { id: `${now}-${tr.type}`, t: now, type: tr.type, detail: tr.detail, spot: snap.spot, after: null, file: null };
+    const kind = signalKind(tr.type, tr.lead, hist[hist.length - 1], hist.find((h) => h.t >= now - MIN));
+    const ev = { id: `${now}-${tr.type}`, t: now, type: tr.type, kind, detail: tr.detail, spot: snap.spot, odds: odds?.lookup(kind) ?? null, after: null, file: null };
     events.unshift(ev);
+    if (cfg.replay) return;
     if (events.length > 300) events.pop();
-    console.log(`[signal] ${istTime(now)} ${tr.type} — ${tr.detail}`);
+    console.log(`[signal] ${istTime(now)} ${tr.type} — ${tr.detail}` + (ev.odds?.high ? ` · HIGH PROBABILITY: Nifty ${ev.odds.dir} ${Math.round(ev.odds.p * 100)}% (${ev.odds.hits}/${ev.odds.n})` : ''));
 
     if (!capture) {
       capture = {
@@ -306,6 +336,7 @@ function createSignals(cfg, logError = (src, e) => console.error(src, e)) {
   return {
     onSnapshot,
     flush: finalize, // write any in-progress recording (e.g. on shutdown)
+    all: () => events,
     state: () => ({
       breadth,
       recording: capture
@@ -323,7 +354,7 @@ function createSignals(cfg, logError = (src, e) => console.error(src, e)) {
         spikeRatio: cfg.spikeRatio, spikeMinQty: cfg.spikeMinQty, broadRatio: cfg.broadRatio,
         broadPct: cfg.broadPct, spotMovePts: cfg.spotMovePts, spotFastPts: cfg.spotFastPts, strikesAround: cfg.strikesAround,
         priceSpikePct: cfg.priceSpikePct, bothRisePct: cfg.bothRisePct, bothRisePairs: cfg.bothRisePairs,
-        beforeMin: cfg.beforeMin, afterMin: cfg.afterMin,
+        beforeMin: cfg.beforeMin, afterMin: cfg.afterMin, cooldownMin: cfg.cooldownMin,
       },
     }),
   };
@@ -372,4 +403,4 @@ function compact(n) {
   return String(Math.round(n));
 }
 
-module.exports = { createSignals, isMarketOpen };
+module.exports = { createSignals, signalConfig, isMarketOpen };

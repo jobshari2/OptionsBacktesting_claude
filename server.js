@@ -2,12 +2,19 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { createSignals, isMarketOpen } = require('./signals');
+const { createSignals, signalConfig, isMarketOpen } = require('./signals');
 const { logError, LOG_FILE } = require('./errorlog');
 const { createFeed } = require('./feed');
-const { createTape } = require('./tape');
+const { createFlow, flowConfig } = require('./flow');
+const { createTape, tapeDays, readTape } = require('./tape');
+const { createPulse } = require('./pulse');
+const { createBook } = require('./book');
+const { createHedge } = require('./hedge');
+const { replayFlow } = require('./replay');
+const { buildStats } = require('./sigstats');
 const { createBacktester } = require('./bt');
 const { createAnomalyLive } = require('./anomaly-live');
+const { execFile } = require('child_process');
 
 loadEnv(path.join(__dirname, '.env'));
 
@@ -23,26 +30,7 @@ const CFG = {
   apiSecret: env.UPSTOX_API_SECRET || '',
   redirectUri: env.UPSTOX_REDIRECT_URI || `http://localhost:${num(env.PORT, 3000)}/callback`,
   pollMs: Math.max(1000, num(env.POLL_MS, 3000)),
-  signals: {
-    spikeRatio: num(env.SPIKE_RATIO, 3), // strike spike: last-minute volume ≥ this × its normal per-minute volume
-    spikeMinQty: num(env.SPIKE_MIN_QTY, 25000), // ...and at least this many units traded in that minute
-    broadRatio: num(env.BROAD_RATIO, 2), // a strike counts as "elevated" at ≥ this × normal volume
-    broadPct: num(env.BROAD_PCT, 60), // broad surge: ≥ this % of strikes near ATM elevated at once
-    spotMovePts: num(env.SPOT_MOVE_PTS, 25), // Nifty rise/fall: moves ≥ this many points within 1 minute...
-    spotFastPts: num(env.SPOT_FAST_PTS, 15), // ...or ≥ this many points within 20 seconds
-    priceSpikePct: num(env.PRICE_SPIKE_PCT, 10), // premium spike: a CE/PE near ATM rises ≥ this % within 1 minute
-    priceMinLtp: num(env.PRICE_MIN_LTP, 5), // ...ignoring options priced below this (₹), where % moves are noise
-    bothRisePct: num(env.BOTH_RISE_PCT, 3), // CE & PE both rising: both legs up ≥ this % within 1 minute...
-    bothRisePairs: num(env.BOTH_RISE_PAIRS, 3), // ...on at least this many of the 5 strikes around ATM
-    baselineMin: num(env.BASELINE_MIN, 5), // minutes of history needed before volume signals start
-    strikesAround: num(env.SIGNAL_STRIKES, 10), // strikes either side of ATM that are watched and recorded
-    beforeMin: num(env.CAPTURE_BEFORE_MIN, 5), // minutes of data saved before a spike
-    afterMin: num(env.CAPTURE_AFTER_MIN, 5), // max minutes of data saved after the last spike...
-    minAfterSec: num(env.CAPTURE_MIN_AFTER_SEC, 60), // ...but recording stops once at least this long has passed
-    calmSec: num(env.CAPTURE_CALM_SEC, 30), // ...and no signal condition has been true for this long (cooled off)
-    cooldownMin: num(env.SPIKE_COOLDOWN_MIN, 5), // the same signal won't repeat within this time
-    dir: env.EVENTS_DIR ? path.resolve(env.EVENTS_DIR) : path.join(__dirname, DEMO ? 'events-demo' : 'events'), // where recordings go
-  },
+  signals: signalConfig(env, env.EVENTS_DIR ? path.resolve(env.EVENTS_DIR) : path.join(__dirname, DEMO ? 'events-demo' : 'events')),
 };
 
 const API = 'https://api.upstox.com/v2';
@@ -52,7 +40,7 @@ const PUBLIC_DIR = path.join(__dirname, 'public');
 const WINDOWS_MIN = [1, 3, 5, 15]; // volume-change windows offered in the UI
 const HISTORY_MS = (Math.max(16, CFG.signals.beforeMin) + 1) * 60_000;
 // Bumped whenever the /api/chain response shape changes, so an old server + new page is detected.
-const API_VERSION = 16;
+const API_VERSION = 17;
 const FEED_STRIKES = num(env.FEED_STRIKES, 15); // strikes either side of ATM streamed over the WebSocket
 const TICK_SNAPSHOT_MS = 500; // how often ticks are folded into a snapshot (history, signals, UI)
 const REST_WITH_FEED_MS = 15_000; // REST refresh interval while the WebSocket feed is live
@@ -67,9 +55,32 @@ const restChains = new Map(); // expiry -> { fetchedAt, spot, rows } from the RE
 const snapshots = new Map(); // expiry -> latest snapshot (REST + ticks)
 // expiry -> [{ t, spot, d: { strike: [ceLtp, ceVol, ceOi, peLtp, peVol, peOi, (ceBuy, ceSell, peBuy, peSell)] } }]
 const histories = new Map();
-const signals = createSignals(CFG.signals, logError);
+// How each kind of signal played out on earlier days (first run after a new day reads that day's tape).
+let signalOdds = null;
+try {
+  signalOdds = buildStats(CFG.signals.dir, { logError });
+} catch (e) {
+  logError('signal-odds', e);
+}
+const signals = createSignals(CFG.signals, logError, signalOdds);
 const feed = createFeed({ getToken: () => token, logError });
+const flow = createFlow({ ...flowConfig(env), dir: CFG.signals.dir }, logError);
 const tape = createTape({ dir: CFG.signals.dir, strikesAround: num(env.TAPE_STRIKES, 15), logError });
+const pulse = createPulse({
+  dir: CFG.signals.dir,
+  buildupStrikes: num(env.PULSE_STRIKES, 5), // strikes either side of ATM used for the OI build-up read
+  oiWindowMin: num(env.PULSE_OI_MIN, 15), // OI build-up is measured over this many minutes
+  logError,
+});
+const book = createBook({ strikesAround: num(env.BOOK_STRIKES, 10), pressureStrikes: num(env.PULSE_STRIKES, 5) });
+// Give the pulse and the order-book view today's context after a restart.
+try {
+  const todayTape = readTape(CFG.signals.dir, new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10));
+  pulse.seed(todayTape);
+  book.seed(todayTape);
+} catch (e) {
+  logError('tape-seed', e);
+}
 let lastError = null;
 let lastClientAt = 0;
 let polling = false;
@@ -194,7 +205,10 @@ function snapshotAll() {
     const built = buildSnapshot(e);
     if (built && e === nearestExpiry) {
       signals.onSnapshot(built.hist, built.snap);
+      flow.onSnapshot(built.hist, built.snap);
       tape.record(built.hist[built.hist.length - 1], built.snap);
+      pulse.update(built.hist[built.hist.length - 1], built.snap, flow.state().live, signals.state());
+      book.update(built.hist[built.hist.length - 1]);
     }
   }
 }
@@ -308,6 +322,48 @@ function buildResponse(expiry) {
   };
 }
 
+// Volume added per time bucket over the last 15 minutes, for strikes around ATM (CE and PE separately).
+function surgeHistory(expiry, bucketSec, around) {
+  const hist = histories.get(expiry) || [];
+  const snap = snapshots.get(expiry);
+  if (!hist.length || !snap) return { buckets: [], strikes: [], ce: [], pe: [], spot: [] };
+  const bucketMs = bucketSec * 1000;
+  const n = Math.floor((15 * 60_000) / bucketMs);
+  const now = snap.updatedAt;
+  // First history entry at or after time t (null if t is before the history starts).
+  const at = (t) => {
+    if (t < hist[0].t) return null;
+    let lo = 0;
+    let hi = hist.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (hist[mid].t >= t) hi = mid; else lo = mid + 1;
+    }
+    return hist[lo];
+  };
+  const marks = Array.from({ length: n + 1 }, (_, i) => at(now - (n - i) * bucketMs));
+
+  const rows = snap.rows;
+  let atm = 0;
+  rows.forEach((r, i) => { if (Math.abs(r.strike - snap.spot) < Math.abs(rows[atm].strike - snap.spot)) atm = i; });
+  const strikes = rows.slice(Math.max(0, atm - around), atm + around + 1).map((r) => r.strike);
+
+  const added = (k, idx, i) => {
+    const a = marks[i]?.d[k]?.[idx];
+    const b = marks[i + 1]?.d[k]?.[idx];
+    return a == null || b == null ? null : Math.max(0, b - a);
+  };
+  return {
+    bucketSec,
+    atm: rows[atm]?.strike ?? null,
+    buckets: marks.slice(1).map((_, i) => now - (n - i - 1) * bucketMs),
+    strikes,
+    ce: strikes.map((k) => marks.slice(1).map((_, i) => added(k, 1, i))),
+    pe: strikes.map((k) => marks.slice(1).map((_, i) => added(k, 4, i))),
+    spot: marks.slice(1).map((m) => m?.spot ?? null),
+  };
+}
+
 // Also records the LTP change over the same window (null when there's no price to compare).
 function fillChange(o, w, baseVol, baseLtp) {
   o.dLtp[w] = baseLtp != null && o.ltp != null ? o.ltp - baseLtp : null;
@@ -397,6 +453,68 @@ const anomalyLive = createAnomalyLive({
 });
 backtester.attachLive(anomalyLive);
 
+// Portfolio hedge planner (Hedge screen): holdings from an .xlsx uploaded on the screen (starts empty),
+// chains and history from Upstox.
+const hedge = createHedge({
+  upstoxGet: (p) => {
+    const [pathname, qs] = p.split('?');
+    return upstox(pathname, Object.fromEntries(new URLSearchParams(qs || '')));
+  },
+  getSpot: () => feed.tick(NIFTY_KEY)?.ltp ?? (nearestExpiry ? snapshots.get(nearestExpiry)?.spot : null) ?? null,
+  cacheDir: path.join(__dirname, 'hedge-cache'),
+  logError,
+});
+
+function readBody(req, limit) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > limit) { reject(new Error('Request too large')); req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+
+async function handleHedge(req, res, p) {
+  lastClientAt = Date.now();
+  if (DEMO) return sendJson(res, 400, { error: 'The Hedge screen needs live Upstox data (not available in demo mode).' });
+  try {
+    if (p === '/api/hedge/plan' && req.method === 'POST') {
+      const params = JSON.parse((await readBody(req, 200_000)).toString('utf8') || '{}');
+      return sendJson(res, 200, await hedge.plan(params));
+    }
+    if (p === '/api/hedge/backtest' && req.method === 'POST') {
+      const params = JSON.parse((await readBody(req, 200_000)).toString('utf8') || '{}');
+      return sendJson(res, 200, await hedge.backtest(params));
+    }
+    if (p === '/api/hedge/saved' && req.method === 'POST') {
+      const body = JSON.parse((await readBody(req, 50_000)).toString('utf8') || '{}');
+      return sendJson(res, 200, { ok: true, saved: hedge.saveStructure(body) });
+    }
+    if (p === '/api/hedge/saved/delete' && req.method === 'POST') {
+      const body = JSON.parse((await readBody(req, 10_000)).toString('utf8') || '{}');
+      hedge.deleteStructure(body.id);
+      return sendJson(res, 200, { ok: true });
+    }
+    if (p === '/api/hedge/reload' && req.method === 'POST') { hedge.reload(); return sendJson(res, 200, { ok: true }); }
+    if (p === '/api/hedge/betas' && req.method === 'POST') { await hedge.refreshBetas(); return sendJson(res, 200, { ok: true }); }
+    if (p === '/api/hedge/upload' && req.method === 'POST') {
+      const r = hedge.upload(await readBody(req, 5_000_000));
+      await hedge.refreshBetas();
+      return sendJson(res, 200, { ok: true, count: r.holdings.length, asOf: r.asOf });
+    }
+    if (p === '/api/hedge/clear-upload' && req.method === 'POST') { hedge.clearUpload(); await hedge.refreshBetas(); return sendJson(res, 200, { ok: true }); }
+    return sendJson(res, 404, { error: 'Not found' });
+  } catch (e) {
+    logError('hedge', e);
+    return sendJson(res, 500, { error: e.message });
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const p = url.pathname;
@@ -440,6 +558,9 @@ const server = http.createServer(async (req, res) => {
         error: lastError,
         data: buildResponse(expiry),
         feed: DEMO ? null : feed.status(),
+        signals: { expiry: list[0], ...signals.state() },
+        flow: flow.state(),
+        pulse: pulse.state(),
       });
     } catch (e) {
       lastError = e.message;
@@ -471,6 +592,70 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (p.startsWith('/api/bt/') || p.startsWith('/api/sb/')) return backtester.handle(req, res, url, sendJson);
+
+  if (p.startsWith('/api/hedge/')) return handleHedge(req, res, p);
+
+  if (p === '/api/book') {
+    lastClientAt = Date.now();
+    try {
+      return sendJson(res, 200, book.state(nearestExpiry ? snapshots.get(nearestExpiry) : null));
+    } catch (e) {
+      logError('book', e);
+      return sendJson(res, 500, { error: e.message });
+    }
+  }
+
+  if (p === '/api/flow-series') {
+    lastClientAt = Date.now();
+    return sendJson(res, 200, flow.series());
+  }
+
+  // Replay a recorded day through the Volume Flow logic, optionally with different settings.
+  if (p === '/api/flow-days') {
+    return sendJson(res, 200, tapeDays(CFG.signals.dir));
+  }
+  if (p === '/api/flow-replay') {
+    const day = url.searchParams.get('date') || '';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return sendJson(res, 400, { error: 'date must be YYYY-MM-DD' });
+    const q = (k) => (url.searchParams.has(k) ? Number(url.searchParams.get(k)) : undefined);
+    try {
+      return sendJson(res, 200, replayFlow(CFG.signals.dir, day, flowConfig(env, {
+        mode: url.searchParams.get('mode') || undefined,
+        imbalance: q('imbalance'), holdSec: q('holdSec'), minQty: q('minQty'), reactPts: q('reactPts'), horizonMin: q('horizonMin'),
+      })));
+    } catch (e) {
+      logError('replay', e);
+      return sendJson(res, 500, { error: e.message });
+    }
+  }
+
+  // Backtest the signals over recorded days. Runs signal-backtest.js in its own process: a day takes a few
+  // seconds, and this way live data isn't held up and the signals.js on disk is what gets tested.
+  if (p === '/api/signal-backtest') {
+    const date = url.searchParams.get('date') || 'all';
+    if (date !== 'all' && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return sendJson(res, 400, { error: 'date must be YYYY-MM-DD or all' });
+    const args = [path.join(__dirname, 'signal-backtest.js'), '--json', '--dir', CFG.signals.dir];
+    if (date !== 'all') args.push(date);
+    for (const [k, v] of url.searchParams) {
+      if (k !== 'date' && /^[a-zA-Z]+$/.test(k) && Number.isFinite(Number(v))) args.push('--' + k, String(Number(v)));
+    }
+    return execFile(process.execPath, args, { maxBuffer: 256 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) {
+        logError('signal-backtest', stderr || err);
+        return sendJson(res, 500, { error: (stderr || err.message).trim().split('\n').slice(0, 3).join(' ') });
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      res.end(stdout);
+    });
+  }
+
+  if (p === '/api/surge-history') {
+    lastClientAt = Date.now();
+    const expiry = url.searchParams.get('expiry') || activeExpiry;
+    const bucketSec = Math.min(300, Math.max(15, num(url.searchParams.get('bucket'), 60)));
+    const around = Math.min(40, Math.max(3, num(url.searchParams.get('strikes'), 12)));
+    return sendJson(res, 200, surgeHistory(expiry, bucketSec, around));
+  }
 
   if (p === '/api/an/live') {
     lastClientAt = Date.now(); // keep the chain (and so the scanner) running while the page watches
@@ -552,6 +737,7 @@ server.on('error', (e) => {
 for (const sig of ['SIGINT', 'SIGTERM']) {
   process.on(sig, () => {
     signals.flush();
+    flow.flush();
     setTimeout(() => process.exit(0), 1500); // don't hang if the disk is slow
     tape.close(() => process.exit(0));
   });
