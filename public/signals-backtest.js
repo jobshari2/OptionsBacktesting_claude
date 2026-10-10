@@ -1,4 +1,4 @@
-// "Backtest" tab: runs recorded days through the signal logic as it is now (/api/signal-backtest) and shows,
+// "Signal test" screen: runs recorded days through the signal logic as it is now (/api/signal-backtest) and shows,
 // per kind of signal, how often Nifty then moved the indicated way, next to what was recorded live.
 // It only needs the recorded files, so it works outside market hours and before logging in.
 (function () {
@@ -146,11 +146,11 @@
   $('sbtRun').addEventListener('click', run);
   $('sbtDay').addEventListener('change', run);
 
-  // Called from app.js when the tab is opened and on every data refresh.
-  window.onBacktestRender = () => {
-    if (state.view !== 'backtest') return;
+  // Called from app.js when the screen is opened and on every data refresh.
+  window.onSignalTestRender = () => {
+    if (state.view !== 'sigtest') return;
     loadDays();
     fillInputs(state.signals?.rules);
   };
-  window.onBacktestRender();
+  window.onSignalTestRender();
 })();

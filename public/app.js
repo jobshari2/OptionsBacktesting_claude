@@ -8,7 +8,15 @@ const state = {
   autoRange: 10,
   view: localGet('view') || 'chain',
   win: Number(localGet('win') || 5),
+  metric: localGet('metric') || 'qty', // surge bars sized by 'qty' or 'pct'
+  threshold: Number(localGet('threshold') ?? 10), // highlight strikes whose volume grew ≥ this %
+  sidePane: localGet('sidePane') || 'chart', // chain screen, right column: 'chart' (Nifty chart + levels) or 'signals'
+  bottomPane: localGet('bottomPane') || 'arb', // chain screen, under the chain: 'arb' or 'surge'
   data: null,
+  signals: null,
+  seenEvents: null,
+  unseenSignals: 0, // signals raised while the Signals pane was hidden
+  unseenHigh: false, // ...one of them a high-probability one
   levels: null, // support / resistance from /api/bt/levels
   levelsAt: 0,
   prevLtp: {},
@@ -47,7 +55,7 @@ function localGet(k) { try { return localStorage.getItem('oc.' + k); } catch { r
 function localSet(k, v) { try { localStorage.setItem('oc.' + k, v); } catch {} }
 
 // ---------- data loop ----------
-const API_VERSION = 16; // must match API_VERSION in server.js
+const API_VERSION = 17; // must match API_VERSION in server.js
 
 async function refresh() {
   let json;
@@ -73,12 +81,15 @@ async function refresh() {
     }
     $('login').classList.add('hidden');
     if (state.loggedOut) { state.loggedOut = false; showViews(); }
-    // Chain errors only matter on the chain screen; the backtest screens report their own.
-    setError(state.view === 'chain' ? json.error : null);
+    // Chain errors only matter on the live screens; the other screens report their own.
+    setError(groupOf(state.view) === 'live' ? json.error : null);
     if (json.expiries) renderExpiries(json.expiries, json.data?.expiry);
     state.feed = json.feed;
     if (json.data && json.data.updatedAt !== state.data?.updatedAt) {
       state.data = json.data;
+      state.signals = json.signals;
+      state.flow = json.flow;
+      state.pulse = json.pulse;
       showViews();
       render();
     }
@@ -116,7 +127,7 @@ function scheduleRefresh(ms) {
 function showLogin(json) {
   state.loggedOut = true;
   showViews();
-  $('login').classList.remove('hidden');
+  $('login').classList.toggle('hidden', NO_LOGIN.has(state.view));
   $('loginMsg').textContent = json.error
     ? `${json.error}. Check UPSTOX_ACCESS_TOKEN in .env (restart the server after changing it) or log in again.`
     : json.configured
@@ -219,6 +230,17 @@ function render() {
   }
   $('windowSeg').querySelectorAll('button').forEach((b) => b.classList.toggle('on', Number(b.dataset.w) === state.win));
   renderLevels(d);
+  renderSurge(d, rows);
+  renderSignals(state.signals, d.source);
+  renderPulseLine();
+  runScreenHooks();
+}
+
+// The live-analysis screens (charts.js, flow-view.js, …) draw themselves from `state` on every refresh; each hook
+// returns at once unless its screen is the one showing.
+const SCREEN_HOOKS = ['onAppRender', 'onFlowRender', 'onPulseRender', 'onBookRender', 'onHedgeRender', 'onSignalTestRender'];
+function runScreenHooks() {
+  for (const h of SCREEN_HOOKS) window[h]?.();
 }
 
 function renderChain(d, rows) {
@@ -325,6 +347,254 @@ function buildWindowButtons(windows) {
   state.windowsBuilt = true;
 }
 
+// ---------- volume surge + signals ----------
+function renderSurge(d, rows) {
+  const w = state.win;
+  const tracked = d.trackingSec;
+  const need = w * 60;
+  const since = new Date(d.updatedAt - tracked * 1000).toLocaleTimeString('en-IN', { hour12: false, hour: '2-digit', minute: '2-digit' });
+  $('tracking').textContent = tracked < need
+    ? `Filling ${w}m window: ${Math.floor(tracked / 60)}m ${tracked % 60}s so far (since ${since})`
+    : `Volume added per strike, last ${w} min · numbers = top 3`;
+
+  $('metricSeg').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.m === state.metric));
+  $('thSeg').querySelectorAll('button').forEach((b) => b.classList.toggle('on', Number(b.dataset.t) === state.threshold));
+
+  // Calls vs puts totals use the whole chain.
+  const ceTotal = d.rows.reduce((s, r) => s + r.ce.dVol[w], 0);
+  const peTotal = d.rows.reduce((s, r) => s + r.pe.dVol[w], 0);
+  $('ceTotal').textContent = compact(ceTotal);
+  $('peTotal').textContent = compact(peTotal);
+  const sum = ceTotal + peTotal;
+  $('ceShare').style.width = sum ? (ceTotal / sum) * 100 + '%' : '50%';
+  $('peShare').style.width = sum ? (peTotal / sum) * 100 + '%' : '50%';
+
+  // Ranking, bars and highlights use the visible strikes, by the selected metric.
+  const byPct = state.metric === 'pct';
+  const metric = (o) => {
+    if (!byPct) return o.dVol[w];
+    if (o.pVol[w] == null) return o.dVol[w] > 0 ? Infinity : 0;
+    return o.pVol[w];
+  };
+  const isHit = (o) => state.threshold > 0 && o.dVol[w] > 0 && (o.pVol[w] == null || o.pVol[w] >= state.threshold);
+  const label = (o) => {
+    const v = o.dVol[w];
+    if (!v) return '';
+    const p = pctText(o.pVol[w], v);
+    return byPct ? `${p} · ${compact(v)}` : `${compact(v)} · ${p}`;
+  };
+
+  $('topBy').textContent = byPct ? '(by %)' : '(by qty)';
+  const top = (key) => rows
+    .filter((r) => r[key].dVol[w] > 0)
+    .sort((a, b) => metric(b[key]) - metric(a[key]))
+    .slice(0, 3);
+  const topCe = top('ce');
+  const topPe = top('pe');
+  const li = (list, key) => list.length
+    ? list.map((r) => `<li><b>${r.strike}</b> +${compact(r[key].dVol[w])}<span class="p">${pctText(r[key].pVol[w], r[key].dVol[w])}</span>${priceChange(r[key], w)}</li>`).join('')
+    : '<li class="muted">No new volume yet</li>';
+  $('topCe').innerHTML = li(topCe, 'ce');
+  $('topPe').innerHTML = li(topPe, 'pe');
+
+  const hitsCe = rows.filter((r) => isHit(r.ce)).length;
+  const hitsPe = rows.filter((r) => isHit(r.pe)).length;
+  $('thCount').textContent = state.threshold > 0 ? `CE ${hitsCe} · PE ${hitsPe} strikes` : '';
+
+  // Column chart: CE volume added grows up, PE grows down, strikes along the bottom.
+  // Only the top 3 per side carry a value label; every column has a hover tooltip.
+  const rankCe = new Map(topCe.map((r, i) => [r.strike, i + 1]));
+  const rankPe = new Map(topPe.map((r, i) => [r.strike, i + 1]));
+  const finite = rows.flatMap((r) => [metric(r.ce), metric(r.pe)]).filter(Number.isFinite);
+  const max = Math.max(byPct ? 0.0001 : 1, ...finite);
+  const height = (o) => Math.min(100, (metric(o) / max) * 100);
+  const bar = (o, rank) => {
+    const h = height(o);
+    const cls = isHit(o) ? 'hit' : rank ? '' : 'dim';
+    return `<div class="bar ${cls}" style="height:${h}%"></div>${rank ? `<span class="lbl" style="--h:${h}%">${rank}</span>` : ''}`;
+  };
+  const tip = (r) => `${r.strike} · last ${w}m&#10;CE +${compact(r.ce.dVol[w])} (${pctText(r.ce.pVol[w], r.ce.dVol[w]) || '0%'})&#10;PE +${compact(r.pe.dVol[w])} (${pctText(r.pe.pVol[w], r.pe.dVol[w]) || '0%'})`;
+  $('bars').innerHTML = rows.map((r) => `<div class="col${r.strike === d.atm ? ' atm' : ''}" title="${tip(r)}">
+      <div class="up">${bar(r.ce, rankCe.get(r.strike))}</div>
+      <div class="k">${r.strike % 100 === 0 || r.strike === d.atm ? r.strike : String(r.strike).slice(-3)}</div>
+      <div class="down">${bar(r.pe, rankPe.get(r.strike))}</div>
+    </div>`).join('');
+}
+
+// One-line Market Pulse headline in the Signals panel (click to open the full screen).
+function renderPulseLine() {
+  const p = state.pulse;
+  const el = $('pulseLine');
+  if (!el) return;
+  el.classList.toggle('hidden', !p);
+  if (!p) return;
+  el.className = `pulse-line ${p.bias}`;
+  el.innerHTML = `<span class="pl-label">Market pulse</span> ${esc(p.headline)}`;
+}
+
+// LTP change over the selected window, e.g. "₹ +12.40 (+8.3%)".
+function priceChange(o, w) {
+  const d = o.dLtp?.[w];
+  if (d == null) return '';
+  const base = o.ltp - d;
+  const pct = base > 0 ? ` (${d >= 0 ? '+' : ''}${((d / base) * 100).toFixed(1)}%)` : '';
+  const cls = d > 0 ? 'pos' : d < 0 ? 'neg' : 'muted';
+  return `<div class="px ${cls}">₹ ${d >= 0 ? '+' : ''}${d.toFixed(2)}${pct}</div>`;
+}
+
+const mmss =(sec) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
+
+// e.g. "1:20 · calm 12/30s" — a recording stops after the minimum time once nothing has fired for calmSec.
+function recordingStatus(rec, now) {
+  const running = mmss((now - rec.startedAt) / 1000);
+  const minLeft = rec.minAfterSec - (now - rec.lastSignalAt) / 1000;
+  if (minLeft > 0) return `${running} · min ${Math.ceil(minLeft)}s left`;
+  const calm = Math.min(rec.calmSec, Math.floor((now - rec.lastHotAt) / 1000));
+  return `${running} · ${calm > 0 ? `calm ${calm}/${rec.calmSec}s` : 'still active'}`;
+}
+
+const TYPE_LABEL = {
+  'strike-spike': 'VOLUME SPIKE',
+  'broad-surge': 'BROAD SURGE',
+  'premium-up': 'PREMIUM ▲',
+  'premium-down': 'PREMIUM ▼',
+  'premium-spike': 'PREMIUM JUMP', // older recordings
+  'both-rising': 'CE + PE RISING',
+  'spot-up': 'NIFTY ▲',
+  'spot-down': 'NIFTY ▼',
+  'spot-move': 'SPOT MOVE', // older recordings
+};
+
+// ATM call/put/straddle premium change over the last minute.
+function renderPremium(p, r) {
+  const el = $('premium');
+  if (!p) {
+    el.innerHTML = '<span class="muted">Premiums (1m): collecting…</span>';
+    return;
+  }
+  const v = (x) => (x == null ? '—' : `<b class="${x > 0 ? 'pos' : x < 0 ? 'neg' : ''}">${x >= 0 ? '+' : ''}${x.toFixed(1)}%</b>`);
+  el.innerHTML = `<span class="muted">Premiums (1m) · ATM ${p.atm}</span>
+    <span>CE ${v(p.ce)}</span><span>PE ${v(p.pe)}</span><span>Straddle ${v(p.straddle)}</span>
+    <span class="pill both-rising${p.bothRising ? '' : ' off'}" title="Strikes around ATM where calls and puts are both up ≥${r.bothRisePct}% in the last minute">
+      CE + PE rising ${p.both}/${p.pairs}</span>`;
+}
+
+// Track record of this kind of signal on earlier days (from sigstats.js), e.g. "▼ 81%  Nifty fell 10 pts before ...".
+function oddsText(o) {
+  const [did, other] = o.dir === 'up' ? ['rose', 'falling'] : ['fell', 'rising'];
+  return `Nifty ${did} ${o.pts} pts before ${other} ${o.pts}, within ${o.min} min, in ${o.hits} of ${o.n} past cases`
+    + ` (any moment: ${Math.round(o.base * 100)}%) · ${o.days} day${o.days === 1 ? '' : 's'} of data`;
+}
+function oddsLine(o) {
+  if (!o) return '';
+  const pct = `${o.dir === 'up' ? '▲' : '▼'} ${Math.round(o.p * 100)}%`;
+  return `<div class="ev-odds${o.high ? ' high ' + o.dir : ''}"><b>${o.high ? 'HIGH PROBABILITY ' : ''}${pct}</b> ${esc(oddsText(o))}</div>`;
+}
+
+// While a high-probability signal is still inside its outcome window, show it as a banner.
+function renderOddsBanner(sig) {
+  const now = state.data.updatedAt;
+  const e = sig.events.find((x) => x.odds?.high && now - x.t < x.odds.min * 60_000);
+  const el = $('oddsBanner');
+  el.classList.toggle('hidden', !e);
+  if (!e) return;
+  const o = e.odds;
+  el.className = `odds-banner ${o.dir}`;
+  el.innerHTML = `<span class="pct">${o.dir === 'up' ? '▲' : '▼'} ${Math.round(o.p * 100)}%</span>
+    <span><b>${esc(o.label)}</b> at ${istClock(e.t)} · ${esc(oddsText(o))}
+    <span class="muted">· ${mmss(Math.max(0, o.min * 60 - (now - e.t) / 1000))} left</span></span>`;
+}
+
+function renderSignals(sig, source) {
+  if (!sig) return;
+  const b = sig.breadth;
+  const r = sig.rules;
+  $('signalsExpiry').textContent = '· ' + expiryLabel(sig.expiry);
+  $('eventsDir').textContent = source === 'demo' ? 'events-demo/' : 'events/';
+
+  renderPremium(b.premium, r);
+
+  // Breadth meter + broad surge banner
+  $('breadthMark').style.left = r.broadPct + '%';
+  const fill = $('breadthFill');
+  if (!b.ready) {
+    $('breadthVal').textContent = '—';
+    fill.style.width = '0';
+    $('breadthNote').textContent = `Learning normal volume — volume signals start in ~${Math.max(1, Math.ceil(b.readyInSec / 60))} min.`;
+    $('broadBanner').classList.add('hidden');
+  } else {
+    $('breadthVal').textContent = Math.round(b.pct) + '%';
+    fill.style.width = Math.min(100, b.pct) + '%';
+    fill.classList.toggle('hot', b.active);
+    $('breadthNote').textContent =
+      `${b.elevated} of ${b.legs} strikes at ≥${r.broadRatio}× normal volume (CE ${b.ce} · PE ${b.pe}). Signal fires at ${r.broadPct}%.`;
+    $('broadBanner').classList.toggle('hidden', !b.active);
+    $('broadBanner').textContent =
+      `⚡ BROAD VOLUME SURGE — ${Math.round(b.pct)}% of strikes near ATM trading ≥${r.broadRatio}× normal volume (CE ${b.ce} · PE ${b.pe})`;
+  }
+
+  renderOddsBanner(sig);
+
+  $('rec').classList.toggle('hidden', !sig.recording);
+  if (sig.recording) $('rec').textContent = 'REC ' + recordingStatus(sig.recording, state.data.updatedAt);
+
+  // Event log
+  const firstLoad = state.seenEvents == null;
+  const seen = state.seenEvents || new Set();
+  const fresh = sig.events.filter((e) => !seen.has(e.id));
+  if (!firstLoad && fresh.length) {
+    const panel = $('signalsPanel');
+    panel.classList.remove('alert');
+    void panel.offsetWidth; // restart the animation
+    panel.classList.add('alert');
+    if (state.sidePane !== 'signals') {
+      state.unseenSignals += fresh.length;
+      state.unseenHigh ||= fresh.some((e) => e.odds?.high);
+      renderSignalBadge();
+    }
+  }
+  sig.events.forEach((e) => seen.add(e.id));
+  state.seenEvents = seen;
+
+  if (!sig.events.length) {
+    $('events').innerHTML = `<li class="muted small">No spikes yet today. Watching for: a strike trading ≥${r.spikeRatio}× its normal volume,
+      ≥${r.broadPct}% of strikes trading ≥${r.broadRatio}× normal at once, a CE or PE premium rising or falling ≥${r.priceSpikePct}% in 1 min,
+      calls and puts both rising ≥${r.bothRisePct}% on ${r.bothRisePairs}+ strikes around ATM,
+      and Nifty rising or falling ≥${r.spotFastPts} pts in 20 s or ≥${r.spotMovePts} pts in 1 min.
+      Each spike saves ${r.beforeMin} min before and ${r.afterMin} min after to a file.</li>`;
+    return;
+  }
+  const freshIds = new Set(firstLoad ? [] : fresh.map((e) => e.id));
+  $('events').innerHTML = sig.events.map((e) => {
+    const a = e.after;
+    let after = sig.recording
+      ? `<span class="muted">recording ${mmss((state.data.updatedAt - e.t) / 1000)}</span>`
+      : '<span class="muted">recording…</span>';
+    let summary = '';
+    if (a) {
+      const chg = a.change ?? 0;
+      after = `<span class="${chg >= 0 ? 'pos' : 'neg'}">${chg >= 0 ? '+' : ''}${chg.toFixed(1)} pts</span> <span class="muted">in ${dur(a.afterSec)}</span>`;
+      summary = `<div class="ev-detail">Before → after: CE vol +${compact(a.ceBefore)} → +${compact(a.ceAfter)},
+        PE vol +${compact(a.peBefore)} → +${compact(a.peAfter)} · max ↑${(a.maxUp ?? 0).toFixed(1)} ↓${Math.abs(a.maxDown ?? 0).toFixed(1)}
+        · <code>${esc(e.file || '')}</code></div>`;
+    }
+    const hp = e.odds?.high ? ` hp ${e.odds.dir}` : '';
+    return `<li class="${freshIds.has(e.id) ? 'new' : ''}${hp}">
+      <div class="ev-top"><span class="ev-time">${istClock(e.t)}</span><span class="pill ${e.type}">${TYPE_LABEL[e.type] || e.type}</span><span class="ev-after">${after}</span></div>
+      <div class="ev-detail">${esc(e.detail)}</div>${oddsLine(e.odds)}${summary}
+    </li>`;
+  }).join('');
+}
+
+// New signals raised while the Signals pane is hidden are counted on its switch.
+function renderSignalBadge() {
+  const el = $('sigBadge');
+  el.textContent = state.unseenSignals || '';
+  el.classList.toggle('hidden', !state.unseenSignals);
+  el.classList.toggle('hp', state.unseenHigh);
+  el.title = state.unseenHigh ? 'New signals, one of them high-probability' : 'New signals';
+}
+
 // ---------- support / resistance ----------
 // Price levels come from the server (computed from Nifty history before today); OI levels from this chain.
 async function loadLevels() {
@@ -402,6 +672,18 @@ $('expiry').addEventListener('change', (e) => {
   state.prevLtp = {};
   scheduleRefresh(0);
 });
+$('metricSeg').addEventListener('click', (e) => {
+  if (!e.target.dataset.m) return;
+  state.metric = e.target.dataset.m;
+  localSet('metric', state.metric);
+  if (state.data) render();
+});
+$('thSeg').addEventListener('click', (e) => {
+  if (e.target.dataset.t == null) return;
+  state.threshold = Number(e.target.dataset.t);
+  localSet('threshold', state.threshold);
+  if (state.data) render();
+});
 $('range').addEventListener('change', (e) => {
   state.range = e.target.value === 'auto' ? 'auto' : Number(e.target.value);
   localSet('range', state.range);
@@ -410,28 +692,74 @@ $('range').addEventListener('change', (e) => {
 
 window.addEventListener('resize', () => { if (state.data) render(); });
 
-// Tabs. The chain needs live data; the backtest screens work on their own once logged in.
-const VIEWS = { chain: 'app', an: 'an', sb: 'sb', tr: 'tr', bt: 'bt', bw: 'bw', cmp: 'cmp', lib: 'lib', data: 'data' };
+// Chain screen: the right column shows the Nifty chart with support / resistance or the signals; the panel under
+// the chain shows the spread arbitrage or the volume surge.
+const PANES = {
+  side: { seg: 'chSideSeg', key: 'sidePane', panes: { chart: ['niftyPanel', 'levelsPanel'], signals: ['signalsPanel'] } },
+  bottom: { seg: 'chBottomSeg', key: 'bottomPane', panes: { arb: ['chArbPanel'], surge: ['surgePanel'] } },
+};
+function setPane(which, name) {
+  const P = PANES[which];
+  if (!P.panes[name]) name = Object.keys(P.panes)[0];
+  state[P.key] = name;
+  localSet(P.key, name);
+  for (const [p, ids] of Object.entries(P.panes)) ids.forEach((id) => $(id).classList.toggle('hidden', p !== name));
+  $(P.seg).querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.p === name));
+  if (state.sidePane === 'signals') {
+    state.unseenSignals = 0;
+    state.unseenHigh = false;
+    renderSignalBadge();
+  }
+  if (state.data && state.view === 'chain') render(); // "Fit screen" depends on the height the bottom pane leaves
+}
+for (const [which, P] of Object.entries(PANES)) {
+  $(P.seg).addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) setPane(which, b.dataset.p); });
+  setPane(which, state[P.key]);
+}
+
+// Screens, grouped as in the top bar: the groups and their screens are read from the page (#subtabs).
+const GROUPS = Object.fromEntries([...document.querySelectorAll('#subtabs .sub-group')]
+  .map((g) => [g.dataset.group, [...g.querySelectorAll('button')].map((b) => b.dataset.view)]));
+const VIEWS = Object.fromEntries(Object.values(GROUPS).flat().map((v) => [v, v === 'chain' ? 'app' : v])); // screen -> its <main>
+const NO_LOGIN = new Set(['sigtest']); // reads recorded days only, so it also works before logging in
+const NEEDS_DATA = new Set(GROUPS.live.filter((v) => !NO_LOGIN.has(v))); // drawn from the live chain: shown once it has arrived
+function groupOf(view) {
+  return Object.keys(GROUPS).find((g) => GROUPS[g].includes(view));
+}
 function showViews() {
   for (const [v, id] of Object.entries(VIEWS)) {
-    const show = v === state.view && !state.loggedOut && (v !== 'chain' || state.data);
+    const show = v === state.view && (!state.loggedOut || NO_LOGIN.has(v)) && (!NEEDS_DATA.has(v) || state.data);
     $(id).classList.toggle('hidden', !show);
   }
-  document.querySelectorAll('.chain-only').forEach((el) => el.classList.toggle('hidden', state.view !== 'chain'));
+  // ATM, PCR, expiry and strike range describe the live chain.
+  const live = groupOf(state.view) === 'live';
+  document.querySelectorAll('.chain-only').forEach((el) => el.classList.toggle('hidden', !live));
 }
 function setView(view) {
+  if (view === 'backtest') view = 'sigtest'; // what this screen was called in OptionLiveData (still in localStorage)
   if (!VIEWS[view]) view = 'chain';
   state.view = view;
   localSet('view', view);
-  $('tabs').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.view === view));
+  const group = groupOf(view);
+  localSet('view.' + group, view); // a group reopens on the screen last used in it
+  $('tabs').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.group === group));
+  $('subtabs').classList.toggle('hidden', GROUPS[group].length < 2);
+  $('subtabs').querySelectorAll('.sub-group').forEach((g) => g.classList.toggle('hidden', g.dataset.group !== group));
+  $('subtabs').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.view === view));
   showViews();
-  if (view === 'chain' && state.data) render();
-  if (view !== 'chain') setError(null);
+  if (state.loggedOut) $('login').classList.toggle('hidden', NO_LOGIN.has(view));
+  if (group === 'live' && state.data) render();
+  else runScreenHooks();
+  if (group !== 'live') setError(null);
   window.dispatchEvent(new CustomEvent('viewchange', { detail: view }));
 }
-$('tabs').addEventListener('click', (e) => { if (e.target.dataset.view) setView(e.target.dataset.view); });
+$('tabs').addEventListener('click', (e) => {
+  const g = e.target.dataset.group;
+  if (g) setView(localGet('view.' + g) || GROUPS[g][0]);
+});
+$('subtabs').addEventListener('click', (e) => { if (e.target.dataset.view) setView(e.target.dataset.view); });
 
-window.app = { state, compact, pctText, render, istClock, esc, setView, setError, price };
+window.app = { state, compact, pctText, render, istClock, esc, setView, setError, price, TYPE_LABEL };
 setView(state.view);
 
 // Top-bar clock with milliseconds, plus how old the last fetched data is.

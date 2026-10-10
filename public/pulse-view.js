@@ -116,8 +116,8 @@
     renderChart(p);
   };
 
-  // The one-line pulse on the main screen opens this tab.
+  // The one-line pulse on the chain screen opens this screen.
   document.getElementById('pulseLine').addEventListener('click', () => {
-    document.querySelector('#tabs [data-view="pulse"]').click();
+    window.app.setView('pulse');
   });
 })();

@@ -26,13 +26,13 @@
 
   // Form fields: element id → [setting key, default]. Blank optional fields mean "off".
   const FIELDS = {
-    btFrom: ['from', '2024-07-01'], btTo: ['to', '2026-10-02'],
-    btValue: ['value', ''], btBeta: ['beta', ''], btHedgePct: ['hedgePct', 100], btLot: ['lot', ''], btWhole: ['wholeLots', true],
-    btTenor: ['tenorDays', '90'], btRollLeft: ['rollDaysLeft', 0], btExitFall: ['exitFallPct', ''], btExitMult: ['exitMultiple', ''], btMaxVol: ['maxEntryVol', ''],
-    btPutK: ['putK', -5], btWidth: ['width', 10], btTailK: ['tailK', -20], btCallK: ['callK', 10], btStep: ['strikeStep', '100'],
-    btVolSrc: ['volSource', 'vix'], btVolMult: ['volMult', 1], btFixedVol: ['fixedVol', 16], btRvWin: ['rvWindow', 20],
-    btPutSkew: ['putSkew', 3], btCallSkew: ['callSkew', -1], btTerm: ['termAdjust', true],
-    btSpread: ['spreadPct', 4], btCharges: ['chargesPerLeg', 30], btRate: ['ratePct', 6.5], btDiv: ['divYieldPct', 1.3],
+    hbFrom: ['from', '2024-07-01'], hbTo: ['to', '2026-10-02'],
+    hbValue: ['value', ''], hbBeta: ['beta', ''], hbHedgePct: ['hedgePct', 100], hbLot: ['lot', ''], hbWhole: ['wholeLots', true],
+    hbTenor: ['tenorDays', '90'], hbRollLeft: ['rollDaysLeft', 0], hbExitFall: ['exitFallPct', ''], hbExitMult: ['exitMultiple', ''], hbMaxVol: ['maxEntryVol', ''],
+    hbPutK: ['putK', -5], hbWidth: ['width', 10], hbTailK: ['tailK', -20], hbCallK: ['callK', 10], hbStep: ['strikeStep', '100'],
+    hbVolSrc: ['volSource', 'vix'], hbVolMult: ['volMult', 1], hbFixedVol: ['fixedVol', 16], hbRvWin: ['rvWindow', 20],
+    hbPutSkew: ['putSkew', 3], hbCallSkew: ['callSkew', -1], hbTerm: ['termAdjust', true],
+    hbSpread: ['spreadPct', 4], hbCharges: ['chargesPerLeg', 30], hbRate: ['ratePct', 6.5], hbDiv: ['divYieldPct', 1.3],
   };
 
   const bt = {
@@ -70,8 +70,8 @@
     save('settings', bt.settings);
   }
   const showVolFields = () => {
-    const src = $('btVolSrc').value;
-    document.querySelectorAll('.bt-vol-vix, .bt-vol-realised, .bt-vol-fixed').forEach((el) => el.classList.toggle('hidden', !el.classList.contains(`bt-vol-${src}`)));
+    const src = $('hbVolSrc').value;
+    document.querySelectorAll('.hb-vol-vix, .hb-vol-realised, .hb-vol-fixed').forEach((el) => el.classList.toggle('hidden', !el.classList.contains(`hb-vol-${src}`)));
   };
   // Placeholders show what an empty field falls back to (the Planner's portfolio).
   function plannerDefaults() {
@@ -79,25 +79,25 @@
     const value = d?.portfolio?.value > 0 ? d.portfolio.value : 1e7;
     const beta = d?.portfolio?.value > 0 ? d.portfolio.beta : 1;
     const lot = d?.lot || 75;
-    $('btValue').placeholder = `${inr(value)}${d?.portfolio?.value > 0 ? ' (planner)' : ''}`;
-    $('btBeta').placeholder = beta.toFixed(2);
-    $('btLot').placeholder = lot;
+    $('hbValue').placeholder = `${inr(value)}${d?.portfolio?.value > 0 ? ' (planner)' : ''}`;
+    $('hbBeta').placeholder = beta.toFixed(2);
+    $('hbLot').placeholder = lot;
     return { value, beta, lot };
   }
 
-  $('btForm').addEventListener('change', (e) => {
-    if (e.target.id === 'btVolSrc') showVolFields();
+  $('hbForm').addEventListener('change', (e) => {
+    if (e.target.id === 'hbVolSrc') showVolFields();
     readForm();
-    if (['btPutK', 'btWidth', 'btTailK', 'btCallK', 'btTenor', 'btHedgePct'].includes(e.target.id)) renderList();
+    if (['hbPutK', 'hbWidth', 'hbTailK', 'hbCallK', 'hbTenor', 'hbHedgePct'].includes(e.target.id)) renderList();
   });
-  $('btPresets').addEventListener('click', (e) => {
+  $('hbPresets').addEventListener('click', (e) => {
     const y = e.target.dataset.y;
     if (y == null) return;
-    $('btFrom').value = Number(y) ? yearsAgo(Number(y)) : '2008-01-01';
-    $('btTo').value = today();
+    $('hbFrom').value = Number(y) ? yearsAgo(Number(y)) : '2008-01-01';
+    $('hbTo').value = today();
     readForm();
   });
-  $('btReset').addEventListener('click', () => { bt.settings = {}; save('settings', {}); fillForm(); renderList(); });
+  $('hbReset').addEventListener('click', () => { bt.settings = {}; save('settings', {}); fillForm(); renderList(); });
 
   // ---------- strategy list ----------
   const pctS = (k) => `${k > 0 ? '+' : k < 0 ? '−' : ''}${Math.abs(Math.round(k * 10) / 10)}%`;
@@ -161,22 +161,22 @@
       html.push(`<label title="${esc(s.desc)}"><input type="checkbox" data-id="${esc(s.id)}"${bt.checked.has(s.id) ? ' checked' : ''}><span><b>${esc(s.label)}</b> <span class="d">${esc(s.desc)}</span></span></label>`);
     }
     if (!bt.specs.some((s) => s.id.startsWith('p:'))) html.push('<div class="grp">From the Planner</div><div class="muted small">Open the Planner tab with a portfolio to add its live hedges here.</div>');
-    $('btList').innerHTML = html.join('');
+    $('hbList').innerHTML = html.join('');
     renderCustom();
   }
-  $('btList').addEventListener('change', (e) => {
+  $('hbList').addEventListener('change', (e) => {
     const id = e.target.dataset.id;
     if (!id) return;
     if (e.target.checked) bt.checked.add(id); else bt.checked.delete(id);
     save('checked', [...bt.checked]);
   });
   const setAll = (on) => { for (const s of bt.specs) on ? bt.checked.add(s.id) : bt.checked.delete(s.id); save('checked', [...bt.checked]); renderList(); };
-  $('btAll').addEventListener('click', () => setAll(true));
-  $('btNone').addEventListener('click', () => setAll(false));
+  $('hbAll').addEventListener('click', () => setAll(true));
+  $('hbNone').addEventListener('click', () => setAll(false));
 
   // ---------- custom legs ----------
   function renderCustom() {
-    $('btCLegs').innerHTML = bt.custom.map((l, i) => `<tr data-i="${i}">
+    $('hbCLegs').innerHTML = bt.custom.map((l, i) => `<tr data-i="${i}">
       <td><select data-f="action"><option value="buy"${l.action === 'buy' ? ' selected' : ''}>Buy</option><option value="sell"${l.action === 'sell' ? ' selected' : ''}>Sell</option></select></td>
       <td><select data-f="type"><option value="PE"${l.type === 'PE' ? ' selected' : ''}>PE</option><option value="CE"${l.type === 'CE' ? ' selected' : ''}>CE</option></select></td>
       <td><input data-f="k" type="number" step="1" value="${l.k}"></td>
@@ -185,32 +185,32 @@
     </tr>`).join('');
   }
   const customChanged = () => { save('custom', bt.custom); bt.checked.add('custom'); save('checked', [...bt.checked]); renderList(); };
-  $('btCLegs').addEventListener('change', (e) => {
+  $('hbCLegs').addEventListener('change', (e) => {
     const i = Number(e.target.closest('tr')?.dataset.i);
     const f = e.target.dataset.f;
     if (Number.isNaN(i) || !f) return;
     bt.custom[i][f] = f === 'k' || f === 'size' ? Number(e.target.value) : e.target.value;
     customChanged();
   });
-  $('btCLegs').addEventListener('click', (e) => {
+  $('hbCLegs').addEventListener('click', (e) => {
     const del = e.target.dataset.del;
     if (del == null || bt.custom.length <= 1) return;
     bt.custom.splice(Number(del), 1);
     customChanged();
   });
-  $('btCAdd').addEventListener('click', () => {
+  $('hbCAdd').addEventListener('click', () => {
     const last = bt.custom[bt.custom.length - 1];
     bt.custom.push({ action: 'sell', type: 'PE', k: (last?.k ?? 0) - 10, size: last?.size ?? 100 });
     customChanged();
   });
-  $('btCCopy').addEventListener('click', () => {
+  $('hbCCopy').addEventListener('click', () => {
     const d = planner.data();
     const c = d?.selected;
-    if (!c || d.empty) { $('btStatus').textContent = 'Select a hedge on the Planner tab first'; return; }
+    if (!c || d.empty) { $('hbStatus').textContent = 'Select a hedge on the Planner tab first'; return; }
     const hedge = Number(bt.settings.hedgePct || 100) / 100;
     bt.custom = fromLive(c, d).map((l) => ({ action: l.action, type: l.type, k: l.k, size: Math.round((l.ratio / hedge) * 100) }));
     customChanged();
-    $('btStatus').textContent = `Copied ${c.legs.length} leg${c.legs.length > 1 ? 's' : ''} from the Planner`;
+    $('hbStatus').textContent = `Copied ${c.legs.length} leg${c.legs.length > 1 ? 's' : ''} from the Planner`;
   });
 
   // ---------- run ----------
@@ -219,11 +219,11 @@
     readForm();
     buildSpecs();
     const chosen = bt.specs.filter((s) => bt.checked.has(s.id));
-    if (!chosen.length) { $('btStatus').textContent = 'Tick at least one strategy'; return; }
+    if (!chosen.length) { $('hbStatus').textContent = 'Tick at least one strategy'; return; }
     const s = bt.settings;
     const def = plannerDefaults();
     const value = s.value === '' || s.value == null ? def.value : parseInr(s.value);
-    if (!(value > 0)) { $('btStatus').textContent = `Couldn't read “${s.value}” — use e.g. 2500000, 25L or 1.2Cr`; return; }
+    if (!(value > 0)) { $('hbStatus').textContent = `Couldn't read “${s.value}” — use e.g. 2500000, 25L or 1.2Cr`; return; }
     const body = {
       ...s,
       startValue: value,
@@ -232,9 +232,9 @@
       strategies: chosen.map((x) => x.body),
     };
     bt.busy = true;
-    $('btRun').disabled = true;
+    $('hbRun').disabled = true;
     const t0 = Date.now();
-    $('btStatus').textContent = 'Loading Nifty & VIX history and running… (the first run downloads ~18 years, may take a minute)';
+    $('hbStatus').textContent = 'Loading Nifty & VIX history and running… (the first run downloads ~18 years, may take a minute)';
     try {
       const r = await fetch('/api/hedge/backtest', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const j = await r.json();
@@ -244,15 +244,15 @@
       bt.result = j;
       if (!j.results.some((x) => x.id === bt.selected)) bt.selected = j.results[0]?.id ?? null;
       render();
-      $('btStatus').textContent = `Done in ${((Date.now() - t0) / 1000).toFixed(1)}s · history ${j.available.from} → ${j.available.to}`;
+      $('hbStatus').textContent = `Done in ${((Date.now() - t0) / 1000).toFixed(1)}s · history ${j.available.from} → ${j.available.to}`;
     } catch (e) {
-      $('btStatus').textContent = 'Error: ' + e.message;
+      $('hbStatus').textContent = 'Error: ' + e.message;
     } finally {
       bt.busy = false;
-      $('btRun').disabled = false;
+      $('hbRun').disabled = false;
     }
   }
-  $('btRun').addEventListener('click', run);
+  $('hbRun').addEventListener('click', run);
 
   // ---------- render ----------
   const sgn = (v, d = 1) => (v == null || isNaN(v) ? '—' : `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v).toFixed(d)}%`);
@@ -280,7 +280,7 @@
     const dd = by((x) => x.stats.maxDdPct, (a, b) => a > b);
     const cal = by((x) => x.stats.calmar, (a, b) => a > b);
     const v = r.volUsed;
-    $('btTiles').innerHTML = [
+    $('hbTiles').innerHTML = [
       tile('Period', `${mon(r.range.from)} → ${mon(r.range.to)}`, `${r.range.days} trading days · Nifty ${Math.round(r.range.niftyFrom)} → ${Math.round(r.range.niftyTo)} (${sgn(r.range.niftyPct)})`),
       tile('No hedge', `${sgn(u.cagrPct, 2)} / yr`, `max drawdown ${sgn(u.maxDdPct)} · ends ${inr(u.final)}`, cls(u.cagrPct)),
       hi ? tile('Highest return', `${sgn(hi.stats.cagrPct, 2)} / yr`, `${esc(hi.label)} · ${sgn(hi.stats.cagrPct - u.cagrPct, 2)} vs no hedge`, cls(hi.stats.cagrPct)) : '',
@@ -299,7 +299,7 @@
     return eq.map((v) => { peak = Math.max(peak, v); return (v / peak - 1) * 100; });
   }
   function renderChart(r) {
-    $('btChartMode').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.m === bt.chartMode));
+    $('hbChartMode').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.m === bt.chartMode));
     const pctMode = bt.chartMode !== 'value';
     if (!bt.chart) {
       bt.chart = new Chart($('cBt'), {
@@ -330,7 +330,7 @@
     ];
     ch.update('none');
   }
-  $('btChartMode').addEventListener('click', (e) => {
+  $('hbChartMode').addEventListener('click', (e) => {
     if (!e.target.dataset.m) return;
     bt.chartMode = e.target.dataset.m;
     save('chartMode', bt.chartMode);
@@ -369,7 +369,7 @@
       const v = (x) => { const n = col?.[2](x, u); return n == null || !isFinite(n) ? -1e18 : n; };
       if (col) rows.sort((a, b) => (v(a) - v(b)) * bt.sort.dir);
     }
-    $('btHead').innerHTML = `<tr><th>Strategy</th><th>Expiry</th>${COLS.map(([k, h, , , , t]) => `<th data-k="${k}"${t ? ` title="${esc(t)}"` : ''}${bt.sort?.k === k ? ' class="sorted"' : ''}>${h}${bt.sort?.k === k ? (bt.sort.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`).join('')}</tr>`;
+    $('hbHead').innerHTML = `<tr><th>Strategy</th><th>Expiry</th>${COLS.map(([k, h, , , , t]) => `<th data-k="${k}"${t ? ` title="${esc(t)}"` : ''}${bt.sort?.k === k ? ' class="sorted"' : ''}>${h}${bt.sort?.k === k ? (bt.sort.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`).join('')}</tr>`;
     // best value per column (among strategies)
     const best = {};
     for (const [k, , f, , hib] of COLS) {
@@ -383,10 +383,10 @@
       const c = [['total', 'cagr', 'dd', 'ddv', 'w1m', 'w3m', 'w1y', 'opt', 'best', 'worst'].includes(k) ? cls(v) : '', !isBase && best[k] != null && v === best[k] && hib != null ? 'best' : ''].filter(Boolean).join(' ');
       return `<td class="${c}">${v == null || !isFinite(v) ? '—' : fmt(v)}</td>`;
     }).join('');
-    $('btBody').innerHTML = `<tr class="base"><td class="lbl"><span class="sw2" style="background:${C.muted}"></span>No hedge</td><td class="muted">—</td>${cells(base, true)}</tr>`
+    $('hbBody').innerHTML = `<tr class="base"><td class="lbl"><span class="sw2" style="background:${C.muted}"></span>No hedge</td><td class="muted">—</td>${cells(base, true)}</tr>`
       + rows.map((x) => `<tr data-id="${esc(x.id)}"${x.id === bt.selected ? ' class="on"' : ''}><td class="lbl" title="${esc(legDesc(x.legs))}"><span class="sw2" style="background:${x.color}"></span>${esc(x.label)}</td><td class="muted">${tenorLabel(x.tenorDays)}</td>${cells(x, false)}</tr>`).join('');
   }
-  $('btHead').addEventListener('click', (e) => {
+  $('hbHead').addEventListener('click', (e) => {
     const k = e.target.closest('th')?.dataset.k;
     if (!k) return;
     bt.sort = bt.sort?.k === k ? (bt.sort.dir < 0 ? { k, dir: 1 } : null) : { k, dir: -1 };
@@ -399,27 +399,27 @@
     bt.selected = id;
     render();
   };
-  $('btBody').addEventListener('click', selectRow);
+  $('hbBody').addEventListener('click', selectRow);
 
   // ---------- crises & years ----------
   function renderCrises(r) {
     if (!r.crises.length) {
-      $('btCrisisHead').innerHTML = '';
-      $('btCrisisBody').innerHTML = '<tr><td class="muted" style="text-align:left">Nifty never fell 8% or more from a high in this period.</td></tr>';
+      $('hbCrisisHead').innerHTML = '';
+      $('hbCrisisBody').innerHTML = '<tr><td class="muted" style="text-align:left">Nifty never fell 8% or more from a high in this period.</td></tr>';
       return;
     }
-    $('btCrisisHead').innerHTML = `<tr><th>Strategy</th>${r.crises.map((c) => `<th title="${dt(c.from)} → ${dt(c.to)}">${mon(c.from)}–${mon(c.to)}<br><span class="neg">Nifty ${sgn(c.depth, 0)}</span></th>`).join('')}</tr>`;
+    $('hbCrisisHead').innerHTML = `<tr><th>Strategy</th>${r.crises.map((c) => `<th title="${dt(c.from)} → ${dt(c.to)}">${mon(c.from)}–${mon(c.to)}<br><span class="neg">Nifty ${sgn(c.depth, 0)}</span></th>`).join('')}</tr>`;
     const row = (label, color, f, id) => `<tr${id ? ` data-id="${esc(id)}"${id === bt.selected ? ' class="on"' : ''}` : ' class="base"'}><td class="lbl"><span class="sw2" style="background:${color}"></span>${esc(label)}</td>${r.crises.map((c) => { const v = f(c); return `<td class="${cls(v)}">${sgn(v)}</td>`; }).join('')}</tr>`;
-    $('btCrisisBody').innerHTML = row('No hedge', C.muted, (c) => c.unhedged) + r.results.map((x) => row(x.label, x.color, (c) => c.results[x.id], x.id)).join('');
+    $('hbCrisisBody').innerHTML = row('No hedge', C.muted, (c) => c.unhedged) + r.results.map((x) => row(x.label, x.color, (c) => c.results[x.id], x.id)).join('');
   }
-  $('btCrisisBody').addEventListener('click', selectRow);
+  $('hbCrisisBody').addEventListener('click', selectRow);
 
   // Returns by period: rows = years or months (newest first), columns = Nifty, No hedge, each strategy.
   // Monthly view puts each year's total above its months; the footer summarises every column.
   const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   function renderPeriods(r) {
     const monthly = bt.periodMode === 'month';
-    $('btPeriodMode').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.m === bt.periodMode));
+    $('hbPeriodMode').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.m === bt.periodMode));
     const key = monthly ? 'months' : 'years';
     const cols = [
       { label: 'Nifty', color: null, data: r.nifty[key], years: r.nifty.years, nf: true },
@@ -427,7 +427,7 @@
       ...r.results.map((x) => ({ id: x.id, label: x.label, color: x.color, data: x[key], years: x.years })),
     ];
     const un = r.unhedged;
-    $('btPerHead').innerHTML = `<tr><th>${monthly ? 'Month' : 'Year'}</th>${cols.map((c) => `<th class="${c.id ? `strat${c.id === bt.selected ? ' on' : ''}` : ''}"${c.id ? ` data-id="${esc(c.id)}"` : ''}>${c.color ? `<span class="sw2" style="background:${c.color}"></span>` : ''}${esc(c.label)}</th>`).join('')}</tr>`;
+    $('hbPerHead').innerHTML = `<tr><th>${monthly ? 'Month' : 'Year'}</th>${cols.map((c) => `<th class="${c.id ? `strat${c.id === bt.selected ? ' on' : ''}` : ''}"${c.id ? ` data-id="${esc(c.id)}"` : ''}>${c.color ? `<span class="sw2" style="background:${c.color}"></span>` : ''}${esc(c.label)}</th>`).join('')}</tr>`;
     const cell = (c, v, unV) => {
       const k = [cls(v), c.nf ? 'nf' : '', !c.nf && !c.base && v != null && unV != null && v > unV + 0.005 ? 'beat' : ''].filter(Boolean).join(' ');
       return `<td class="${k}">${sgn(v)}</td>`;
@@ -445,13 +445,13 @@
     } else {
       for (const y of Object.keys(un.years).sort().reverse()) out.push(rowOf(y, (c) => c.data[y], () => un.years[y]));
     }
-    $('btPerBody').innerHTML = out.join('');
+    $('hbPerBody').innerHTML = out.join('');
     // summary over the whole column (first/last periods may be partial)
     const vals = (c) => Object.values(c.data).filter((v) => v != null && isFinite(v));
     const unVals = Object.keys(un[key]);
     const foot = (label, f, fmt = sgn) => `<tr><td>${label}</td>${cols.map((c) => { const v = f(c); return `<td class="${fmt === sgn ? cls(v) : ''}">${v == null ? '—' : fmt(v)}</td>`; }).join('')}</tr>`;
     const per = monthly ? 'month' : 'year';
-    $('btPerFoot').innerHTML = [
+    $('hbPerFoot').innerHTML = [
       foot(`Average ${per}`, (c) => { const v = vals(c); return v.length ? v.reduce((s, x) => s + x, 0) / v.length : null; }),
       foot(`Best ${per}`, (c) => (vals(c).length ? Math.max(...vals(c)) : null)),
       foot(`Worst ${per}`, (c) => (vals(c).length ? Math.min(...vals(c)) : null)),
@@ -460,13 +460,13 @@
     ].join('');
   }
   bt.periodMode = local('periodMode', 'year');
-  $('btPeriodMode').addEventListener('click', (e) => {
+  $('hbPeriodMode').addEventListener('click', (e) => {
     if (!e.target.dataset.m) return;
     bt.periodMode = e.target.dataset.m;
     save('periodMode', bt.periodMode);
     if (bt.result) renderPeriods(bt.result);
   });
-  $('btPerHead').addEventListener('click', (e) => {
+  $('hbPerHead').addEventListener('click', (e) => {
     const id = e.target.closest('th')?.dataset.id;
     if (!id || !bt.result) return;
     bt.selected = id;
@@ -476,12 +476,12 @@
   // ---------- trade log ----------
   function renderTrades(r) {
     const x = r.results.find((y) => y.id === bt.selected);
-    if (!x) { $('btTradesTitle').textContent = 'Trades'; $('btTradesSub').textContent = ''; $('btTrades').innerHTML = ''; return; }
+    if (!x) { $('hbTradesTitle').textContent = 'Trades'; $('hbTradesSub').textContent = ''; $('hbTrades').innerHTML = ''; return; }
     const o = x.options;
-    $('btTradesTitle').innerHTML = `Trades · <span style="color:${x.color}">${esc(x.label)}</span>`;
-    $('btTradesSub').textContent = `${o.rolls} trades · ${o.paidOff} paid off · paid ${inr(o.premiumPaid)} to open in total · options P&L ${inr(o.net)}${Math.abs(o.openValue) > 1 ? ` (incl. ${inr(o.openValue)} still open)` : ''}`;
+    $('hbTradesTitle').innerHTML = `Trades · <span style="color:${x.color}">${esc(x.label)}</span>`;
+    $('hbTradesSub').textContent = `${o.rolls} trades · ${o.paidOff} paid off · paid ${inr(o.premiumPaid)} to open in total · options P&L ${inr(o.net)}${Math.abs(o.openValue) > 1 ? ` (incl. ${inr(o.openValue)} still open)` : ''}`;
     const L = r.params.lot;
-    $('btTrades').innerHTML = x.trades.length ? [...x.trades].reverse().map((t) => {
+    $('hbTrades').innerHTML = x.trades.length ? [...x.trades].reverse().map((t) => {
       const net = t.pnl + t.holdingsMove;
       return `<tr>
         <td>${dt(t.open)}</td><td>${dt(t.close)}</td><td class="muted">${esc(t.reason)}</td>
