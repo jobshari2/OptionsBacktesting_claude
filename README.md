@@ -38,7 +38,7 @@ Pick a group in the top bar; its screens are in the row below. A group reopens o
 | | **Builder** | Manual / strategy trading on a historical replay or live (paper), payoff, P&L, adjustment suggestions |
 | | **Trades** | Trades saved from the Builder; load one back |
 | **Portfolio** | **Hedge** | Protect your holdings with Nifty options: planner and backtest |
-| **Data** | **Data** | What history Upstox provides, what's cached, bulk prefetch |
+| **Data** | **Data** | What history Upstox provides, what's cached, downloading what is missing (by hand or automatically) |
 
 The colour theme (Night, Day, Large) is picked at the top right.
 
@@ -271,7 +271,8 @@ The server keeps 16 minutes of snapshots per strike (every 500 ms with the tick 
 - **Download on demand:** backtests fetch only the contracts they need, the first time they need them.
 - **Cache:** everything is saved under `bt-cache/` as gzip files and kept in memory, so re-running a 6-month backtest takes milliseconds.
 - **Rate limits:** Upstox allows about 500 requests/min and 2,000 per 30 minutes. The downloader stays under both and waits when needed (the progress bar says so).
-- **Data screen:** shows coverage per expiry and can prefetch a range in bulk.
+- **Data screen:** shows coverage per expiry and downloads what the cache lacks. Choose the expiries: **New** (since the last one downloaded, the latest 8 at most), **Recent** (the last 1 to 12 months, or everything Upstox has), a **Date range**, or **Pick expiries** (also by clicking the coverage bars; Shift-click for a range), weekly, monthly or both. Choose how much of each: every strike within ± N strikes of the Nifty range over the last D trading days before the expiry, calls and puts. The screen says how many of those contracts are missing and how many requests they take; **Download missing data** fetches only those. **Stop** ends a download early; what it fetched stays.
+- **Automatic update:** while the server runs it does the **New** download by itself, about 20 seconds after the start (or after the login) and then every 30 minutes, with the strikes and days set on the Data screen. So a week's options are in the cache the day after they expire, without opening the Data screen; a check that finds nothing new costs four requests an hour at most. The checkbox on the Data screen switches it off (kept in `bt-data/data-sync.json`). It does not run in demo mode or while logged out.
 - **Lot size:** history uses lots of 25, then 75, then 65. Backtests use a fixed lot (today's) by default so years compare fairly; switch to **As traded** to use each expiry's real lot.
 
 ## Building a strategy
@@ -529,6 +530,7 @@ Server errors (Upstox failures, crashes, file-writing problems) and errors from 
 | `pulse.js`, `book.js`, `study.js` | Market Pulse; order book; the indicator scorecard (a command) |
 | `hedge/` | Portfolio hedge: holdings (`holdings.js`, `xlsx.js`), betas, planner (`engine.js`), daily history and backtest |
 | `bt/data.js` | Historical data download, disk + memory cache |
+| `bt/sync.js` | What the cache lacks for a selection of expiries, the download job, the automatic update |
 | `bt/engine.js` | Backtest engine (strike selection, fills, stops, re-entry, costs, margin) |
 | `bt/metrics.js` | Performance statistics |
 | `bt/library.js` | Ready-made strategies |

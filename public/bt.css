@@ -253,6 +253,14 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .cov-cell.m { box-shadow: inset 0 0 0 1px rgba(214,175,76,.7); }
 .cov-fill { background: var(--accent); opacity: .7; width: 100%; }
 .cov-cell span { position: absolute; bottom: 1px; width: 100%; text-align: center; font-size: 9px; color: var(--text); }
+.cov-cell[data-e] { cursor: pointer; }
+.cov-cell.sel { outline: 1px solid var(--accent); outline-offset: 1px; }
+.cov-cell.miss::before { content: ''; position: absolute; inset: 0 0 auto 0; height: 4px; background: var(--down); z-index: 1; }
+.sy-sum { font-size: 12.5px; padding: 7px 10px; border-radius: 6px; background: var(--panel-2); border-left: 3px solid var(--line); }
+.sy-sum.ok { border-left-color: var(--up); }
+.sy-sum.need { border-left-color: var(--atm); }
+.sy-sum.bad { border-left-color: var(--down); }
+.sy-auto { padding-top: 8px; border-top: 1px solid var(--line); }
 
 /* ---------- narrow screens ---------- */
 @media (max-width: 1250px) {

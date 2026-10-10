@@ -41,8 +41,9 @@ const TOKEN_FILE = path.join(__dirname, '.token.json');
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const WINDOWS_MIN = [1, 3, 5, 15]; // volume-change windows offered in the UI
 const HISTORY_MS = (Math.max(16, CFG.signals.beforeMin) + 1) * 60_000;
-// Bumped whenever the /api/chain response shape changes, so an old server + new page is detected.
-const API_VERSION = 17;
+// Bumped whenever the /api/chain response shape changes or the page needs routes an older server lacks, so an
+// old server + new page is detected.
+const API_VERSION = 18;
 const FEED_STRIKES = num(env.FEED_STRIKES, 15); // strikes either side of ATM streamed over the WebSocket
 const TICK_SNAPSHOT_MS = 500; // how often ticks are folded into a snapshot (history, signals, UI)
 const REST_WITH_FEED_MS = 15_000; // REST refresh interval while the WebSocket feed is live

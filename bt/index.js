@@ -16,6 +16,7 @@ const { evaluate } = require('./conditions');
 const A = require('./anomalies');
 const { createResearch } = require('./research');
 const { createBiweekly } = require('./biweekly');
+const { createSync } = require('./sync');
 const { MPD } = require('./data');
 const { istDate: istToday } = require('../lib/time');
 
@@ -467,49 +468,9 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
     });
   }
 
-  // Download option candles around the Nifty path for a range of expiries, so later runs are instant.
-  function startPrefetch({ from, to, band = 20, daysBefore = 5 }) {
-    return startJob('prefetch', async (job) => {
-      const cal = await data.expiryCalendar();
-      const list = cal.expired.filter((e) => e >= from && e <= to);
-      if (!list.length) throw new Error('No expired expiries in that range');
-      job.progress = { phase: 'Loading Nifty history', done: 0, total: 0 };
-      const days = await data.loadIndex(addDays(list[0], -60), list[list.length - 1]);
-      const dayIdx = new Map(days.map((d, i) => [d, i]));
-      const tasks = [];
-      for (const e of list) {
-        if (!dayIdx.has(e)) continue;
-        const info = await data.contracts(e);
-        const i = dayIdx.get(e);
-        const win = days.slice(Math.max(0, i - Math.max(0, daysBefore)), i + 1);
-        let lo = Infinity;
-        let hi = -Infinity;
-        for (const d of win) {
-          const s = data.spotDay(d);
-          for (let m = 0; m < s.length / 4; m++) { lo = Math.min(lo, s[m * 4 + 2]); hi = Math.max(hi, s[m * 4 + 1]); }
-        }
-        const ks = info.strikes;
-        const near = (x) => ks.reduce((b, k, j) => (Math.abs(k - x) < Math.abs(ks[b] - x) ? j : b), 0);
-        const a = Math.max(0, near(lo) - band);
-        const b = Math.min(ks.length - 1, near(hi) + band);
-        for (let j = a; j <= b; j++) for (const t of ['CE', 'PE']) tasks.push([e, ks[j], t, win[0]]);
-      }
-      let done = 0;
-      let failed = 0;
-      let next = 0;
-      job.progress = { phase: 'Downloading option candles', done, total: tasks.length };
-      const worker = async () => {
-        while (next < tasks.length) {
-          const [e, k, t, d] = tasks[next++];
-          try { await data.option(e, k, t, d); } catch (err) { failed++; logError('bt-prefetch', err, `${e} ${k}${t}`); }
-          done++;
-          job.progress = { phase: `Downloading option candles · ${e}`, done, total: tasks.length, failed };
-        }
-      };
-      await Promise.all(Array.from({ length: 8 }, worker));
-      return { view: { expiries: list.length, contracts: tasks.length, failed } };
-    });
-  }
+  // ---------- the Data screen's downloads ----------
+  // What the cache lacks for a selection of expiries, downloading it, and the automatic update (sync.js).
+  const sync = createSync({ data, getToken, file: path.join(path.dirname(storeFile), 'data-sync.json'), logError });
 
   // ---------- the Bi-weekly screen ----------
   const bw = createBiweekly({ data, ext, dir: path.dirname(storeFile), startJob, settle, breathe, findStrategy, library, logError });
@@ -698,7 +659,7 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
         if (!Array.isArray(b.strategies) || !b.strategies.length) throw new Error('Pick at least one strategy');
         return sendJson(res, 200, await settle(startCompare(b.strategies.slice(0, 30), b.opts || {})));
       }
-      if (p === '/api/bt/prefetch' && req.method === 'POST') return sendJson(res, 200, jobView(startPrefetch(await readJson(req))));
+      if (p === '/api/bt/sync' || p.startsWith('/api/bt/sync/')) return await sync.handle(req, res, p, sendJson, readJson);
       if (p === '/api/bt/job/stop' && req.method === 'POST') { // the job ends at its next checkpoint, with what it has so far
         const job = jobs.get((await readJson(req)).id);
         if (job) job.stop = true;

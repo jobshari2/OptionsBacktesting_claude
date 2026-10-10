@@ -349,6 +349,55 @@ function createData({ getToken, upstox = createUpstox({ getToken }), cacheDir, l
   // Bars for one day as downloaded (-1 = no trade in that minute), or null if it never traded that day.
   const optionRaw = (c, day) => c.raw?.get(day) || null;
 
+  // ---------- what the cache holds ----------
+  // Expiries with cached option candles, oldest first.
+  function optionExpiries() {
+    try {
+      return fs.readdirSync(path.join(cacheDir, 'opt')).filter((e) => /^\d{4}-\d{2}-\d{2}$/.test(e)).sort();
+    } catch {
+      return [];
+    }
+  }
+  // Contracts of an expiry that have a candle file, as "24500CE".
+  function optionFiles(expiry) {
+    try {
+      return new Set(fs.readdirSync(path.join(cacheDir, 'opt', expiry)).filter((f) => f.endsWith('.json.gz')).map((f) => f.slice(0, -8)));
+    } catch {
+      return new Set();
+    }
+  }
+  // First day a contract's file covers. The file starts with it ({"from":"YYYY-MM-DD",…), so only its beginning is unpacked.
+  function optionFrom(expiry, strike, type) {
+    const mem = optMem.get(`${expiry}|${strike}|${type}`);
+    if (mem) return mem.from;
+    let fd = null;
+    try {
+      fd = fs.openSync(optFile(expiry, strike, type), 'r');
+      const buf = Buffer.alloc(512);
+      const n = fs.readSync(fd, buf, 0, buf.length, 0);
+      const head = zlib.gunzipSync(buf.subarray(0, n), { finishFlush: zlib.constants.Z_SYNC_FLUSH }).toString('latin1');
+      return /^\{"from":"(\d{4}-\d{2}-\d{2})"/.exec(head)?.[1] || null;
+    } catch {
+      return null;
+    } finally {
+      if (fd != null) fs.closeSync(fd);
+    }
+  }
+  // Upstox requests option() would make for [needFrom, expiry]: 0 when the cache covers it already.
+  // files: optionFiles(expiry), for callers that check many contracts of one expiry.
+  function optionRequests(expiry, strike, type, needFrom, files = optionFiles(expiry)) {
+    const floor = addDays(expiry, -LOOKBACK_DAYS); // every file reaches back at least this far
+    let to = expiry;
+    if (files.has(`${strike}${type}`)) {
+      if (needFrom >= floor) return 0;
+      const from = optionFrom(expiry, strike, type);
+      if (from && from <= needFrom) return 0;
+      if (from) to = addDays(from, -1);
+    }
+    const want = needFrom < floor ? needFrom : floor;
+    return Math.ceil(((Date.parse(to) - Date.parse(want)) / 86400_000 + 1) / (CHUNK_DAYS + 1));
+  }
+
   // ---------- cache info ----------
   function cacheStats() {
     const dirSize = (dir) => {
@@ -381,7 +430,7 @@ function createData({ getToken, upstox = createUpstox({ getToken }), cacheDir, l
 
   return {
     MPD, NIFTY, loadIndex, spotDay, vixDay, indexStart, niftyIntraday, expiryCalendar, contracts, option, optionDay, optionCached, optionRaw,
-    cacheStats, clearCache, apiStats: limiter.stats, api, addDays,
+    optionExpiries, optionFiles, optionRequests, cacheStats, clearCache, apiStats: limiter.stats, api, addDays,
   };
 }
 

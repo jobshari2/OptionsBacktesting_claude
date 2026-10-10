@@ -55,7 +55,7 @@ function localGet(k) { try { return localStorage.getItem('oc.' + k); } catch { r
 function localSet(k, v) { try { localStorage.setItem('oc.' + k, v); } catch {} }
 
 // ---------- data loop ----------
-const API_VERSION = 17; // must match API_VERSION in server.js
+const API_VERSION = 18; // must match API_VERSION in server.js
 
 async function refresh() {
   let json;

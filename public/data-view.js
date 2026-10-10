@@ -1,14 +1,77 @@
-// Data screen: what history Upstox provides, what is cached locally, and a bulk prefetch.
+// Data screen: what history Upstox provides, what is cached locally, and downloading what is missing
+// (by hand for a selection of expiries, and automatically for new ones: bt/sync.js).
 (() => {
   const { $, esc, dayLabel, dayShort } = BT;
   let inited = false;
-  let busy = false;
+  let drawn = 0;
+  let sync = null; // /api/bt/sync: the saved depth, the running (or last) download, the automatic update
+  let plan = null; // what the cache lacks for the selection (null while the server is checking)
+  let planSeq = 0;
+  let seen = null; // id + status of the download last shown, to notice one ending
+  let note = null; // why a download could not be started
+  let timer = null;
+  // Which expiries to download: 'new' | 'recent' (months) | 'dates' (from, to) | 'expiries' (expFrom, expTo).
+  const form = { scope: 'new', months: 3, kind: 'all', ...BT.store.get('data.pick', {}), from: '', to: '', expFrom: '', expTo: '' };
 
   const mb = (b) => (b / 1048576).toFixed(b > 1e8 ? 0 : 1) + ' MB';
+  const n = (x) => Number(x).toLocaleString('en-IN');
+  const some = (c, one, many) => `${n(c)} ${c === 1 ? one : many}`;
+  const clock = (ts) => new Date(ts).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+  const shift = (day, days) => new Date(Date.parse(day + 'T00:00:00Z') + days * 86400_000).toISOString().slice(0, 10);
+  const span = (list) => (list.length === 1 ? dayLabel(list[0].expiry) : `${dayLabel(list[0].expiry)} → ${dayLabel(list[list.length - 1].expiry)}`);
+  // The downloader stays under 450 requests a minute and 1,900 per half hour.
+  const eta = (requests) => {
+    const min = requests <= 1900 ? requests / 450 : (requests / 1900) * 30;
+    return min < 1 ? 'under a minute' : min < 90 ? `about ${Math.ceil(min)} min` : `about ${(min / 60).toFixed(1)} hours`;
+  };
+
+  function downloadPanel(exp, monthly) {
+    if (!exp.length) return '';
+    const last = exp[exp.length - 1];
+    if (!exp.includes(form.expFrom)) form.expFrom = exp[Math.max(0, exp.length - 8)];
+    if (!exp.includes(form.expTo)) form.expTo = last;
+    form.from ||= shift(last, -91);
+    form.to ||= last;
+    const opts = (sel) => exp.map((e) => `<option value="${e}" ${e === sel ? 'selected' : ''}>${dayLabel(e)}${monthly.has(e) ? ' · M' : ''}</option>`).join('');
+    const pick = {
+      new: '<span class="muted">expiries since the last one downloaded (the latest 8 at most)</span>',
+      recent: `<select id="syMonths">${[[1, 'Last month'], [3, 'Last 3 months'], [6, 'Last 6 months'], [12, 'Last year'], [0, 'Everything Upstox has']].map(([m, t]) => `<option value="${m}" ${m === form.months ? 'selected' : ''}>${t}</option>`).join('')}</select>`,
+      dates: `<span class="muted">expiring from</span><input type="date" id="syFrom" value="${form.from}" min="${exp[0]}" max="${last}"><span class="muted">to</span><input type="date" id="syTo" value="${form.to}" min="${exp[0]}" max="${last}">`,
+      expiries: `<select id="syExpFrom">${opts(form.expFrom)}</select><span class="muted">→</span><select id="syExpTo">${opts(form.expTo)}</select>`,
+    };
+    const s = sync?.settings || { band: 20, daysBefore: 5 };
+    return `
+      <section class="panel data-card wide" id="syCard">
+        <h3>Download data <span class="muted small">option candles the cache does not have yet</span></h3>
+        <div class="set-row">
+          <span class="lbl">Expiries</span>
+          <div class="seg sm">${[['new', 'New'], ['recent', 'Recent'], ['dates', 'Date range'], ['expiries', 'Pick expiries']].map(([k, t]) => `<button data-scope="${k}" class="${k === form.scope ? 'on' : ''}">${t}</button>`).join('')}</div>
+          ${pick[form.scope] || pick.new}
+          <select id="syKind">${[['all', 'Weekly + monthly'], ['monthly', 'Monthly only'], ['weekly', 'Weekly only']].map(([k, t]) => `<option value="${k}" ${k === form.kind ? 'selected' : ''}>${t}</option>`).join('')}</select>
+        </div>
+        <div class="set-row">
+          <span class="lbl">Strikes</span><span class="muted">±</span><input id="syBand" class="num xs" type="number" value="${s.band}" min="2" max="80"><span class="muted">around the Nifty range of the last</span>
+          <input id="syDays" class="num xs" type="number" value="${s.daysBefore}" min="0" max="30"><span class="muted">trading days before each expiry (calls and puts)</span>
+        </div>
+        <div class="sy-sum" id="sySum">Checking what is missing…</div>
+        <div class="set-row">
+          <button class="btn-sm run" id="syRun" disabled>Download missing data</button>
+          <button class="btn-sm ghost hidden" id="syStop">Stop</button>
+          <div class="progress hidden" id="syProg"><div class="bar"><div class="fill"></div></div><span class="ptext"></span></div>
+          <span id="syMsg" class="muted small"></span>
+        </div>
+        <div class="set-row sy-auto">
+          <label class="chk"><input type="checkbox" id="syAuto"> Download new expiries automatically while the app is running</label>
+          <span id="syAutoMsg" class="muted small"></span>
+        </div>
+      </section>`;
+  }
 
   async function render() {
+    const id = ++drawn;
     let cache = null;
     try { cache = await BT.api('/api/bt/cache'); } catch {}
+    if (id !== drawn) return;
     const cal = BT.meta.calendar;
     const exp = cal?.expired || [];
     const monthly = new Set(cal?.monthly || []);
@@ -38,67 +101,207 @@
         </table>
         <div class="data-actions"><button class="btn-sm ghost danger" data-clear="options">Clear option cache</button> <button class="btn-sm ghost danger" data-clear="index">Clear index cache</button></div>` : '<div class="muted">—</div>'}
       </section>
+      ${downloadPanel(exp, monthly)}
       <section class="panel data-card wide">
-        <h3>Coverage by expiry <span class="muted small">bar = contracts cached · M = monthly</span></h3>
+        <h3>Coverage by expiry <span class="muted small">bar = contracts cached · M = monthly · outlined = in the selection above, red = something of it is missing · click an expiry to pick it (Shift-click for a range)</span></h3>
         <div class="cov">${Object.entries(byYear).reverse().map(([y, es]) => `<div class="cov-year"><span class="muted">${y}</span><div class="cov-row">${es.map((e) => {
-          const n = cached.get(e) || 0;
-          return `<div class="cov-cell${monthly.has(e) ? ' m' : ''}" title="${dayLabel(e)}${monthly.has(e) ? ' (monthly)' : ''}: ${n} contracts cached"><div class="cov-fill" style="height:${((n / maxC) * 100).toFixed(0)}%"></div><span>${dayShort(e).split(' ')[0]}</span></div>`;
+          const c = cached.get(e) || 0;
+          const tip = `${dayLabel(e)}${monthly.has(e) ? ' (monthly)' : ''}: ${c} contracts cached`;
+          return `<div class="cov-cell${monthly.has(e) ? ' m' : ''}" data-e="${e}" data-tip="${tip}" title="${tip}"><div class="cov-fill" style="height:${((c / maxC) * 100).toFixed(0)}%"></div><span>${dayShort(e).split(' ')[0]}</span></div>`;
         }).join('')}</div></div>`).join('')}</div>
-      </section>
-      <section class="panel data-card wide">
-        <h3>Prefetch</h3>
-        <p class="muted small">Backtests download what they need automatically. To make first runs instant too (or to work offline later), download every strike around the Nifty path for a range of expiries.</p>
-        <div class="set-row">
-          <span class="lbl">Expiries</span>
-          <select id="pfFrom">${exp.map((e) => `<option value="${e}">${dayLabel(e)}</option>`).join('')}</select>
-          <span class="muted">→</span>
-          <select id="pfTo">${exp.map((e) => `<option value="${e}" ${e === exp[exp.length - 1] ? 'selected' : ''}>${dayLabel(e)}</option>`).join('')}</select>
-          <span class="lbl">Strikes</span><span class="muted">±</span><input id="pfBand" class="num" type="number" value="20" min="2" max="80"><span class="muted">around the Nifty range</span>
-          <span class="lbl">Days before expiry</span><input id="pfDays" class="num" type="number" value="5" min="0" max="30">
-          <button class="btn-sm" id="pfRun" ${busy ? 'disabled' : ''}>Download</button>
-        </div>
-        <div class="progress hidden" id="pfProg"><div class="bar"><div class="fill"></div></div><span class="ptext"></span></div>
-        <div id="pfMsg" class="muted small"></div>
       </section>`;
-    const from = $('pfFrom');
-    if (from && exp.length) from.value = exp[Math.max(0, exp.length - 8)];
+    paintSync();
+    check();
   }
 
-  async function prefetch() {
-    const body = { from: $('pfFrom').value, to: $('pfTo').value, band: Number($('pfBand').value), daysBefore: Number($('pfDays').value) };
-    if (body.from > body.to) { $('pfMsg').textContent = 'The first expiry must be before the last.'; return; }
-    busy = true;
-    $('pfRun').disabled = true;
-    const prog = $('pfProg');
-    prog.classList.remove('hidden');
+  // The selection as the server takes it (the depth is the saved one).
+  function request() {
+    if (form.scope === 'recent') return { scope: 'recent', months: form.months, kind: form.kind };
+    if (form.scope === 'dates' || form.scope === 'expiries') {
+      const [from, to] = form.scope === 'dates' ? [form.from, form.to] : [form.expFrom, form.expTo];
+      if (!from || !to) return { error: 'Give both ends of the range.' };
+      if (from > to) return { error: 'The range starts after it ends.' };
+      return { scope: 'range', from, to, kind: form.kind };
+    }
+    return { scope: 'new', kind: form.kind };
+  }
+
+  // Ask the server what the cache lacks for the selection: after every change of it and every download.
+  async function check() {
+    if (!$('sySum')) return;
+    const id = ++planSeq;
+    const req = request();
+    plan = req.error ? { error: req.error } : null;
+    paintPlan();
+    if (req.error) return;
+    let p;
+    try { p = await BT.api('/api/bt/sync/plan', req); } catch (e) { p = { error: e.message }; }
+    if (id !== planSeq) return;
+    plan = p;
+    paintPlan();
+  }
+
+  function paintPlan() {
+    const el = $('sySum');
+    if (!el) return;
+    let cls = '';
+    let html = 'Checking what is missing…';
+    if (plan?.error) {
+      cls = 'bad';
+      html = esc(plan.error);
+    } else if (plan) {
+      const es = plan.expiries;
+      const need = es.filter((e) => e.missing);
+      const bad = es.filter((e) => e.error);
+      if (!es.length) html = 'No expired expiries in this selection.';
+      else if (plan.missing) {
+        cls = 'need';
+        html = `<b>${some(plan.missing, 'contract', 'contracts')} to download</b> of the ${n(plan.contracts)} wanted, in ${need.length} of ${some(es.length, 'expiry', 'expiries')} (${span(need)}) · about ${n(plan.requests)} Upstox requests, ${eta(plan.requests)}.`;
+      } else if (bad.length < es.length) {
+        cls = 'ok';
+        html = `<b>Nothing missing.</b> All ${n(plan.contracts)} contracts wanted for ${some(es.length - bad.length, 'expiry', 'expiries')} (${span(es)}) are downloaded.`;
+      } else html = '';
+      if (bad.length) {
+        cls = plan.missing ? cls : 'bad';
+        html += ` <span class="err">${some(bad.length, 'expiry', 'expiries')} could not be checked (${esc(dayLabel(bad[0].expiry) + ': ' + bad[0].error)}).</span>`;
+      }
+      if (plan.stale) html += ' <span class="muted">Upstox could not be reached, so this is checked against the saved list of expiries.</span>';
+      const rows = new Map(es.map((e) => [e.expiry, e]));
+      for (const c of $('dataBody').querySelectorAll('.cov-cell')) {
+        const r = rows.get(c.dataset.e);
+        c.classList.toggle('sel', Boolean(r));
+        c.classList.toggle('miss', Boolean(r && (r.missing || r.error)));
+        c.title = c.dataset.tip + (!r ? '' : r.error ? ` · not checked: ${r.error}` : r.missing ? ` · ${r.missing} of the ${r.contracts} wanted are missing` : ` · all ${r.contracts} wanted are downloaded`);
+      }
+    }
+    el.className = 'sy-sum ' + cls;
+    el.innerHTML = html;
+    paintSync();
+  }
+
+  // The running download, the result of the last one and the state of the automatic update.
+  function paintSync() {
+    if (!$('syRun')) return;
+    const j = sync?.job;
+    const running = j?.status === 'running';
+    const a = sync?.auto;
+    const set = (id, v) => { if (document.activeElement !== $(id)) $(id).value = v; };
+    if (sync) { set('syBand', sync.settings.band); set('syDays', sync.settings.daysBefore); }
+    $('syRun').disabled = running || a?.state === 'demo' || !plan?.missing;
+    $('syRun').title = a?.state === 'demo' ? 'Not available in demo mode' : '';
+    $('syStop').classList.toggle('hidden', !running);
+    const prog = $('syProg');
+    prog.classList.toggle('hidden', !running);
+    if (running) {
+      const p = j.progress;
+      prog.querySelector('.fill').style.width = (p.total ? (p.done / p.total) * 100 : 0).toFixed(1) + '%';
+      const wait = p.api?.waitingSec ? ` · waiting ${p.api.waitingSec}s for the Upstox rate limit` : '';
+      prog.querySelector('.ptext').textContent = `${j.auto ? 'Automatic update · ' : ''}${p.phase} ${p.total ? p.done + '/' + p.total : ''}${p.failed ? ' · ' + p.failed + ' failed' : ''}${wait}`;
+    }
+    let msg = note || '';
+    let err = Boolean(note);
+    if (!note && j && !running && !j.auto) {
+      const r = j.result;
+      err = !r;
+      if (!r) msg = 'Download failed: ' + j.error;
+      else if (!r.wanted) msg = 'Nothing was missing.';
+      else {
+        msg = `Downloaded ${some(r.contracts, 'contract', 'contracts')} of ${some(r.downloaded.length, 'expiry', 'expiries')}`
+          + (r.failed ? `, ${r.failed} failed (see logs/errors.log)` : '') + (r.stopped ? `; stopped with ${n(r.wanted - r.contracts - r.failed)} left` : '') + ` · ${clock(j.endedAt)}`;
+      }
+    }
+    $('syMsg').textContent = running ? '' : msg;
+    $('syMsg').className = 'small ' + (err ? 'err' : 'muted');
+    const box = $('syAuto');
+    box.checked = sync ? sync.settings.auto : true;
+    box.disabled = !sync || a.state === 'demo';
+    let text = '';
+    if (a?.state === 'demo') text = 'Not available in demo mode.';
+    else if (a?.state === 'off') text = 'Off: new expiries are downloaded only with the button above (backtests still fetch what they need).';
+    else if (a?.state === 'login') text = 'Waiting for the Upstox login.';
+    else if (a && running && j.auto) text = 'Checking now.';
+    else if (a) text = (a.at ? `Last check ${clock(a.at)}: ${a.text}.` : 'First check within half a minute.') + (a.at && a.nextAt > Date.now() ? ` Next check ${clock(a.nextAt)}.` : '');
+    $('syAutoMsg').textContent = text;
+    $('syAutoMsg').className = 'small ' + (a?.state === 'on' && a.ok === false && !(running && j.auto) ? 'err' : 'muted');
+  }
+
+  function apply(status) {
+    const was = sync?.job;
+    sync = status;
+    const j = status.job;
+    const key = j ? j.id + j.status : '';
+    // A download ended (one seen running, or one that ran between two polls and fetched something): the cache changed.
+    const ended = seen !== null && key !== seen && j && j.status !== 'running' && (was?.status === 'running' || j.result?.contracts > 0);
+    seen = key;
+    if (ended) render(); else paintSync();
+  }
+
+  // Follows the download while the screen is open: closely while one runs, else often enough to see one start.
+  async function poll() {
+    clearTimeout(timer);
+    if (window.app.state.view !== 'data') return;
+    if (!document.hidden || !sync) { try { apply(await BT.api('/api/bt/sync')); } catch {} }
+    clearTimeout(timer);
+    timer = setTimeout(poll, sync?.job?.status === 'running' ? 500 : 5000);
+  }
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
+
+  async function send(path, body) {
     try {
-      const job = await BT.runJob('/api/bt/prefetch', body, (p) => {
-        prog.querySelector('.fill').style.width = (p.total ? (p.done / p.total) * 100 : 0).toFixed(1) + '%';
-        const wait = p.api?.waitingSec ? ` · waiting ${p.api.waitingSec}s for the Upstox rate limit` : '';
-        prog.querySelector('.ptext').textContent = `${p.phase} ${p.total ? p.done + '/' + p.total : ''}${p.failed ? ' · ' + p.failed + ' failed' : ''}${wait}`;
-      });
-      busy = false;
-      await render();
-      $('pfMsg').textContent = `Done: ${job.result.contracts} contracts for ${job.result.expiries} expiries${job.result.failed ? `, ${job.result.failed} failed (see logs/errors.log)` : ''}.`;
+      note = null;
+      apply(await BT.api(path, body));
+      poll();
+      return true;
     } catch (e) {
-      busy = false;
-      $('pfMsg').textContent = 'Prefetch failed: ' + e.message;
-      $('pfRun').disabled = false;
+      note = e.message;
+      paintSync();
+      return false;
     }
   }
 
+  // The selection changed: check it again; another way of picking (redraw) also needs its own inputs.
+  function picked(redraw) {
+    BT.store.set('data.pick', { scope: form.scope, months: form.months, kind: form.kind });
+    const cal = BT.meta.calendar;
+    if (redraw && $('syCard') && cal) {
+      $('syCard').outerHTML = downloadPanel(cal.expired, new Set(cal.monthly));
+      paintSync();
+    }
+    check();
+  }
+
   $('dataBody').addEventListener('click', async (e) => {
-    if (e.target.id === 'pfRun') prefetch();
-    const what = e.target.dataset.clear;
+    const t = e.target;
+    if (t.dataset.scope) { form.scope = t.dataset.scope; return picked(true); }
+    const cell = t.closest('.cov-cell');
+    if (cell && $('syCard')) {
+      const from = e.shiftKey && form.scope === 'expiries' ? form.expFrom : cell.dataset.e;
+      [form.expFrom, form.expTo] = [from, cell.dataset.e].sort();
+      form.scope = 'expiries';
+      return picked(true);
+    }
+    if (t.id === 'syRun') { const req = request(); if (!req.error) send('/api/bt/sync/start', req); }
+    if (t.id === 'syStop') send('/api/bt/sync/stop', {});
+    const what = t.dataset.clear;
     if (what && confirm(`Delete the cached ${what} data? It will be downloaded again when needed.`)) {
       await BT.api('/api/bt/cache/clear', { what });
       render();
     }
   });
 
+  $('dataBody').addEventListener('change', async (e) => {
+    const t = e.target;
+    const field = { syMonths: 'months', syKind: 'kind', syFrom: 'from', syTo: 'to', syExpFrom: 'expFrom', syExpTo: 'expTo' }[t.id];
+    if (field) { form[field] = field === 'months' ? Number(t.value) : t.value; return picked(false); }
+    if (t.id === 'syAuto') send('/api/bt/sync/settings', { auto: t.checked });
+    // The depth is saved on the server: the automatic update downloads with it too.
+    if ((t.id === 'syBand' || t.id === 'syDays') && await send('/api/bt/sync/settings', { band: $('syBand').value, daysBefore: $('syDays').value })) check();
+  });
+
   function init() {
-    if (!inited) { inited = true; BT.on('meta', () => { if (!busy) render(); }); }
-    if (!busy) render();
+    if (!inited) { inited = true; BT.on('meta', render); }
+    render();
+    poll();
   }
   window.addEventListener('viewchange', (e) => { if (e.detail === 'data') init(); });
   if (window.app.state.view === 'data') init();

@@ -13,3 +13,4 @@ bt-data/scenario-cache.json
 bt-data/backtests.json
 bt-data/biweekly.json
 bt-data/paper-trades.json
+bt-data/data-sync.json
