@@ -257,8 +257,10 @@ async function restLoop() {
   polling = true;
   try {
     const watching = Date.now() - lastClientAt < IDLE_STOP_MS;
-    const active = Boolean(token) && (watching || isMarketOpen());
-    feed.setEnabled(active && !DEMO);
+    const marketOpen = DEMO || isMarketOpen();
+    const active = Boolean(token) && (watching || marketOpen);
+    // Shut market: nothing changes, so no tick feed and no re-polling of a chain we already hold, even with a page open.
+    feed.setEnabled(active && !DEMO && marketOpen);
     if (!active) return;
     const list = await getExpiries();
     nearestExpiry = list[0];
@@ -267,6 +269,7 @@ async function restLoop() {
     let fetched = false;
     for (const e of targetExpiries()) {
       const age = Date.now() - (restChains.get(e)?.fetchedAt || 0);
+      if (!marketOpen && restChains.has(e)) continue;
       if (!live || age >= REST_WITH_FEED_MS) {
         await fetchChain(e);
         fetched = true;

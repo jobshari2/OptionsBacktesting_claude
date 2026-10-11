@@ -1,4 +1,5 @@
 const REFRESH_MS = 400; // the server folds ticks into a snapshot every 500 ms
+const CLOSED_REFRESH_MS = 30_000; // refresh interval while the market is closed
 const STALE_MS = 15000;
 
 const $ = (id) => document.getElementById(id);
@@ -111,8 +112,13 @@ async function refresh() {
     reportError(e, 'render');
   } finally {
     updateStatus();
-    scheduleRefresh(REFRESH_MS);
+    scheduleRefresh(nextRefreshMs());
   }
+}
+
+// With real data and the market shut nothing changes, so check back slowly. Changing the expiry still reloads at once.
+function nextRefreshMs() {
+  return state.data && state.data.source !== 'demo' && !isMarketOpen(Date.now()) ? CLOSED_REFRESH_MS : REFRESH_MS;
 }
 
 // Send browser-side errors to the server's log file (same message at most once per minute).
