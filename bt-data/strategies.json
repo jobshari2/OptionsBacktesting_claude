@@ -274,5 +274,129 @@
    "maxLossUp": null
   },
   "updatedAt": 1790948247184
+ },
+ {
+  "id": "my-mv3l1bpc",
+  "name": "Vertical spread arbitrage — over-width CE",
+  "desc": "Two strikes of the same type break the no-arbitrage bounds of a vertical spread: the further-OTM option is dearer than the nearer one (free credit), or the pair is priced further apart than the strike gap (credit above width). Free credit: buy the nearer-ITM strike and sell the further one for a credit. Credit above width: sell the nearer-ITM strike and buy the further one for more than the spread",
+  "category": "Custom",
+  "mode": "positional",
+  "expiry": "weekly",
+  "entry": {
+   "time": "09:20",
+   "days": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "dte": [],
+   "dteDays": 3,
+   "after": 0,
+   "noOverlap": false,
+   "when": "signal",
+   "until": "15:00",
+   "maxTrades": 2,
+   "conditions": [
+    {
+     "kind": "anomaly",
+     "type": "varb",
+     "params": {
+      "minEdge": 0.25,
+      "band": 10,
+      "maxGap": 20,
+      "minLots": 1,
+      "maxSpread": 3,
+      "maxSpreadPct": 1,
+      "minVol": 500,
+      "minOi": 5000,
+      "maxAge": 15,
+      "hold": 5,
+      "fresh": 1,
+      "maxItm": 300,
+      "minPx": 0.05
+     },
+     "side": "CE",
+     "dir": "over-width"
+    }
+   ]
+  },
+  "exit": {
+   "time": "15:15",
+   "dteDays": 0
+  },
+  "legs": [
+   {
+    "action": "S",
+    "type": "CE",
+    "lots": 1,
+    "expiry": "cur",
+    "strike": {
+     "by": "signal",
+     "value": 0,
+     "match": "closest",
+     "ref": "hit"
+    },
+    "sl": {
+     "type": "none",
+     "value": 0
+    },
+    "tgt": {
+     "type": "none",
+     "value": 0
+    },
+    "trail": null,
+    "re": null,
+    "roll": null
+   },
+   {
+    "action": "B",
+    "type": "CE",
+    "lots": 1,
+    "expiry": "cur",
+    "strike": {
+     "by": "signal",
+     "value": 0,
+     "match": "closest",
+     "ref": "ref"
+    },
+    "sl": {
+     "type": "none",
+     "value": 0
+    },
+    "tgt": {
+     "type": "none",
+     "value": 0
+    },
+    "trail": null,
+    "re": null,
+    "roll": null
+   }
+  ],
+  "risk": {
+   "sl": null,
+   "tgt": null,
+   "slPrem": null,
+   "tgtPrem": null,
+   "lockAt": null,
+   "lockTo": 0,
+   "trailEvery": null,
+   "trailBy": null,
+   "onLegSl": "leg",
+   "slToCost": false,
+   "unit": "inr",
+   "partialAt": null,
+   "partialPct": 60,
+   "partialFloor": null
+  },
+  "filters": {
+   "vixMin": null,
+   "vixMax": null,
+   "minCredit": null,
+   "maxLossDown": null,
+   "maxLossUp": null
+  },
+  "updatedAt": 1791708594816
  }
 ]

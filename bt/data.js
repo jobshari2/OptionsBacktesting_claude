@@ -55,13 +55,17 @@ function createData({ getToken, upstox = createUpstox({ getToken }), cacheDir, l
       const m = minuteOf(c[0]);
       if (m < 0 || m >= MPD) continue;
       const day = c[0].slice(0, 10);
-      (days[day] ||= new Array(MPD * 4).fill(null));
+      days[day] ||= new Array(MPD * 4).fill(null);
       days[day].splice(m * 4, 4, c[1], c[2], c[3], c[4]);
     }
     // Fill gaps: before the first candle with its open, afterwards with the previous close.
     for (const a of Object.values(days)) {
       let first = -1;
-      for (let m = 0; m < MPD; m++) if (a[m * 4] != null) { first = m; break; }
+      for (let m = 0; m < MPD; m++)
+        if (a[m * 4] != null) {
+          first = m;
+          break;
+        }
       for (let m = 0; m < MPD; m++) {
         if (a[m * 4] != null) continue;
         const v = m < first ? a[first * 4] : a[(m - 1) * 4 + 3];
@@ -131,7 +135,10 @@ function createData({ getToken, upstox = createUpstox({ getToken }), cacheDir, l
   // First day of the earliest month of Nifty history in the cache folder, or null when nothing is cached yet.
   function indexStart() {
     try {
-      const m = fs.readdirSync(path.join(cacheDir, 'index', NIFTY.replace(/[^A-Za-z0-9]+/g, '_'))).filter((f) => /^\d{4}-\d{2}\.json\.gz$/.test(f)).sort()[0];
+      const m = fs
+        .readdirSync(path.join(cacheDir, 'index', NIFTY.replace(/[^A-Za-z0-9]+/g, '_')))
+        .filter((f) => /^\d{4}-\d{2}\.json\.gz$/.test(f))
+        .sort()[0];
       return m ? m.slice(0, 7) + '-01' : null;
     } catch {
       return null;
@@ -271,7 +278,10 @@ function createData({ getToken, upstox = createUpstox({ getToken }), cacheDir, l
         if (m < 0 || m >= MPD) continue;
         const day = c[0].slice(0, 10);
         if (!raw.has(day)) raw.set(day, new Int32Array(MPD * 4).fill(-1));
-        raw.get(day).set([c[1], c[2], c[3], c[4]].map((v) => Math.round(v * 100)), m * 4);
+        raw.get(day).set(
+          [c[1], c[2], c[3], c[4]].map((v) => Math.round(v * 100)),
+          m * 4,
+        );
       }
     }
     return raw;
@@ -297,7 +307,10 @@ function createData({ getToken, upstox = createUpstox({ getToken }), cacheDir, l
         }
       }
       if (c && c.from <= needFrom) {
-        if (!c.days) { c.days = new Map([...c.raw].map(([d, a]) => [d, a.slice()])); fillForward(c); }
+        if (!c.days) {
+          c.days = new Map([...c.raw].map(([d, a]) => [d, a.slice()]));
+          fillForward(c);
+        }
         rememberOpt(id, c);
         return c;
       }
@@ -328,7 +341,10 @@ function createData({ getToken, upstox = createUpstox({ getToken }), cacheDir, l
     let found = -1;
     while (lo <= hi) {
       const mid = (lo + hi) >> 1;
-      if (c.dayList[mid] < day) { found = mid; lo = mid + 1; } else hi = mid - 1;
+      if (c.dayList[mid] < day) {
+        found = mid;
+        lo = mid + 1;
+      } else hi = mid - 1;
     }
     let out = null;
     if (found >= 0) {
@@ -353,7 +369,10 @@ function createData({ getToken, upstox = createUpstox({ getToken }), cacheDir, l
   // Expiries with cached option candles, oldest first.
   function optionExpiries() {
     try {
-      return fs.readdirSync(path.join(cacheDir, 'opt')).filter((e) => /^\d{4}-\d{2}-\d{2}$/.test(e)).sort();
+      return fs
+        .readdirSync(path.join(cacheDir, 'opt'))
+        .filter((e) => /^\d{4}-\d{2}-\d{2}$/.test(e))
+        .sort();
     } catch {
       return [];
     }
@@ -361,7 +380,12 @@ function createData({ getToken, upstox = createUpstox({ getToken }), cacheDir, l
   // Contracts of an expiry that have a candle file, as "24500CE".
   function optionFiles(expiry) {
     try {
-      return new Set(fs.readdirSync(path.join(cacheDir, 'opt', expiry)).filter((f) => f.endsWith('.json.gz')).map((f) => f.slice(0, -8)));
+      return new Set(
+        fs
+          .readdirSync(path.join(cacheDir, 'opt', expiry))
+          .filter((f) => f.endsWith('.json.gz'))
+          .map((f) => f.slice(0, -8)),
+      );
     } catch {
       return new Set();
     }
@@ -406,13 +430,23 @@ function createData({ getToken, upstox = createUpstox({ getToken }), cacheDir, l
       if (!fs.existsSync(dir)) return { bytes: 0, files: 0 };
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
         const p = path.join(dir, e.name);
-        if (e.isDirectory()) { const s = dirSize(p); n += s.bytes; files += s.files; } else { n += fs.statSync(p).size; files++; }
+        if (e.isDirectory()) {
+          const s = dirSize(p);
+          n += s.bytes;
+          files += s.files;
+        } else {
+          n += fs.statSync(p).size;
+          files++;
+        }
       }
       return { bytes: n, files };
     };
     const optDir = path.join(cacheDir, 'opt');
     const expiries = fs.existsSync(optDir)
-      ? fs.readdirSync(optDir).map((e) => ({ expiry: e, contracts: fs.readdirSync(path.join(optDir, e)).length })).sort((a, b) => a.expiry.localeCompare(b.expiry))
+      ? fs
+          .readdirSync(optDir)
+          .map((e) => ({ expiry: e, contracts: fs.readdirSync(path.join(optDir, e)).length }))
+          .sort((a, b) => a.expiry.localeCompare(b.expiry))
       : [];
     return { options: dirSize(optDir), index: dirSize(path.join(cacheDir, 'index')), expiries, memContracts: optMem.size, api: limiter.stats() };
   }
@@ -429,8 +463,27 @@ function createData({ getToken, upstox = createUpstox({ getToken }), cacheDir, l
   }
 
   return {
-    MPD, NIFTY, loadIndex, spotDay, vixDay, indexStart, niftyIntraday, expiryCalendar, contracts, option, optionDay, optionCached, optionRaw,
-    optionExpiries, optionFiles, optionRequests, cacheStats, clearCache, apiStats: limiter.stats, api, addDays,
+    MPD,
+    NIFTY,
+    loadIndex,
+    spotDay,
+    vixDay,
+    indexStart,
+    niftyIntraday,
+    expiryCalendar,
+    contracts,
+    option,
+    optionDay,
+    optionCached,
+    optionRaw,
+    optionExpiries,
+    optionFiles,
+    optionRequests,
+    cacheStats,
+    clearCache,
+    apiStats: limiter.stats,
+    api,
+    addDays,
   };
 }
 

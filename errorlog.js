@@ -17,7 +17,14 @@ function logError(source, err, extra) {
   const time = new Date(now + 5.5 * 3600_000).toISOString().replace('T', ' ').slice(0, 23);
   let line = `${time} IST [${source}] ${msg}`;
   if (extra) line += ` | ${extra}`;
-  const stack = err instanceof Error && err.stack ? err.stack.split('\n').slice(1, 4).map((s) => s.trim()).join(' < ') : '';
+  const stack =
+    err instanceof Error && err.stack
+      ? err.stack
+          .split('\n')
+          .slice(1, 4)
+          .map((s) => s.trim())
+          .join(' < ')
+      : '';
   if (stack) line += ` | ${stack}`;
   console.error(line);
   try {

@@ -4,13 +4,25 @@
   const btns = [...document.querySelectorAll('#themeSw button')];
   function apply(name, persist) {
     root.dataset.theme = name;
-    if (persist) { try { localStorage.setItem('nifty-theme', name); } catch { /* storage unavailable */ } }
+    if (persist) {
+      try {
+        localStorage.setItem('nifty-theme', name);
+      } catch {
+        /* storage unavailable */
+      }
+    }
     btns.forEach((b) => b.classList.toggle('on', b.dataset.theme === name));
     if (window.Chart) {
       const css = getComputedStyle(root);
       Chart.defaults.color = css.getPropertyValue('--muted').trim();
       Chart.defaults.borderColor = css.getPropertyValue('--line').trim();
-      Object.values(Chart.instances || {}).forEach((c) => { try { c.update('none'); } catch { /* chart being torn down */ } });
+      Object.values(Chart.instances || {}).forEach((c) => {
+        try {
+          c.update('none');
+        } catch {
+          /* chart being torn down */
+        }
+      });
     }
   }
   btns.forEach((b) => b.addEventListener('click', () => apply(b.dataset.theme, true)));

@@ -19,11 +19,43 @@ const DAY = 86_400_000;
 // Template strategies (same families as the live planner), with strikes as % of spot.
 const TEMPLATES = {
   put: { name: 'Protective put', legs: (s) => [['buy', 'PE', s.putK, 1]] },
-  spread: { name: 'Put spread', legs: (s) => [['buy', 'PE', s.putK, 1], ['sell', 'PE', s.putK - s.width, 1]] },
-  spreadtail: { name: 'Put spread + tail put', legs: (s) => [['buy', 'PE', s.putK, 1], ['sell', 'PE', s.putK - s.width, 1], ['buy', 'PE', Math.min(s.tailK, s.putK - s.width - 5), 1]] },
-  partial: { name: 'Partial collar', legs: (s) => [['buy', 'PE', s.putK, 1], ['sell', 'CE', s.callK, 0.5]] },
-  seagull: { name: 'Seagull', legs: (s) => [['buy', 'PE', s.putK, 1], ['sell', 'PE', s.putK - s.width, 1], ['sell', 'CE', s.callK, 1]] },
-  collar: { name: 'Collar', legs: (s) => [['buy', 'PE', s.putK, 1], ['sell', 'CE', s.callK, 1]] },
+  spread: {
+    name: 'Put spread',
+    legs: (s) => [
+      ['buy', 'PE', s.putK, 1],
+      ['sell', 'PE', s.putK - s.width, 1],
+    ],
+  },
+  spreadtail: {
+    name: 'Put spread + tail put',
+    legs: (s) => [
+      ['buy', 'PE', s.putK, 1],
+      ['sell', 'PE', s.putK - s.width, 1],
+      ['buy', 'PE', Math.min(s.tailK, s.putK - s.width - 5), 1],
+    ],
+  },
+  partial: {
+    name: 'Partial collar',
+    legs: (s) => [
+      ['buy', 'PE', s.putK, 1],
+      ['sell', 'CE', s.callK, 0.5],
+    ],
+  },
+  seagull: {
+    name: 'Seagull',
+    legs: (s) => [
+      ['buy', 'PE', s.putK, 1],
+      ['sell', 'PE', s.putK - s.width, 1],
+      ['sell', 'CE', s.callK, 1],
+    ],
+  },
+  collar: {
+    name: 'Collar',
+    legs: (s) => [
+      ['buy', 'PE', s.putK, 1],
+      ['sell', 'CE', s.callK, 1],
+    ],
+  },
   tail: { name: 'Tail hedge', legs: (s) => [['buy', 'PE', s.tailK, 1]] },
 };
 
@@ -46,8 +78,12 @@ function baseVols(days, p) {
   const realised = (i) => {
     const n = Math.min(p.rvWindow, i);
     if (n < 5) return 0.16;
-    let s = 0, s2 = 0;
-    for (let j = i - n + 1; j <= i; j++) { s += rets[j]; s2 += rets[j] * rets[j]; }
+    let s = 0,
+      s2 = 0;
+    for (let j = i - n + 1; j <= i; j++) {
+      s += rets[j];
+      s2 += rets[j] * rets[j];
+    }
     return Math.sqrt(Math.max(0, (s2 - (s * s) / n) / (n - 1)) * 252);
   };
   return days.map((d, i) => {
@@ -58,7 +94,9 @@ function baseVols(days, p) {
 }
 
 // ---------- simulation ----------
-function roundStrike(K, step) { return Math.max(step, Math.round(K / step) * step); }
+function roundStrike(K, step) {
+  return Math.max(step, Math.round(K / step) * step);
+}
 
 function simulate(spec, days, vols, p) {
   const n = days.length;
@@ -86,10 +124,17 @@ function simulate(spec, days, vols, p) {
     if (T > 0) proceeds -= pos.legs.length * p.chargesPerLeg;
     cash += proceeds;
     trades.push({
-      open: days[pos.i].date, close: d.date, expiry: ymd(pos.expiryT), reason,
-      spotIn: days[pos.i].spot, spotOut: d.spot, volIn: vols[pos.i] * 100,
+      open: days[pos.i].date,
+      close: d.date,
+      expiry: ymd(pos.expiryT),
+      reason,
+      spotIn: days[pos.i].spot,
+      spotOut: d.spot,
+      volIn: vols[pos.i] * 100,
       legs: pos.legs.map((l, j) => ({ action: l.action, type: l.type, strike: l.strike, lots: l.lots, entry: l.price, exit: exits[j] })),
-      cost: pos.cost, proceeds, pnl: proceeds - pos.cost,
+      cost: pos.cost,
+      proceeds,
+      pnl: proceeds - pos.cost,
       niftyMove: (d.spot / days[pos.i].spot - 1) * 100,
       holdingsMove: stock - pos.stockIn,
     });
@@ -102,14 +147,16 @@ function simulate(spec, days, vols, p) {
     const exposureLots = (stock * p.beta) / (d.spot * p.lot);
     const maxRatio = Math.max(...spec.legs.map((l) => l.ratio));
     const base = p.wholeLots ? Math.max(1, Math.round(exposureLots * maxRatio)) : exposureLots * maxRatio;
-    const legs = spec.legs.map((l) => {
-      const lots = p.wholeLots ? Math.floor(base * (l.ratio / maxRatio) + 1e-9) : base * (l.ratio / maxRatio);
-      const strike = roundStrike(d.spot * (1 + l.k / 100), p.strikeStep);
-      const leg = { action: l.action, type: l.type, strike, lots };
-      const mid = val(leg, d.spot, T, vols[i]);
-      leg.price = Math.max(0.05, l.action === 'buy' ? mid * (1 + half) : mid * (1 - half));
-      return leg;
-    }).filter((l) => l.lots > 0);
+    const legs = spec.legs
+      .map((l) => {
+        const lots = p.wholeLots ? Math.floor(base * (l.ratio / maxRatio) + 1e-9) : base * (l.ratio / maxRatio);
+        const strike = roundStrike(d.spot * (1 + l.k / 100), p.strikeStep);
+        const leg = { action: l.action, type: l.type, strike, lots };
+        const mid = val(leg, d.spot, T, vols[i]);
+        leg.price = Math.max(0.05, l.action === 'buy' ? mid * (1 + half) : mid * (1 - half));
+        return leg;
+      })
+      .filter((l) => l.lots > 0);
     if (!legs.length) return;
     const cost = legs.reduce((t, l) => t + (l.action === 'buy' ? 1 : -1) * l.price * l.lots * p.lot, 0) + legs.length * p.chargesPerLeg;
     cash -= cost;
@@ -137,7 +184,8 @@ function simulate(spec, days, vols, p) {
   }
   const years = Math.max((Date.parse(days[n - 1].date) - Date.parse(days[0].date)) / DAY / 365.25, 1 / 365);
   return {
-    equity, trades,
+    equity,
+    trades,
     options: {
       premiumPaid,
       net: equity[n - 1] - stock, // everything the options made or lost, incl. the open one
@@ -157,19 +205,35 @@ function stats(eq, days, rate) {
   const years = Math.max((Date.parse(days[n - 1].date) - Date.parse(days[0].date)) / DAY / 365.25, 1 / 365);
   const total = eq[n - 1] / eq[0] - 1;
   const cagr = eq[n - 1] > 0 ? (eq[n - 1] / eq[0]) ** (1 / years) - 1 : -1;
-  let s = 0, s2 = 0, k = 0, ds2 = 0;
+  let s = 0,
+    s2 = 0,
+    k = 0,
+    ds2 = 0;
   for (let i = 1; i < n; i++) {
     const r = eq[i] / eq[i - 1] - 1;
-    s += r; s2 += r * r; k++;
+    s += r;
+    s2 += r * r;
+    k++;
     if (r < 0) ds2 += r * r;
   }
   const vol = k > 1 ? Math.sqrt(Math.max(0, (s2 - (s * s) / k) / (k - 1)) * 252) : 0;
   const downVol = k ? Math.sqrt((ds2 / k) * 252) : 0;
-  let peak = eq[0], peakI = 0, dd = 0, ddPeak = 0, ddTrough = 0;
+  let peak = eq[0],
+    peakI = 0,
+    dd = 0,
+    ddPeak = 0,
+    ddTrough = 0;
   for (let i = 0; i < n; i++) {
-    if (eq[i] > peak) { peak = eq[i]; peakI = i; }
+    if (eq[i] > peak) {
+      peak = eq[i];
+      peakI = i;
+    }
     const x = eq[i] / peak - 1;
-    if (x < dd) { dd = x; ddPeak = peakI; ddTrough = i; }
+    if (x < dd) {
+      dd = x;
+      ddPeak = peakI;
+      ddTrough = i;
+    }
   }
   // worst return over any window of `len` trading days
   const worst = (len) => {
@@ -179,40 +243,62 @@ function stats(eq, days, rate) {
     return w * 100;
   };
   return {
-    final: eq[n - 1], totalPct: total * 100, cagrPct: cagr * 100, volPct: vol * 100,
+    final: eq[n - 1],
+    totalPct: total * 100,
+    cagrPct: cagr * 100,
+    volPct: vol * 100,
     sharpe: vol ? (cagr - rate) / vol : null,
     sortino: downVol ? (cagr - rate) / downVol : null,
-    maxDdPct: dd * 100, ddFrom: days[ddPeak].date, ddTo: days[ddTrough].date,
+    maxDdPct: dd * 100,
+    ddFrom: days[ddPeak].date,
+    ddTo: days[ddTrough].date,
     calmar: dd ? cagr / -dd : null,
-    worst1mPct: worst(21), worst3mPct: worst(63), worst1yPct: worst(252),
+    worst1mPct: worst(21),
+    worst3mPct: worst(63),
+    worst1yPct: worst(252),
   };
 }
 
 // The deepest Nifty falls in the range (peak → trough, non-overlapping, at least `min` %).
 function crises(days, min, count) {
   const out = [];
-  let peakI = 0, troughI = 0, inDd = false;
-  const push = () => { const depth = (days[troughI].spot / days[peakI].spot - 1) * 100; if (depth <= -min) out.push({ from: peakI, to: troughI, depth }); };
+  let peakI = 0,
+    troughI = 0,
+    inDd = false;
+  const push = () => {
+    const depth = (days[troughI].spot / days[peakI].spot - 1) * 100;
+    if (depth <= -min) out.push({ from: peakI, to: troughI, depth });
+  };
   for (let i = 1; i < days.length; i++) {
     if (days[i].spot >= days[peakI].spot) {
       if (inDd) push();
-      peakI = i; troughI = i; inDd = false;
+      peakI = i;
+      troughI = i;
+      inDd = false;
     } else {
       inDd = true;
       if (days[i].spot < days[troughI].spot) troughI = i;
     }
   }
   if (inDd) push();
-  return out.sort((a, b) => a.depth - b.depth).slice(0, count).sort((a, b) => a.from - b.from);
+  return out
+    .sort((a, b) => a.depth - b.depth)
+    .slice(0, count)
+    .sort((a, b) => a.from - b.from);
 }
 
 // % return per calendar period: len 4 → { 'YYYY': % }, len 7 → { 'YYYY-MM': % }
 function periodic(eq, days, len) {
   const out = {};
-  let startV = eq[0], key = days[0].date.slice(0, len);
+  let startV = eq[0],
+    key = days[0].date.slice(0, len);
   for (let i = 1; i < days.length; i++) {
     const k = days[i].date.slice(0, len);
-    if (k !== key) { out[key] = (eq[i - 1] / startV - 1) * 100; startV = eq[i - 1]; key = k; }
+    if (k !== key) {
+      out[key] = (eq[i - 1] / startV - 1) * 100;
+      startV = eq[i - 1];
+      key = k;
+    }
   }
   out[key] = (eq[eq.length - 1] / startV - 1) * 100;
   return out;
@@ -264,20 +350,31 @@ function specsFor(list, p) {
     const label = String(s.label || s.family || 'Strategy').slice(0, 80);
     if (s.family && TEMPLATES[s.family]) {
       out.push({
-        id: String(s.id || s.family), label, group: 'template', tenorDays: p.tenorDays,
+        id: String(s.id || s.family),
+        label,
+        group: 'template',
+        tenorDays: p.tenorDays,
         legs: TEMPLATES[s.family].legs(p).map(([action, type, k, r]) => ({ action, type, k, ratio: r * (p.hedgePct / 100) })),
       });
       continue;
     }
     if (!Array.isArray(s.legs) || !s.legs.length || s.legs.length > 12) continue;
-    const legs = s.legs.map((l) => ({
-      action: l.action === 'sell' ? 'sell' : 'buy',
-      type: l.type === 'CE' ? 'CE' : 'PE',
-      k: clamp(num(l.k, 0), -80, 80),
-      ratio: clamp(num(l.ratio, 1), 0, 5) * (s.scaleByHedge ? p.hedgePct / 100 : 1),
-    })).filter((l) => l.ratio > 0);
+    const legs = s.legs
+      .map((l) => ({
+        action: l.action === 'sell' ? 'sell' : 'buy',
+        type: l.type === 'CE' ? 'CE' : 'PE',
+        k: clamp(num(l.k, 0), -80, 80),
+        ratio: clamp(num(l.ratio, 1), 0, 5) * (s.scaleByHedge ? p.hedgePct / 100 : 1),
+      }))
+      .filter((l) => l.ratio > 0);
     if (!legs.length) continue;
-    out.push({ id: String(s.id || label), label, group: s.group || 'custom', tenorDays: s.tenorDays ? clamp(Math.round(Number(s.tenorDays)), 7, 730) : p.tenorDays, legs });
+    out.push({
+      id: String(s.id || label),
+      label,
+      group: s.group || 'custom',
+      tenorDays: s.tenorDays ? clamp(Math.round(Number(s.tenorDays)), 7, 730) : p.tenorDays,
+      legs,
+    });
   }
   return out;
 }
@@ -300,11 +397,25 @@ function run(history, q) {
 
   const results = specs.map((spec) => {
     const sim = simulate(spec, days, vols, p);
-    return { id: spec.id, label: spec.label, group: spec.group, tenorDays: spec.tenorDays, legs: spec.legs, equity: sim.equity, trades: sim.trades, options: sim.options, stats: stats(sim.equity, days, p.rate), years: yearly(sim.equity, days), months: monthly(sim.equity, days) };
+    return {
+      id: spec.id,
+      label: spec.label,
+      group: spec.group,
+      tenorDays: spec.tenorDays,
+      legs: spec.legs,
+      equity: sim.equity,
+      trades: sim.trades,
+      options: sim.options,
+      stats: stats(sim.equity, days, p.rate),
+      years: yearly(sim.equity, days),
+      months: monthly(sim.equity, days),
+    };
   });
 
   const falls = crises(days, 8, 8).map((c) => ({
-    from: days[c.from].date, to: days[c.to].date, depth: c.depth,
+    from: days[c.from].date,
+    to: days[c.to].date,
+    depth: c.depth,
     unhedged: (unhedged[c.to] / unhedged[c.from] - 1) * 100,
     results: Object.fromEntries(results.map((r) => [r.id, (r.equity[c.to] / r.equity[c.from] - 1) * 100])),
   }));
@@ -315,11 +426,38 @@ function run(history, q) {
   const pick = (a) => idx.map((i) => Math.round(a[i]));
   return {
     params: p,
-    range: { from: days[0].date, to: days[days.length - 1].date, days: days.length, niftyFrom: days[0].spot, niftyTo: days[days.length - 1].spot, niftyPct: (days[days.length - 1].spot / days[0].spot - 1) * 100 },
-    volUsed: { source: p.volSource, vixFrom: vixDays[0]?.date || null, avg: (vols.reduce((s, v) => s + v, 0) / vols.length) * 100, longRun: p.longRunVol * 100, fellBack: p.volSource === 'vix' && days.some((d) => !(d.vix > 0)) },
-    curve: { dates: idx.map((i) => days[i].date), nifty: idx.map((i) => days[i].spot), unhedged: pick(unhedged), series: Object.fromEntries(results.map((r) => [r.id, pick(r.equity)])) },
+    range: {
+      from: days[0].date,
+      to: days[days.length - 1].date,
+      days: days.length,
+      niftyFrom: days[0].spot,
+      niftyTo: days[days.length - 1].spot,
+      niftyPct: (days[days.length - 1].spot / days[0].spot - 1) * 100,
+    },
+    volUsed: {
+      source: p.volSource,
+      vixFrom: vixDays[0]?.date || null,
+      avg: (vols.reduce((s, v) => s + v, 0) / vols.length) * 100,
+      longRun: p.longRunVol * 100,
+      fellBack: p.volSource === 'vix' && days.some((d) => !(d.vix > 0)),
+    },
+    curve: {
+      dates: idx.map((i) => days[i].date),
+      nifty: idx.map((i) => days[i].spot),
+      unhedged: pick(unhedged),
+      series: Object.fromEntries(results.map((r) => [r.id, pick(r.equity)])),
+    },
     unhedged: { stats: stats(unhedged, days, p.rate), years: yearly(unhedged, days), months: monthly(unhedged, days) },
-    nifty: { years: yearly(days.map((d) => d.spot), days), months: monthly(days.map((d) => d.spot), days) },
+    nifty: {
+      years: yearly(
+        days.map((d) => d.spot),
+        days,
+      ),
+      months: monthly(
+        days.map((d) => d.spot),
+        days,
+      ),
+    },
     results: results.map(({ equity, ...r }) => r),
     crises: falls,
   };

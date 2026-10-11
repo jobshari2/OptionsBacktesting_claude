@@ -10,19 +10,47 @@ const { num } = require('./lib/env');
 const MIN = 60_000;
 const BASELINE_SPAN_MIN = 15; // "normal" volume = average per-minute volume over the previous 15 minutes
 const MAX_CAPTURE_MIN = 30; // a cluster of spikes can extend one recording up to this length
-const CE_LTP = 0, CE_VOL = 1, CE_OI = 2, PE_LTP = 3, PE_VOL = 4, PE_OI = 5;
+const CE_LTP = 0,
+  CE_VOL = 1,
+  CE_OI = 2,
+  PE_LTP = 3,
+  PE_VOL = 4,
+  PE_OI = 5;
 const BOM = '﻿'; // lets Excel open the CSVs as UTF-8 (≥, →, × in the descriptions)
 
 const EVENTS_CSV_HEADER = [
-  'date', 'time', 'type', 'detail', 'spot_before', 'spot_at_signal', 'spot_after',
-  'change_after_pts', 'max_up_after_pts', 'max_down_after_pts',
-  'ce_vol_added_before', 'ce_vol_added_after', 'pe_vol_added_before', 'pe_vol_added_after',
-  'before_sec', 'after_sec', 'detail_file',
+  'date',
+  'time',
+  'type',
+  'detail',
+  'spot_before',
+  'spot_at_signal',
+  'spot_after',
+  'change_after_pts',
+  'max_up_after_pts',
+  'max_down_after_pts',
+  'ce_vol_added_before',
+  'ce_vol_added_after',
+  'pe_vol_added_before',
+  'pe_vol_added_after',
+  'before_sec',
+  'after_sec',
+  'detail_file',
 ];
 const TICKS_CSV_HEADER = [
-  'time', 'sec_from_signal', 'spot', 'strike',
-  'ce_ltp', 'ce_volume', 'ce_vol_added', 'ce_oi',
-  'pe_ltp', 'pe_volume', 'pe_vol_added', 'pe_oi', 'signal',
+  'time',
+  'sec_from_signal',
+  'spot',
+  'strike',
+  'ce_ltp',
+  'ce_volume',
+  'ce_vol_added',
+  'ce_oi',
+  'pe_ltp',
+  'pe_volume',
+  'pe_vol_added',
+  'pe_oi',
+  'signal',
 ];
 
 // Signal thresholds from the environment (.env); dir = where recordings go.
@@ -89,7 +117,10 @@ function createSignals(cfg, logError = (src, e) => console.error(src, e), odds =
     // Nifty moves: a fast window (default 15 pts in 20 s) and a 1-minute window (25 pts). Up and down
     // are separate signals with their own cooldowns, so a sharp fall right after a rise still fires.
     const s20 = hist.find((h) => h.t >= now - 20_000);
-    for (const [from, pts] of [[s20, cfg.spotFastPts], [m1, cfg.spotMovePts]]) {
+    for (const [from, pts] of [
+      [s20, cfg.spotFastPts],
+      [m1, cfg.spotMovePts],
+    ]) {
       const span = (cur.t - from.t) / 1000;
       if (span < 10 || cur.spot == null || from.spot == null) continue;
       const move = cur.spot - from.spot;
@@ -113,7 +144,10 @@ function createSignals(cfg, logError = (src, e) => console.error(src, e), odds =
     // Per leg (strike + CE/PE) near ATM: volume rate in the last minute vs its normal rate.
     const legs = [];
     for (const r of nearStrikes(snap)) {
-      for (const [side, idx] of [['CE', CE_VOL], ['PE', PE_VOL]]) {
+      for (const [side, idx] of [
+        ['CE', CE_VOL],
+        ['PE', PE_VOL],
+      ]) {
         const v0 = base.d[r.strike]?.[idx];
         const v1 = m1.d[r.strike]?.[idx];
         const v2 = cur.d[r.strike]?.[idx];
@@ -162,7 +196,10 @@ function createSignals(cfg, logError = (src, e) => console.error(src, e), odds =
     // (e.g. "PE ▲" and "CE ▼" in a sudden fall) so one side can never hide the other.
     const groups = {};
     for (const r of near) {
-      for (const [side, idx] of [['CE', CE_LTP], ['PE', PE_LTP]]) {
+      for (const [side, idx] of [
+        ['CE', CE_LTP],
+        ['PE', PE_LTP],
+      ]) {
         const c = chg(r.strike, idx);
         if (!c || Math.abs(c.pct) < cfg.priceSpikePct) continue;
         const dir = c.pct > 0 ? 'up' : 'down';
@@ -186,13 +223,14 @@ function createSignals(cfg, logError = (src, e) => console.error(src, e), odds =
     const atm = near[atmIdx].strike;
     const ce = chg(atm, CE_LTP);
     const pe = chg(atm, PE_LTP);
-    const straddle = ce && pe ? (((ce.to + pe.to) - (ce.from + pe.from)) / (ce.from + pe.from)) * 100 : null;
+    const straddle = ce && pe ? ((ce.to + pe.to - (ce.from + pe.from)) / (ce.from + pe.from)) * 100 : null;
     const bothRising = both >= Math.min(cfg.bothRisePairs, pairs.length);
     if (bothRising) {
       triggers.push({
         key: 'both-rising',
         type: 'both-rising',
-        detail: `Calls and puts both rising: ${both}/${pairs.length} strikes around ATM up ≥${cfg.bothRisePct}% on both sides in ${Math.round(lastSpan * 60)}s` +
+        detail:
+          `Calls and puts both rising: ${both}/${pairs.length} strikes around ATM up ≥${cfg.bothRisePct}% on both sides in ${Math.round(lastSpan * 60)}s` +
           (straddle != null ? ` · ATM ${atm} CE ${fmtPct(ce.pct)}, PE ${fmtPct(pe.pct)}, straddle ${fmtPct(straddle)}` : ''),
       });
     }
@@ -216,20 +254,42 @@ function createSignals(cfg, logError = (src, e) => console.error(src, e), odds =
     for (const l of legs) cooldowns.set(`${tr.type}:${l.strike}${l.side}`, now);
     const isPremium = tr.type.startsWith('premium');
     const more = legs.length > 5 ? ` +${legs.length - 5} more` : '';
-    const parts = legs.slice(0, 5).map((l) => (isPremium
-      ? `${l.strike} ${fmtPct(l.pct)} (${l.from.toFixed(2)} → ${l.to.toFixed(2)})`
-      : `${l.strike} ${l.side} ${Number.isFinite(l.ratio) ? l.ratio.toFixed(1) + '×' : 'new'} (+${compact(l.lastRate)}/min)`));
+    const parts = legs
+      .slice(0, 5)
+      .map((l) =>
+        isPremium
+          ? `${l.strike} ${fmtPct(l.pct)} (${l.from.toFixed(2)} → ${l.to.toFixed(2)})`
+          : `${l.strike} ${l.side} ${Number.isFinite(l.ratio) ? l.ratio.toFixed(1) + '×' : 'new'} (+${compact(l.lastRate)}/min)`,
+      );
     const label = isPremium ? tr.label : 'Volume spike';
     return { type: tr.type, detail: `${label}: ${parts.join(', ')}${more}`, strikes: legs.map((l) => `${l.strike}${l.side}`), lead: legs[0] };
   }
 
   function record(tr, hist, snap, now) {
-    const kind = signalKind(tr.type, tr.lead, hist[hist.length - 1], hist.find((h) => h.t >= now - MIN));
-    const ev = { id: `${now}-${tr.type}`, t: now, type: tr.type, kind, detail: tr.detail, spot: snap.spot, odds: odds?.lookup(kind) ?? null, after: null, file: null };
+    const kind = signalKind(
+      tr.type,
+      tr.lead,
+      hist[hist.length - 1],
+      hist.find((h) => h.t >= now - MIN),
+    );
+    const ev = {
+      id: `${now}-${tr.type}`,
+      t: now,
+      type: tr.type,
+      kind,
+      detail: tr.detail,
+      spot: snap.spot,
+      odds: odds?.lookup(kind) ?? null,
+      after: null,
+      file: null,
+    };
     events.unshift(ev);
     if (cfg.replay) return;
     if (events.length > 300) events.pop();
-    console.log(`[signal] ${istTime(now)} ${tr.type} — ${tr.detail}` + (ev.odds?.high ? ` · HIGH PROBABILITY: Nifty ${ev.odds.dir} ${Math.round(ev.odds.p * 100)}% (${ev.odds.hits}/${ev.odds.n})` : ''));
+    console.log(
+      `[signal] ${istTime(now)} ${tr.type} — ${tr.detail}` +
+        (ev.odds?.high ? ` · HIGH PROBABILITY: Nifty ${ev.odds.dir} ${Math.round(ev.odds.p * 100)}% (${ev.odds.hits}/${ev.odds.n})` : ''),
+    );
 
     if (!capture) {
       capture = {
@@ -265,16 +325,31 @@ function createSignals(cfg, logError = (src, e) => console.error(src, e), odds =
       const lines = [TICKS_CSV_HEADER.join(',')];
       let prev = null;
       for (const e of c.entries) {
-        const marker = c.events.filter((ev) => ev.t === e.t).map((ev) => `${ev.type}: ${ev.detail}`).join(' | ');
+        const marker = c.events
+          .filter((ev) => ev.t === e.t)
+          .map((ev) => `${ev.type}: ${ev.detail}`)
+          .join(' | ');
         for (const k of c.strikes) {
           const r = e.d[k];
           if (!r) continue;
           const p = prev?.d[k];
-          lines.push(csvRow([
-            istTime(e.t), Math.round((e.t - first) / 1000), round(e.spot), k,
-            r[CE_LTP], r[CE_VOL], p ? r[CE_VOL] - p[CE_VOL] : '', r[CE_OI],
-            r[PE_LTP], r[PE_VOL], p ? r[PE_VOL] - p[PE_VOL] : '', r[PE_OI], marker,
-          ]));
+          lines.push(
+            csvRow([
+              istTime(e.t),
+              Math.round((e.t - first) / 1000),
+              round(e.spot),
+              k,
+              r[CE_LTP],
+              r[CE_VOL],
+              p ? r[CE_VOL] - p[CE_VOL] : '',
+              r[CE_OI],
+              r[PE_LTP],
+              r[PE_VOL],
+              p ? r[PE_VOL] - p[PE_VOL] : '',
+              r[PE_OI],
+              marker,
+            ]),
+          );
         }
         prev = e;
       }
@@ -304,14 +379,33 @@ function createSignals(cfg, logError = (src, e) => console.error(src, e), odds =
         };
         ev.file = relFile;
         const a = ev.after;
-        fs.appendFileSync(csvFile, csvRow([
-          day, istTime(ev.t), ev.type, ev.detail, round(a.spotBefore), round(ev.spot), round(a.spotAfter),
-          round(a.change), round(a.maxUp), round(a.maxDown),
-          a.ceBefore, a.ceAfter, a.peBefore, a.peAfter, a.beforeSec, a.afterSec, relFile,
-        ]) + '\n');
+        fs.appendFileSync(
+          csvFile,
+          csvRow([
+            day,
+            istTime(ev.t),
+            ev.type,
+            ev.detail,
+            round(a.spotBefore),
+            round(ev.spot),
+            round(a.spotAfter),
+            round(a.change),
+            round(a.maxUp),
+            round(a.maxDown),
+            a.ceBefore,
+            a.ceAfter,
+            a.peBefore,
+            a.peAfter,
+            a.beforeSec,
+            a.afterSec,
+            relFile,
+          ]) + '\n',
+        );
         fs.appendFileSync(path.join(dir, 'events.jsonl'), JSON.stringify(ev) + '\n');
       }
-      console.log(`[signal] recorded ${c.events.length} signal(s), ${Math.round((c.entries.at(-1).t - c.startedAt) / 1000)}s after the first (${reason}) → ${relFile}`);
+      console.log(
+        `[signal] recorded ${c.events.length} signal(s), ${Math.round((c.entries.at(-1).t - c.startedAt) / 1000)}s after the first (${reason}) → ${relFile}`,
+      );
     } catch (e) {
       logError('recording', e);
     }
@@ -321,14 +415,20 @@ function createSignals(cfg, logError = (src, e) => console.error(src, e), odds =
     const rows = snap.rows;
     if (!rows.length || snap.spot == null) return [];
     let atm = 0;
-    rows.forEach((r, i) => { if (Math.abs(r.strike - snap.spot) < Math.abs(rows[atm].strike - snap.spot)) atm = i; });
+    rows.forEach((r, i) => {
+      if (Math.abs(r.strike - snap.spot) < Math.abs(rows[atm].strike - snap.spot)) atm = i;
+    });
     return rows.slice(Math.max(0, atm - cfg.strikesAround), atm + cfg.strikesAround + 1);
   }
 
   function loadDay(day) {
     try {
-      return fs.readFileSync(path.join(cfg.dir, day, 'events.jsonl'), 'utf8')
-        .split('\n').filter(Boolean).map((l) => JSON.parse(l)).reverse();
+      return fs
+        .readFileSync(path.join(cfg.dir, day, 'events.jsonl'), 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l))
+        .reverse();
     } catch {
       return [];
     }
@@ -342,20 +442,29 @@ function createSignals(cfg, logError = (src, e) => console.error(src, e), odds =
       breadth,
       recording: capture
         ? {
-          startedAt: capture.startedAt,
-          lastSignalAt: capture.lastSignalAt,
-          lastHotAt: capture.lastHotAt,
-          endsAt: capture.endsAt,
-          minAfterSec: cfg.minAfterSec,
-          calmSec: cfg.calmSec,
-        }
+            startedAt: capture.startedAt,
+            lastSignalAt: capture.lastSignalAt,
+            lastHotAt: capture.lastHotAt,
+            endsAt: capture.endsAt,
+            minAfterSec: cfg.minAfterSec,
+            calmSec: cfg.calmSec,
+          }
         : null,
       events: events.filter((e) => istDate(e.t) === istDate(Date.now())).slice(0, 100),
       rules: {
-        spikeRatio: cfg.spikeRatio, spikeMinQty: cfg.spikeMinQty, broadRatio: cfg.broadRatio,
-        broadPct: cfg.broadPct, spotMovePts: cfg.spotMovePts, spotFastPts: cfg.spotFastPts, strikesAround: cfg.strikesAround,
-        priceSpikePct: cfg.priceSpikePct, bothRisePct: cfg.bothRisePct, bothRisePairs: cfg.bothRisePairs,
-        beforeMin: cfg.beforeMin, afterMin: cfg.afterMin, cooldownMin: cfg.cooldownMin,
+        spikeRatio: cfg.spikeRatio,
+        spikeMinQty: cfg.spikeMinQty,
+        broadRatio: cfg.broadRatio,
+        broadPct: cfg.broadPct,
+        spotMovePts: cfg.spotMovePts,
+        spotFastPts: cfg.spotFastPts,
+        strikesAround: cfg.strikesAround,
+        priceSpikePct: cfg.priceSpikePct,
+        bothRisePct: cfg.bothRisePct,
+        bothRisePairs: cfg.bothRisePairs,
+        beforeMin: cfg.beforeMin,
+        afterMin: cfg.afterMin,
+        cooldownMin: cfg.cooldownMin,
       },
     }),
   };
@@ -378,10 +487,12 @@ const fmtPct = (p) => `${p >= 0 ? '+' : ''}${p.toFixed(1)}%`;
 const round = (n) => (n == null ? '' : Math.round(n * 100) / 100);
 
 function csvRow(values) {
-  return values.map((v) => {
-    const s = v == null ? '' : String(v);
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  }).join(',');
+  return values
+    .map((v) => {
+      const s = v == null ? '' : String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    })
+    .join(',');
 }
 
 function compact(n) {

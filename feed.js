@@ -4,9 +4,7 @@ const path = require('path');
 const protobuf = require('protobufjs');
 
 const AUTHORIZE_URL = 'https://api.upstox.com/v3/feed/market-data-feed/authorize';
-const FeedResponse = protobuf
-  .loadSync(path.join(__dirname, 'MarketDataFeed.proto'))
-  .lookupType('com.upstox.marketdatafeederv3udapi.rpc.proto.FeedResponse');
+const FeedResponse = protobuf.loadSync(path.join(__dirname, 'MarketDataFeed.proto')).lookupType('com.upstox.marketdatafeederv3udapi.rpc.proto.FeedResponse');
 
 function createFeed({ getToken, logError, onTick }) {
   const ticks = new Map(); // instrument key -> { ltp, cp, vol, oi, iv, ltt, at }
@@ -86,7 +84,10 @@ function createFeed({ getToken, logError, onTick }) {
         const q = m.marketLevel?.bidAskQuote?.[0];
         if (q?.bidP) t.bid = q.bidP;
         if (q?.askP) t.ask = q.askP;
-        if (q) { t.bidQ = q.bidQ ?? 0; t.askQ = q.askQ ?? 0; }
+        if (q) {
+          t.bidQ = q.bidQ ?? 0;
+          t.askQ = q.askQ ?? 0;
+        }
         if (m.tbq != null) t.tbq = m.tbq; // total quantity waiting to buy (all depth levels)
         if (m.tsq != null) t.tsq = m.tsq; // total quantity waiting to sell
         if (m.vtt != null) t.vol = m.vtt;
@@ -132,7 +133,10 @@ function createFeed({ getToken, logError, onTick }) {
     const remove = [...subscribed].filter((k) => !wanted.has(k));
     send('unsub', remove);
     send('sub', add);
-    for (const k of remove) { subscribed.delete(k); ticks.delete(k); }
+    for (const k of remove) {
+      subscribed.delete(k);
+      ticks.delete(k);
+    }
     for (const k of add) subscribed.add(k);
   }
 
@@ -153,7 +157,9 @@ function createFeed({ getToken, logError, onTick }) {
       syncSubscriptions();
     },
     tick: (key) => ticks.get(key),
-    get version() { return version; },
+    get version() {
+      return version;
+    },
     status: () => ({ connected, enabled, instruments: subscribed.size, lastTickAt }),
   };
 }

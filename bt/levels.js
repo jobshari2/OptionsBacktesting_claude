@@ -11,8 +11,17 @@
 const MPD = 375;
 
 const DEFAULTS = {
-  majorDays: 120, majorTol: 0.0035, majorWing: 3, majorMax: 10, majorRange: 0.08,
-  minorDays: 5, minorTol: 0.0012, minorWing: 2, minorMax: 12, minorRange: 0.03, barMin: 15,
+  majorDays: 120,
+  majorTol: 0.0035,
+  majorWing: 3,
+  majorMax: 10,
+  majorRange: 0.08,
+  minorDays: 5,
+  minorTol: 0.0012,
+  minorWing: 2,
+  minorMax: 12,
+  minorRange: 0.03,
+  barMin: 15,
 };
 
 function bar(a, from = 0, to = MPD) {
@@ -49,7 +58,10 @@ function cluster(points, tol) {
   for (const p of sorted) {
     const c = out[out.length - 1];
     if (c && Math.abs(p.price - c.sum / c.n) <= tol * p.price) {
-      c.sum += p.price; c.n++; c.last = Math.max(c.last, p.i); c.kinds.add(p.kind);
+      c.sum += p.price;
+      c.n++;
+      c.last = Math.max(c.last, p.i);
+      c.kinds.add(p.kind);
     } else out.push({ sum: p.price, n: 1, last: p.i, kinds: new Set([p.kind]) });
   }
   return out.map((c) => ({ price: c.sum / c.n, touches: c.n, last: c.last, flip: c.kinds.size > 1 }));
@@ -93,7 +105,10 @@ function createLevels() {
     // The range extremes count as major even with one touch.
     const hiBar = bars.reduce((b, x) => (x.h > b.h ? x : b), bars[0]);
     const loBar = bars.reduce((b, x) => (x.l < b.l ? x : b), bars[0]);
-    for (const [price, src] of [[hiBar.h, `${hist.length}-day high`], [loBar.l, `${hist.length}-day low`]]) {
+    for (const [price, src] of [
+      [hiBar.h, `${hist.length}-day high`],
+      [loBar.l, `${hist.length}-day low`],
+    ]) {
       if (Math.abs(price - ref) > o.majorRange * ref) continue;
       if (!maj.some((c) => Math.abs(c.price - price) <= o.majorTol * price)) maj.push({ price, touches: 1, score: 2.5, src });
     }
@@ -106,17 +121,29 @@ function createLevels() {
     // ---- minor: 15-minute swings over recent sessions + previous-day levels and pivots ----
     const recent = hist.slice(-o.minorDays);
     const b15 = recent.flatMap((d) => dayBars15(d, spotDay(d), o.barMin));
-    const minPts = cluster(swings(b15, o.minorWing), o.minorTol)
-      .map((c) => ({ price: c.price, touches: c.touches, src: `15m swing ×${c.touches}`, score: c.touches + c.last / b15.length }));
+    const minPts = cluster(swings(b15, o.minorWing), o.minorTol).map((c) => ({
+      price: c.price,
+      touches: c.touches,
+      src: `15m swing ×${c.touches}`,
+      score: c.touches + c.last / b15.length,
+    }));
     const P = (prev.h + prev.l + prev.c) / 3;
     const named = [
-      [prev.h, 'prev high', 2.5], [prev.l, 'prev low', 2.5], [prev.c, 'prev close', 1.5],
-      [P, 'pivot P', 2], [2 * P - prev.l, 'pivot R1', 1.8], [2 * P - prev.h, 'pivot S1', 1.8],
-      [P + (prev.h - prev.l), 'pivot R2', 1.2], [P - (prev.h - prev.l), 'pivot S2', 1.2],
+      [prev.h, 'prev high', 2.5],
+      [prev.l, 'prev low', 2.5],
+      [prev.c, 'prev close', 1.5],
+      [P, 'pivot P', 2],
+      [2 * P - prev.l, 'pivot R1', 1.8],
+      [2 * P - prev.h, 'pivot S1', 1.8],
+      [P + (prev.h - prev.l), 'pivot R2', 1.2],
+      [P - (prev.h - prev.l), 'pivot S2', 1.2],
     ];
     for (const [price, src, score] of named) {
       const hit = minPts.find((c) => Math.abs(c.price - price) <= o.minorTol * price);
-      if (hit) { hit.src += ' · ' + src; hit.score += score; } else minPts.push({ price, touches: 1, src, score });
+      if (hit) {
+        hit.src += ' · ' + src;
+        hit.score += score;
+      } else minPts.push({ price, touches: 1, src, score });
     }
     const near = (p, list, tol) => list.some((x) => Math.abs(x.price - p) <= tol * p);
     const minor = minPts
@@ -126,7 +153,9 @@ function createLevels() {
       .map((c) => ({ price: Math.round(c.price), cls: 'minor', touches: c.touches, src: c.src }));
 
     const out = {
-      asOf: day, basedOn: hist[hist.length - 1], sessions: hist.length,
+      asOf: day,
+      basedOn: hist[hist.length - 1],
+      sessions: hist.length,
       prev: { h: prev.h, l: prev.l, c: prev.c },
       levels: [...major, ...minor].sort((a, b) => b.price - a.price),
     };

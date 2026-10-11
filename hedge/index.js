@@ -33,7 +33,10 @@ function createHedge({ getContracts, getRestChain, upstoxBulk, getSpot, cacheDir
     if (!book.holdings.length) return;
     const missing = book.holdings.some((h) => !betas.get(h.isin));
     if (!force && !missing) return;
-    if (!betaJob) betaJob = betas.refresh(book.holdings).finally(() => { betaJob = null; });
+    if (!betaJob)
+      betaJob = betas.refresh(book.holdings).finally(() => {
+        betaJob = null;
+      });
     await betaJob;
   }
 
@@ -63,7 +66,15 @@ function createHedge({ getContracts, getRestChain, upstoxBulk, getSpot, cacheDir
       const auto = b ? (useDown ? b.downBeta : b.beta) : betas.fallbackBeta(h);
       const beta = over[h.isin] != null && over[h.isin] !== '' && !isNaN(Number(over[h.isin])) ? Number(over[h.isin]) : auto;
       const included = !excluded.has(h.isin);
-      return { ...h, stats: b, autoBeta: auto, beta, overridden: over[h.isin] != null && over[h.isin] !== '', included, exposure: included ? h.value * beta : 0 };
+      return {
+        ...h,
+        stats: b,
+        autoBeta: auto,
+        beta,
+        overridden: over[h.isin] != null && over[h.isin] !== '',
+        included,
+        exposure: included ? h.value * beta : 0,
+      };
     });
     const hValue = rows.filter((r) => r.included).reduce((s, r) => s + r.value, 0);
     const hExposure = rows.reduce((s, r) => s + r.exposure, 0);
@@ -75,7 +86,10 @@ function createHedge({ getContracts, getRestChain, upstoxBulk, getSpot, cacheDir
     const value = mValue ?? hValue;
     const exposure = mExposure ?? (mValue != null ? mValue * hBeta : hExposure);
     return {
-      rows, value, exposure, beta: value ? exposure / value : 0,
+      rows,
+      value,
+      exposure,
+      beta: value ? exposure / value : 0,
       fromHoldings: { value: hValue, exposure: hExposure, beta: hValue ? hBeta : null },
       manual: { value: mValue != null, exposure: mExposure != null },
     };
@@ -84,7 +98,11 @@ function createHedge({ getContracts, getRestChain, upstoxBulk, getSpot, cacheDir
   // Saved structures live in hedge-cache/saved.json: [{ id, name, expiry, legs, savedAt }]
   const savedFile = path.join(cacheDir, 'saved.json');
   function loadSaved() {
-    try { return JSON.parse(fs.readFileSync(savedFile, 'utf8')); } catch { return []; }
+    try {
+      return JSON.parse(fs.readFileSync(savedFile, 'utf8'));
+    } catch {
+      return [];
+    }
   }
   function writeSaved(list) {
     fs.mkdirSync(cacheDir, { recursive: true });
@@ -92,7 +110,9 @@ function createHedge({ getContracts, getRestChain, upstoxBulk, getSpot, cacheDir
   }
   // Add a new structure, or replace the one with the same id. Returns the stored entry.
   function saveStructure(body) {
-    const name = String(body?.name || '').trim().slice(0, 60);
+    const name = String(body?.name || '')
+      .trim()
+      .slice(0, 60);
     if (!name) throw new Error('Give the structure a name');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(body?.expiry || '')) throw new Error('Pick an expiry');
     if (!Array.isArray(body.legs) || !body.legs.length || body.legs.length > 12) throw new Error('A structure needs 1–12 legs');
@@ -103,8 +123,15 @@ function createHedge({ getContracts, getRestChain, upstoxBulk, getSpot, cacheDir
     });
     const list = loadSaved();
     const i = body.id ? list.findIndex((s) => s.id === body.id) : -1;
-    const entry = { id: i >= 0 ? list[i].id : Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name, expiry: body.expiry, legs, savedAt: new Date().toISOString() };
-    if (i >= 0) list[i] = entry; else list.push(entry);
+    const entry = {
+      id: i >= 0 ? list[i].id : Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      name,
+      expiry: body.expiry,
+      legs,
+      savedAt: new Date().toISOString(),
+    };
+    if (i >= 0) list[i] = entry;
+    else list.push(entry);
     writeSaved(list);
     return entry;
   }
@@ -126,21 +153,40 @@ function createHedge({ getContracts, getRestChain, upstoxBulk, getSpot, cacheDir
     await ensureBetas();
     const port = portfolio(params);
     const portOut = {
-      value: port.value, exposure: port.exposure, beta: port.beta, betaType: params.betaType !== 'beta' ? 'downside' : 'beta',
-      fromHoldings: port.fromHoldings, manual: port.manual,
+      value: port.value,
+      exposure: port.exposure,
+      beta: port.beta,
+      betaType: params.betaType !== 'beta' ? 'downside' : 'beta',
+      fromHoldings: port.fromHoldings,
+      manual: port.manual,
     };
     if (!(port.value > 0) || !(port.exposure > 0)) {
       // Nothing to hedge yet: no holdings uploaded and no values typed in.
-      return { empty: true, asOf: book.asOf, file: book.file && path.basename(book.file), params: p, portfolio: portOut, holdings: port.rows, betasComputing: Boolean(betaJob) };
+      return {
+        empty: true,
+        asOf: book.asOf,
+        file: book.file && path.basename(book.file),
+        params: p,
+        portfolio: portOut,
+        holdings: port.rows,
+        betasComputing: Boolean(betaJob),
+      };
     }
     const { expiries, lot } = await getContracts();
-    const inRange = expiries.filter((e) => { const d = daysTo(e); return d >= p.minDays && d <= p.maxDays; });
+    const inRange = expiries.filter((e) => {
+      const d = daysTo(e);
+      return d >= p.minDays && d <= p.maxDays;
+    });
     // weeklies beyond 5 weeks add little; keep monthly/quarterly expiries (last of each month)
     const monthEnds = inRange.filter((e, i) => i === inRange.length - 1 || inRange[i + 1].slice(0, 7) !== e.slice(0, 7));
     const pick = [...new Set([...inRange.filter((e) => daysTo(e) <= 35), ...monthEnds])].slice(0, 10);
     const loaded = [];
     for (const e of pick) {
-      try { loaded.push(await getChain(e)); } catch (err) { logError('hedge-chain', `${e}: ${err.message}`); }
+      try {
+        loaded.push(await getChain(e));
+      } catch (err) {
+        logError('hedge-chain', `${e}: ${err.message}`);
+      }
     }
     const spot = getSpot() ?? loaded.find((c) => c.spot)?.spot;
     if (!spot) throw new Error('No Nifty price available yet');
@@ -173,9 +219,13 @@ function createHedge({ getContracts, getRestChain, upstoxBulk, getSpot, cacheDir
     }
 
     const all = [...result.shortlist, ...result.strategies.map((x) => x.option).filter(Boolean)];
-    const selected = (params.selected === 'custom' && customPlan)
-      || saved.find((s) => s.id === params.selected && !s.error)
-      || all.find((c) => idOf(c) === params.selected) || result.shortlist[0] || result.strategies.find((x) => x.option)?.option || null;
+    const selected =
+      (params.selected === 'custom' && customPlan) ||
+      saved.find((s) => s.id === params.selected && !s.error) ||
+      all.find((c) => idOf(c) === params.selected) ||
+      result.shortlist[0] ||
+      result.strategies.find((x) => x.option)?.option ||
+      null;
 
     // strikes for the leg editor: every 50 within ±25% of spot, for each expiry in reach
     const strikesFor = (c) => c.strikes.map((r) => r.strike).filter((k) => k % 50 === 0 && Math.abs(k / spot - 1) <= 0.25);
@@ -227,7 +277,10 @@ function createHedge({ getContracts, getRestChain, upstoxBulk, getSpot, cacheDir
     saveStructure,
     deleteStructure,
     reload: () => loadHoldings(),
-    refreshBetas: async () => { loadHoldings(); await ensureBetas(true); },
+    refreshBetas: async () => {
+      loadHoldings();
+      await ensureBetas(true);
+    },
     upload(buf) {
       parseHoldings(buf); // validate before saving
       fs.mkdirSync(cacheDir, { recursive: true });
@@ -235,7 +288,11 @@ function createHedge({ getContracts, getRestChain, upstoxBulk, getSpot, cacheDir
       return loadHoldings();
     },
     clearUpload() {
-      try { fs.unlinkSync(uploaded); } catch { /* none */ }
+      try {
+        fs.unlinkSync(uploaded);
+      } catch {
+        /* none */
+      }
       return loadHoldings();
     },
   };

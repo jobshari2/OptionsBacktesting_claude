@@ -2,7 +2,10 @@ const test = require('node:test');
 const assert = require('node:assert');
 const { buildScenarios, applyScenario } = require('../bt/scenarios');
 
-const legs = [{ action: 'S', type: 'CE' }, { action: 'S', type: 'PE' }];
+const legs = [
+  { action: 'S', type: 'CE' },
+  { action: 'S', type: 'PE' },
+];
 const positional = { mode: 'positional', entry: { time: '09:20', dteDays: 3 }, exit: { time: '15:15', dteDays: 0 }, legs };
 const intraday = { mode: 'intraday', entry: { time: '09:20' }, exit: { time: '15:15' }, legs };
 
@@ -37,7 +40,15 @@ test('applyScenario replaces the overall stop, target and exit only', () => {
 });
 
 test('an un-rolled leg in an earlier expiry: no exits later than the own exit', () => {
-  const s = { mode: 'positional', entry: { time: '09:20', after: 2 }, exit: { time: '15:15', dteDays: 5 }, legs: [{ action: 'S', type: 'CE', expiry: 'next' }, { action: 'B', type: 'CE', expiry: 'cur' }] };
+  const s = {
+    mode: 'positional',
+    entry: { time: '09:20', after: 2 },
+    exit: { time: '15:15', dteDays: 5 },
+    legs: [
+      { action: 'S', type: 'CE', expiry: 'next' },
+      { action: 'B', type: 'CE', expiry: 'cur' },
+    ],
+  };
   assert.deepStrictEqual([...new Set(buildScenarios(s).map((x) => x.exit.dteDays))], [5, 6]);
   s.legs[1].roll = { dteDays: 1, time: '15:15' };
   assert.deepStrictEqual([...new Set(buildScenarios(s).map((x) => x.exit.dteDays))], [0, 1, 2, 3, 5]);

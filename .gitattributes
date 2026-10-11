@@ -1,0 +1,2 @@
+# Text files use LF line endings on every platform, so `npm run format:check` gives the same answer on Windows and in CI.
+* text=auto eol=lf

@@ -14,7 +14,11 @@ test('normal CDF: known values and symmetry', () => {
 test('Black-Scholes-Merton: textbook value, put-call parity, intrinsic at expiry', () => {
   near(bsm(100, 100, 1, 0.2, true, 0.05, 0), 10.4506, 1e-3);
   near(bsm(100, 100, 1, 0.2, false, 0.05, 0), 5.5735, 1e-3);
-  for (const [S, K, T, v, r, q] of [[24800, 24000, 30 / 365, 0.14, 0.065, 0], [24800, 26000, 0.5, 0.2, 0.065, 0.013], [22000, 22000, 7 / 365, 0.32, 0.07, 0]]) {
+  for (const [S, K, T, v, r, q] of [
+    [24800, 24000, 30 / 365, 0.14, 0.065, 0],
+    [24800, 26000, 0.5, 0.2, 0.065, 0.013],
+    [22000, 22000, 7 / 365, 0.32, 0.07, 0],
+  ]) {
     const parity = S * Math.exp(-q * T) - K * Math.exp(-r * T);
     near(bsm(S, K, T, v, true, r, q) - bsm(S, K, T, v, false, r, q), parity, 0.01);
   }

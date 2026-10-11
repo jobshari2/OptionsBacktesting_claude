@@ -17,10 +17,12 @@
     $('pBias').textContent = p.bias;
     const names = { trend: 'Trend', 'OI build-up': 'Option writers/buyers', 'order flow': 'Order flow' };
     const all = ['trend', 'OI build-up', 'order flow'];
-    $('pVotes').innerHTML = all.map((w) => {
-      const v = p.votes.find((x) => x.what === w);
-      return v ? `<span class="vote ${v.dir > 0 ? 'up' : 'down'}">${names[w]} ${v.dir > 0 ? '▲' : '▼'}</span>` : `<span class="vote">${names[w]} –</span>`;
-    }).join('');
+    $('pVotes').innerHTML = all
+      .map((w) => {
+        const v = p.votes.find((x) => x.what === w);
+        return v ? `<span class="vote ${v.dir > 0 ? 'up' : 'down'}">${names[w]} ${v.dir > 0 ? '▲' : '▼'}</span>` : `<span class="vote">${names[w]} –</span>`;
+      })
+      .join('');
 
     const t = p.trend;
     const st = p.straddle;
@@ -31,15 +33,36 @@
       tile('30 min', pts(t.chg[30]), 'Nifty pts', cls(t.chg[30])),
       tile('60 min', pts(t.chg[60]), t.dayLow != null ? `day ${t.dayLow.toFixed(0)}–${t.dayHigh.toFixed(0)}` : 'Nifty pts', cls(t.chg[60])),
       tile('1-min move', vol.now == null ? '—' : vol.now.toFixed(1), vol.before ? `was ${vol.before.toFixed(1)} pts` : 'pts (RMS)'),
-      tile('ATM straddle', st.now ? st.now.value.toFixed(0) : '—', st.chg30 == null ? '' : `${st.chg30 > 0 ? '+' : ''}${st.chg30.toFixed(1)}% in 30m`, cls(st.chg30)),
+      tile(
+        'ATM straddle',
+        st.now ? st.now.value.toFixed(0) : '—',
+        st.chg30 == null ? '' : `${st.chg30 > 0 ? '+' : ''}${st.chg30.toFixed(1)}% in 30m`,
+        cls(st.chg30),
+      ),
       tile('ATM IV', p.iv.now == null ? '—' : p.iv.now.toFixed(1), p.iv.ago30 == null ? '' : `${pts(p.iv.now - p.iv.ago30)} vs 30m ago`),
-      tile('Order flow', p.flow ? `${p.flow.bullShare.toFixed(0)}% bull` : '—', p.flow ? `last 1m · ${p.flow.mode}` : 'waiting', p.flow ? cls(p.flow.bullShare - 50) : ''),
+      tile(
+        'Order flow',
+        p.flow ? `${p.flow.bullShare.toFixed(0)}% bull` : '—',
+        p.flow ? `last 1m · ${p.flow.mode}` : 'waiting',
+        p.flow ? cls(p.flow.bullShare - 50) : '',
+      ),
     ].join('');
     $('pTiles').style.gridTemplateColumns = 'repeat(5, minmax(100px, 1fr))';
-    $('pTiles').insertAdjacentHTML('beforeend', [
-      tile('Order book', p.book ? `${p.book.bullShare.toFixed(0)}% bull` : '—', p.book ? (p.book.chg5 != null ? `${p.book.chg5 >= 0 ? '+' : ''}${p.book.chg5.toFixed(1)} vs 5m · info only` : 'waiting qty · info only') : 'needs tick feed'),
-      tile('ATM spread', p.book?.atmSpreadPct != null ? `${p.book.atmSpreadPct.toFixed(2)}%` : '—', 'ask − bid, % of price'),
-    ].join(''));
+    $('pTiles').insertAdjacentHTML(
+      'beforeend',
+      [
+        tile(
+          'Order book',
+          p.book ? `${p.book.bullShare.toFixed(0)}% bull` : '—',
+          p.book
+            ? p.book.chg5 != null
+              ? `${p.book.chg5 >= 0 ? '+' : ''}${p.book.chg5.toFixed(1)} vs 5m · info only`
+              : 'waiting qty · info only'
+            : 'needs tick feed',
+        ),
+        tile('ATM spread', p.book?.atmSpreadPct != null ? `${p.book.atmSpreadPct.toFixed(2)}%` : '—', 'ask − bid, % of price'),
+      ].join(''),
+    );
   }
 
   function renderBullets(p) {
@@ -57,11 +80,16 @@
     const act = (x) => (x?.cls ? `<span class="act ${x.cls}">${ACT[x.cls]}</span>` : '<span class="muted">—</span>');
     const doi = (x) => (x ? `<span class="${cls(x.doi)}">${x.doi > 0 ? '+' : ''}${compact(x.doi)}</span>` : '—');
     const px = (x) => (x ? `${x.ltpFrom.toFixed(1)} → ${x.ltp.toFixed(1)}` : '—');
-    $('pOiBody').innerHTML = [...p.oi.buildup].reverse().map((r) => `<tr class="${r.strike === atm ? 'atm' : ''}">
+    $('pOiBody').innerHTML = [...p.oi.buildup]
+      .reverse()
+      .map(
+        (r) => `<tr class="${r.strike === atm ? 'atm' : ''}">
       <td>${act(r.CE)}</td><td>${doi(r.CE)}</td><td>${px(r.CE)}</td>
       <td class="k">${r.strike}</td>
       <td>${px(r.PE)}</td><td>${doi(r.PE)}</td><td style="text-align:left">${act(r.PE)}</td>
-    </tr>`).join('');
+    </tr>`,
+      )
+      .join('');
   }
 
   function renderLevels(p) {

@@ -33,20 +33,29 @@ function backtestSignals(dir, days, cfg, overrides = {}) {
     if (!tape) continue;
     const signals = createSignals(used, (src, e) => errors.push(`${day} ${src}: ${e?.message || e}`));
     for (const { hist, snap } of replaySnapshots(E)) signals.onSnapshot(hist, snap);
-    const found = signals.all().map((ev) => ({ day, t: ev.t, type: ev.type, kind: ev.kind, detail: ev.detail, spot: ev.spot, o: tape.outcome(ev.t) }))
+    const found = signals
+      .all()
+      .map((ev) => ({ day, t: ev.t, type: ev.type, kind: ev.kind, detail: ev.detail, spot: ev.spot, o: tape.outcome(ev.t) }))
       .sort((a, b) => a.t - b.t);
     perDay[day] = { base: tape.base, cases: found };
     events.push(...found);
     let recorded = null;
     try {
-      recorded = fs.readFileSync(path.join(dir, day, 'events.jsonl'), 'utf8').split('\n').filter(Boolean).length;
-    } catch { /* nothing recorded live that day */ }
+      recorded = fs
+        .readFileSync(path.join(dir, day, 'events.jsonl'), 'utf8')
+        .split('\n')
+        .filter(Boolean).length;
+    } catch {
+      /* nothing recorded live that day */
+    }
     dayInfo.push({ day, snapshots: E.length, from: E[0].t, to: E[E.length - 1].t, signals: found.length, recorded, base: tape.base });
   }
   // What the live run recorded on the same days, scored the same way.
   let recorded = [];
   try {
-    recorded = buildStats(dir).forDays(dayInfo.map((d) => d.day)).map(({ perDay: _, ...o }) => o);
+    recorded = buildStats(dir)
+      .forDays(dayInfo.map((d) => d.day))
+      .map(({ perDay: _, ...o }) => o);
   } catch (e) {
     errors.push(`recorded: ${e.message}`);
   }
@@ -71,23 +80,40 @@ if (require.main === module) {
   const dir = di >= 0 ? args[di + 1] : path.join(__dirname, args.includes('--demo') ? 'events-demo' : 'events');
   const picked = args.filter((a) => /^\d{4}-\d{2}-\d{2}$/.test(a));
   const overrides = {};
-  for (const k of TUNABLE) { const i = args.indexOf('--' + k); if (i >= 0) overrides[k] = Number(args[i + 1]); }
+  for (const k of TUNABLE) {
+    const i = args.indexOf('--' + k);
+    if (i >= 0) overrides[k] = Number(args[i + 1]);
+  }
   const r = backtestSignals(dir, picked.length ? picked : tapeDays(dir), signalConfig(process.env, dir), overrides);
-  if (args.includes('--json')) { process.stdout.write(JSON.stringify(r)); return; } // for the server
-  if (!r.days.length) { console.log(`No market-hours tape found in ${dir}`); process.exit(1); }
+  if (args.includes('--json')) {
+    process.stdout.write(JSON.stringify(r));
+    return;
+  } // for the server
+  if (!r.days.length) {
+    console.log(`No market-hours tape found in ${dir}`);
+    process.exit(1);
+  }
   const T = (t) => istTime(t).slice(0, 5);
   const pc = (x) => `${Math.round(x * 100)}%`.padStart(4);
   for (const d of r.days) {
     console.log(`${d.day}: tape ${T(d.from)}–${T(d.to)}, ${d.signals} signals now${d.recorded != null ? ` (recorded live: ${d.recorded})` : ''}`);
   }
-  console.log(`Settings: ${Object.entries(r.settings).map(([k, v]) => `${k} ${v}`).join(', ')}`);
-  console.log(`Outcome: Nifty moves ${r.rule.pts} pts one way before ${r.rule.pts} the other, within ${r.rule.min} min. Signals of one kind under ${r.rule.gapMin} min apart count once.\n`);
+  console.log(
+    `Settings: ${Object.entries(r.settings)
+      .map(([k, v]) => `${k} ${v}`)
+      .join(', ')}`,
+  );
+  console.log(
+    `Outcome: Nifty moves ${r.rule.pts} pts one way before ${r.rule.pts} the other, within ${r.rule.min} min. Signals of one kind under ${r.rule.gapMin} min apart count once.\n`,
+  );
   console.log('Signal kind                                 then Nifty  hit rate    cases  any moment   recorded live');
   const live = Object.fromEntries(r.recorded.map((o) => [o.kind, o]));
   for (const o of r.kinds) {
     const l = live[o.kind];
     const was = l ? `${l.dir === 'up' ? 'rises' : 'falls'} ${pc(l.p)} ${l.hits}/${l.n}` : '—';
-    console.log(`${(o.high ? '★ ' : '  ') + o.label.padEnd(42)}${(o.dir === 'up' ? 'rises' : 'falls').padEnd(11)} ${pc(o.p)}   ${`${o.hits}/${o.n}`.padStart(7)}  ${pc(o.base).padStart(10)}   ${was}`);
+    console.log(
+      `${(o.high ? '★ ' : '  ') + o.label.padEnd(42)}${(o.dir === 'up' ? 'rises' : 'falls').padEnd(11)} ${pc(o.p)}   ${`${o.hits}/${o.n}`.padStart(7)}  ${pc(o.base).padStart(10)}   ${was}`,
+    );
   }
   if (r.errors.length) console.log('\nErrors:', r.errors);
 }

@@ -29,12 +29,29 @@ function computeStats(trades, capitalOverride) {
   order.forEach((i, k) => {
     const t = trades[i];
     eq += t.net;
-    if (eq > peak) { peak = eq; peakDay = t.exitDay; ddStartIdx = k; }
+    if (eq > peak) {
+      peak = eq;
+      peakDay = t.exitDay;
+      ddStartIdx = k;
+    }
     const dd = eq - peak;
-    if (dd < maxDD) { maxDD = dd; ddFrom = peakDay; ddTo = t.exitDay; }
+    if (dd < maxDD) {
+      maxDD = dd;
+      ddFrom = peakDay;
+      ddTo = t.exitDay;
+    }
     if (dd < 0) longestDD = Math.max(longestDD, k - ddStartIdx);
     equity.push({ d: t.exitDay, i, eq: Math.round(eq), dd: Math.round(dd) });
-    if (t.net > 0) { streakW++; streakL = 0; } else if (t.net < 0) { streakL++; streakW = 0; } else { streakW = 0; streakL = 0; }
+    if (t.net > 0) {
+      streakW++;
+      streakL = 0;
+    } else if (t.net < 0) {
+      streakL++;
+      streakW = 0;
+    } else {
+      streakW = 0;
+      streakL = 0;
+    }
     maxW = Math.max(maxW, streakW);
     maxL = Math.max(maxL, streakL);
   });

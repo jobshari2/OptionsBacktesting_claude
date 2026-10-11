@@ -6,8 +6,12 @@
   const { state, esc, TYPE_LABEL } = window.app;
   const bt = { result: null, kind: null, daysLoaded: false, inputsFilled: false, running: false };
   const INPUTS = {
-    spikeRatio: 'sbtSpikeRatio', spikeMinQty: 'sbtSpikeMinQty', priceSpikePct: 'sbtPricePct',
-    spotFastPts: 'sbtFastPts', spotMovePts: 'sbtMovePts', cooldownMin: 'sbtCooldown',
+    spikeRatio: 'sbtSpikeRatio',
+    spikeMinQty: 'sbtSpikeMinQty',
+    priceSpikePct: 'sbtPricePct',
+    spotFastPts: 'sbtFastPts',
+    spotMovePts: 'sbtMovePts',
+    cooldownMin: 'sbtCooldown',
   };
   const MAX_LISTED = 500;
   const hhmm = (ts) => new Date(ts + 5.5 * 3600_000).toISOString().slice(11, 16);
@@ -21,7 +25,9 @@
     try {
       const days = await (await fetch('/api/flow-days', { cache: 'no-store' })).json();
       $('sbtDay').innerHTML = '<option value="all">All recorded days</option>' + days.map((d) => `<option value="${d}">${d}</option>`).join('');
-    } catch { bt.daysLoaded = false; }
+    } catch {
+      bt.daysLoaded = false;
+    }
   }
 
   // Start the threshold inputs at the values in use (live rules, or what the last run reported).
@@ -68,34 +74,51 @@
     const high = r.kinds.filter((o) => o.high);
     const perDay = r.days.map((d) => `${d.day.slice(5)} ${hhmm(d.from)}–${hhmm(d.to)}`).join(' · ');
     const perDaySignals = r.days.map((d) => `${d.day.slice(5)}: ${d.signals}${d.recorded != null ? ` (live ${d.recorded})` : ''}`).join(' · ');
-    const tile = (label, value, note) => `<div class="st"><span class="s">${label}</span><span class="v">${value}</span><span class="s">${esc(note)}</span></div>`;
+    const tile = (label, value, note) =>
+      `<div class="st"><span class="s">${label}</span><span class="v">${value}</span><span class="s">${esc(note)}</span></div>`;
     $('sbtTiles').classList.remove('hidden');
     $('sbtTiles').innerHTML =
-      tile('Days tested', r.days.length, perDay)
-      + tile('Signals with the current logic', total, [withLive.length ? `recorded live: ${liveTotal}` : '', r.days.length > 1 || !withLive.length ? perDaySignals : ''].filter(Boolean).join(' · '))
-      + tile('High-probability kinds', high.length, high.length ? high.map((o) => `${o.label} ${arrow(o.dir)} ${pct(o.p)}`).join(' · ') : 'none clears the bar on these days')
-      + tile('Any moment', base.n ? `<span class="neg">▼ ${pct(base.down / base.n)}</span> <span class="pos">▲ ${pct(base.up / base.n)}</span>` : '—',
-        `how often Nifty moves ${r.rule.pts} pts down / up first within ${r.rule.min} min, at any time of these days`);
+      tile('Days tested', r.days.length, perDay) +
+      tile(
+        'Signals with the current logic',
+        total,
+        [withLive.length ? `recorded live: ${liveTotal}` : '', r.days.length > 1 || !withLive.length ? perDaySignals : ''].filter(Boolean).join(' · '),
+      ) +
+      tile(
+        'High-probability kinds',
+        high.length,
+        high.length ? high.map((o) => `${o.label} ${arrow(o.dir)} ${pct(o.p)}`).join(' · ') : 'none clears the bar on these days',
+      ) +
+      tile(
+        'Any moment',
+        base.n ? `<span class="neg">▼ ${pct(base.down / base.n)}</span> <span class="pos">▲ ${pct(base.up / base.n)}</span>` : '—',
+        `how often Nifty moves ${r.rule.pts} pts down / up first within ${r.rule.min} min, at any time of these days`,
+      );
   }
 
   function renderKinds(r) {
     const s = r.settings;
-    $('sbtRule').textContent = `spike ≥${s.spikeRatio}× and ≥${s.spikeMinQty} · premium ≥${s.priceSpikePct}% · Nifty ≥${s.spotFastPts} pts/20s or ≥${s.spotMovePts} pts/1m · cooldown ${s.cooldownMin} min`;
+    $('sbtRule').textContent =
+      `spike ≥${s.spikeRatio}× and ≥${s.spikeMinQty} · premium ≥${s.priceSpikePct}% · Nifty ≥${s.spotFastPts} pts/20s or ≥${s.spotMovePts} pts/1m · cooldown ${s.cooldownMin} min`;
     if (!r.kinds.length) {
       $('sbtKinds').innerHTML = '<p class="muted sbt-hint">No signals fired with these settings.</p>';
       return;
     }
     const live = Object.fromEntries(r.recorded.map((o) => [o.kind, o]));
-    const rows = r.kinds.map((o) => {
-      const l = live[o.kind];
-      const was = l ? `<span class="${l.dir === 'up' ? 'pos' : 'neg'}">${arrow(l.dir)} ${pct(l.p)}</span> <span class="sub">${l.hits}/${l.n}</span>` : '<span class="muted">—</span>';
-      const ahead = o.perDay.filter((d) => d.hits / d.n > d.base).length;
-      return `<tr data-kind="${esc(o.kind)}" title="${esc(byDayText(o))}" class="${o.high ? 'high' : ''}${bt.kind === o.kind ? ' sel' : ''}">
+    const rows = r.kinds
+      .map((o) => {
+        const l = live[o.kind];
+        const was = l
+          ? `<span class="${l.dir === 'up' ? 'pos' : 'neg'}">${arrow(l.dir)} ${pct(l.p)}</span> <span class="sub">${l.hits}/${l.n}</span>`
+          : '<span class="muted">—</span>';
+        const ahead = o.perDay.filter((d) => d.hits / d.n > d.base).length;
+        return `<tr data-kind="${esc(o.kind)}" title="${esc(byDayText(o))}" class="${o.high ? 'high' : ''}${bt.kind === o.kind ? ' sel' : ''}">
         <td>${o.high ? '★ ' : ''}${esc(o.label)}</td>
         <td class="${o.dir === 'up' ? 'pos' : 'neg'}">${arrow(o.dir)} ${o.dir === 'up' ? 'rises' : 'falls'}</td>
         <td><b>${pct(o.p)}</b></td><td>${o.hits}/${o.n}</td><td>${o.against}</td><td class="muted">${pct(o.base)}</td>
         <td>${was}</td><td>${ahead}/${o.perDay.length}</td></tr>`;
-    }).join('');
+      })
+      .join('');
     $('sbtKinds').innerHTML = `<table class="flow-table sbt-kinds">
         <thead><tr><th>Signal kind</th><th>Then Nifty</th><th>Hit rate</th><th>Cases</th><th>Against</th><th>Any moment</th><th>Recorded live</th><th title="Days on which the hit rate was above that day's any-moment rate">Days ahead</th></tr></thead>
         <tbody>${rows}</tbody></table>
@@ -114,14 +137,23 @@
     const kind = bt.kind ? r.kinds.find((o) => o.kind === bt.kind) : null;
     const picked = kind?.label;
     $('sbtListSub').textContent = kind ? `By day: ${byDayText(kind)}` : '';
-    const outcome = (o) => (o == null ? '<span class="muted">tape ends</span>'
-      : o > 0 ? `<span class="pos">▲ rose ${r.rule.pts} first</span>`
-        : o < 0 ? `<span class="neg">▼ fell ${r.rule.pts} first</span>` : '<span class="muted">neither</span>');
+    const outcome = (o) =>
+      o == null
+        ? '<span class="muted">tape ends</span>'
+        : o > 0
+          ? `<span class="pos">▲ rose ${r.rule.pts} first</span>`
+          : o < 0
+            ? `<span class="neg">▼ fell ${r.rule.pts} first</span>`
+            : '<span class="muted">neither</span>';
     $('sbtListTitle').textContent = `${picked || 'All signals'} · ${list.length}${list.length > shown.length ? ` (first ${shown.length} shown)` : ''}`;
     $('sbtAll').classList.toggle('hidden', !picked);
-    $('sbtList').innerHTML = shown.map((e) => `<li>
+    $('sbtList').innerHTML = shown
+      .map(
+        (e) => `<li>
       <div class="ev-top"><span class="ev-time">${multi ? e.day.slice(5) + ' ' : ''}${hhmmss(e.t)}</span><span class="pill ${e.type}">${TYPE_LABEL[e.type] || e.type}</span><span class="ev-after">${outcome(e.o)}</span></div>
-      <div class="ev-detail">${esc(e.detail)}</div></li>`).join('');
+      <div class="ev-detail">${esc(e.detail)}</div></li>`,
+      )
+      .join('');
   }
 
   function render() {

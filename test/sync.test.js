@@ -11,7 +11,7 @@ const { istDate } = require('../lib/time');
 // strikes an expiry wants 5 strikes × (call + put) = 10 contracts, each two requests (35 days in chunks of 29).
 const today = istDate();
 const weekday = (d) => new Date(d + 'T00:00:00Z').getUTCDay();
-const LAST = addDays(today, -(((weekday(today) + 5) % 7) || 7));
+const LAST = addDays(today, -((weekday(today) + 5) % 7 || 7));
 const EXPIRIES = Array.from({ length: 12 }, (_, i) => addDays(LAST, -7 * (11 - i)));
 
 // A data layer on an empty cache folder with Upstox faked; `calls` are the option-candle requests made.
@@ -24,7 +24,8 @@ function setup(t, { token = 'tok', failing = () => false, slow = 0 } = {}) {
     async bulk(p) {
       if (p.startsWith('/v2/expired-instruments/expiries')) return EXPIRIES;
       if (p.startsWith('/v2/option/contract')) return [{ expiry: addDays(today, 3), lot_size: 65 }];
-      if (p.startsWith('/v3/historical-candle/')) { // one candle a day is enough: the rest of the day is filled from it
+      if (p.startsWith('/v3/historical-candle/')) {
+        // one candle a day is enough: the rest of the day is filled from it
         const [to, from] = p.split('/').slice(-2);
         const candles = [];
         for (let d = from; d <= to; d = addDays(d, 1)) if (weekday(d) % 6) candles.push([d + 'T09:15:00+05:30', 25000, 25010, 24990, 25000]);
@@ -32,8 +33,9 @@ function setup(t, { token = 'tok', failing = () => false, slow = 0 } = {}) {
       }
       if (p.startsWith('/v2/expired-instruments/option/contract')) {
         const expiry = p.split('expiry_date=')[1];
-        return [24800, 24850, 24900, 24950, 25000, 25050, 25100, 25150, 25200].flatMap((k) => ['CE', 'PE'].map((type) => (
-          { strike_price: k, instrument_type: type, instrument_key: `K-${expiry}-${k}${type}`, lot_size: 65 })));
+        return [24800, 24850, 24900, 24950, 25000, 25050, 25100, 25150, 25200].flatMap((k) =>
+          ['CE', 'PE'].map((type) => ({ strike_price: k, instrument_type: type, instrument_key: `K-${expiry}-${k}${type}`, lot_size: 65 })),
+        );
       }
       if (p.startsWith('/v2/expired-instruments/historical-candle/')) {
         calls.push(p);
@@ -56,7 +58,10 @@ test('plan: which expiries each kind of selection covers', async (t) => {
   const { sync } = setup(t);
   assert.deepStrictEqual(expiriesOf(await sync.plan({ scope: 'new' })), [LAST], 'nothing cached: only the latest');
   assert.deepStrictEqual(expiriesOf(await sync.plan({ scope: 'recent', months: 0 })), EXPIRIES);
-  assert.deepStrictEqual(expiriesOf(await sync.plan({ scope: 'recent', months: 1 })), EXPIRIES.filter((e) => e >= addDays(today, -31)));
+  assert.deepStrictEqual(
+    expiriesOf(await sync.plan({ scope: 'recent', months: 1 })),
+    EXPIRIES.filter((e) => e >= addDays(today, -31)),
+  );
   assert.deepStrictEqual(expiriesOf(await sync.plan({ scope: 'range', from: EXPIRIES[2], to: EXPIRIES[4] })), EXPIRIES.slice(2, 5));
   assert.deepStrictEqual(expiriesOf(await sync.plan({ scope: 'range', from: '2001-01-01', to: '2001-02-01' })), []);
   // The last expiry of a calendar month is the monthly one; the rest are weekly.
@@ -76,7 +81,10 @@ test('download: fetches what the plan lists, then nothing is missing', async (t)
   const job = sync.start({ scope: 'range', from: EXPIRIES[9], to: LAST });
   await job.promise;
   assert.strictEqual(job.status, 'done');
-  assert.deepStrictEqual({ ...job.result, downloaded: job.result.downloaded.length }, { expiries: 3, wanted: 30, contracts: 30, failed: 0, stopped: false, unchecked: 0, why: null, stale: false, downloaded: 3 });
+  assert.deepStrictEqual(
+    { ...job.result, downloaded: job.result.downloaded.length },
+    { expiries: 3, wanted: 30, contracts: 30, failed: 0, stopped: false, unchecked: 0, why: null, stale: false, downloaded: 3 },
+  );
   assert.strictEqual(calls.length, 60);
 
   const after = await sync.plan({ scope: 'range', from: EXPIRIES[9], to: LAST });
@@ -91,7 +99,11 @@ test('plan "new": from the newest cached expiry on, at most the last eight', asy
   await data.option(EXPIRIES[10], 25000, 'CE', EXPIRIES[10]); // what a backtest leaves behind: one contract
   const p = await sync.plan({ scope: 'new' });
   assert.deepStrictEqual(expiriesOf(p), EXPIRIES.slice(10));
-  assert.deepStrictEqual(p.rows.map((r) => r.missing), [9, 10], 'the cached expiry is completed too');
+  assert.deepStrictEqual(
+    p.rows.map((r) => r.missing),
+    [9, 10],
+    'the cached expiry is completed too',
+  );
   fs.rmSync(path.join(dir, 'opt', EXPIRIES[10]), { recursive: true });
   await data.option(EXPIRIES[0], 25000, 'CE', EXPIRIES[0]);
   assert.deepStrictEqual(expiriesOf(await sync.plan({ scope: 'new' })), EXPIRIES.slice(-8));

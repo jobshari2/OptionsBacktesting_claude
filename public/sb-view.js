@@ -9,14 +9,59 @@
 // Other screens open a position here through BT.emit('open-builder', …) (a backtest trade to replay, a deployed
 // strategy to customise); the position can be saved back as a strategy or sent to the Backtest.
 (() => {
-  const { $, esc, inr, inrS, kinr, num, cls, dayShort, dayLabel, WD, bs } = BT;
+  const { $, esc, inr, inrS, num, cls, dayShort, dayLabel, WD, bs } = BT;
   const MPD = 375;
-  const STEPS = [[1, '1m'], [3, '3m'], [5, '5m'], [10, '10m'], [15, '15m'], [30, '30m'], [60, '1h'], [120, '2h'], ['1d', '1 day']];
-  const SPEEDS = [[500, '0.5 s'], [1000, '1 s'], [2000, '2 s'], [4000, '4 s']];
-  const hhmm = (m) => { const t = m + 555; return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`; };
-  const minOf = (t) => { const [h, m] = String(t || '09:20').split(':').map(Number); return Math.max(0, Math.min(MPD - 1, h * 60 + m - 555)); };
+  const STEPS = [
+    [1, '1m'],
+    [3, '3m'],
+    [5, '5m'],
+    [10, '10m'],
+    [15, '15m'],
+    [30, '30m'],
+    [60, '1h'],
+    [120, '2h'],
+    ['1d', '1 day'],
+  ];
+  const SPEEDS = [
+    [500, '0.5 s'],
+    [1000, '1 s'],
+    [2000, '2 s'],
+    [4000, '4 s'],
+  ];
+  const hhmm = (m) => {
+    const t = m + 555;
+    return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
+  };
+  const minOf = (t) => {
+    const [h, m] = String(t || '09:20')
+      .split(':')
+      .map(Number);
+    return Math.max(0, Math.min(MPD - 1, h * 60 + m - 555));
+  };
 
-  const def = { plan: [], alert: null, src: 'hist', expiry: null, liveExpiry: null, day: null, startTime: '09:20', chainExp: null, chainLots: null, m: 5, session: 'intraday', step: 5, speed: 1000, lots: 1, width: 10, legs: [], log: [], mtm: [], atmIvEntry: null, spotEntry: null, seq: 0 };
+  const def = {
+    plan: [],
+    alert: null,
+    src: 'hist',
+    expiry: null,
+    liveExpiry: null,
+    day: null,
+    startTime: '09:20',
+    chainExp: null,
+    chainLots: null,
+    m: 5,
+    session: 'intraday',
+    step: 5,
+    speed: 1000,
+    lots: 1,
+    width: 10,
+    legs: [],
+    log: [],
+    mtm: [],
+    atmIvEntry: null,
+    spotEntry: null,
+    seq: 0,
+  };
   let S = { ...def, ...BT.store.get('sb', {}) };
   if (!Array.isArray(S.legs)) S.legs = [];
   if (!Array.isArray(S.plan)) S.plan = [];
@@ -82,13 +127,21 @@
   // without /api/live falls back to the REST chain, which the server refreshes every 15 s.
   async function fetchLive(exp) {
     let c;
-    try { c = await BT.api('/api/live?expiry=' + exp); } catch { c = await BT.api('/api/bt/chain?expiry=' + exp); }
+    try {
+      c = await BT.api('/api/live?expiry=' + exp);
+    } catch {
+      c = await BT.api('/api/bt/chain?expiry=' + exp);
+    }
     liveMap.set(exp, { at: c.updatedAt || Date.now(), spot: c.spot, rows: c.rows.filter((r) => [r.ce, r.pe].some((q) => q.ltp || (q.bid && q.ask))) });
   }
   async function loadLive() {
     if (!S.liveExpiry) return;
     for (const exp of [S.liveExpiry, ...extraExps()]) {
-      try { await fetchLive(exp); } catch (e) { liveMap.set(exp, { error: e.message, at: Date.now(), rows: [] }); }
+      try {
+        await fetchLive(exp);
+      } catch (e) {
+        liveMap.set(exp, { error: e.message, at: Date.now(), rows: [] });
+      }
     }
   }
   // Make sure an expiry's prices are loaded at the current replay time / live (for legs of another expiry).
@@ -104,13 +157,22 @@
     if (S.src === 'hist' ? dayCache.has(`${e}|${S.day}`) : liveMap.has(e)) return;
     if (loadingKeys.has(key) || failedKeys.has(key)) return;
     loadingKeys.add(key);
-    (S.src === 'hist' ? loadDay(S.day, false, e) : loadLive()).catch(() => failedKeys.add(key)).finally(() => { loadingKeys.delete(key); render(); });
+    (S.src === 'hist' ? loadDay(S.day, false, e) : loadLive())
+      .catch(() => failedKeys.add(key))
+      .finally(() => {
+        loadingKeys.delete(key);
+        render();
+      });
   }
   async function loadLevels(day) {
     const key = day || 'live';
     if (levels.has(key)) return;
     levels.set(key, null);
-    try { levels.set(key, await BT.api('/api/bt/levels' + (day ? '?day=' + day : ''))); } catch { /* optional */ }
+    try {
+      levels.set(key, await BT.api('/api/bt/levels' + (day ? '?day=' + day : '')));
+    } catch {
+      /* optional */
+    }
   }
 
   // Current market view: strikes, prices, spot, time to expiry.
@@ -120,8 +182,18 @@
       if (!d) return null;
       const m = S.m;
       return {
-        spot: d.spot[m], ks: d.ks, lot: S.lotFix || (exp === S.expiry ? cal?.lot || d.lot : d.lot), expiry: exp, day: S.day, minute: m,
-        px: (k, t) => { const i = d.ks.indexOf(k); if (i < 0) return null; const v = (t === 'CE' ? d.ce : d.pe)[i][m]; return v > 0 ? v : null; },
+        spot: d.spot[m],
+        ks: d.ks,
+        lot: S.lotFix || (exp === S.expiry ? cal?.lot || d.lot : d.lot),
+        expiry: exp,
+        day: S.day,
+        minute: m,
+        px: (k, t) => {
+          const i = d.ks.indexOf(k);
+          if (i < 0) return null;
+          const v = (t === 'CE' ? d.ce : d.pe)[i][m];
+          return v > 0 ? v : null;
+        },
         quote: () => null,
         T: Math.max(1e-6, (Date.parse(exp + 'T15:30:00+05:30') - Date.parse(`${S.day}T${hhmm(m)}:00+05:30`)) / (365 * 86400_000)),
         label: `${WD[new Date(S.day + 'T00:00:00Z').getUTCDay()]} ${dayShort(S.day)} ${hhmm(m)}`,
@@ -133,9 +205,21 @@
     const minute = Math.max(0, Math.min(MPD - 1, ist.getUTCHours() * 60 + ist.getUTCMinutes() - 555));
     const row = (k) => live.rows.find((r) => r.strike === k);
     return {
-      spot: live.spot, ks: live.rows.map((r) => r.strike), lot: BT.meta.calendar?.liveLot || 65, expiry: exp, day: ist.toISOString().slice(0, 10), minute,
-      px: (k, t) => { const r = row(k); const v = r && (t === 'CE' ? r.ce : r.pe).ltp; return v > 0 ? v : null; },
-      quote: (k, t) => { const r = row(k); return r ? (t === 'CE' ? r.ce : r.pe) : null; },
+      spot: live.spot,
+      ks: live.rows.map((r) => r.strike),
+      lot: BT.meta.calendar?.liveLot || 65,
+      expiry: exp,
+      day: ist.toISOString().slice(0, 10),
+      minute,
+      px: (k, t) => {
+        const r = row(k);
+        const v = r && (t === 'CE' ? r.ce : r.pe).ltp;
+        return v > 0 ? v : null;
+      },
+      quote: (k, t) => {
+        const r = row(k);
+        return r ? (t === 'CE' ? r.ce : r.pe) : null;
+      },
       T: Math.max(1e-6, (Date.parse(exp + 'T15:30:00+05:30') - Date.now()) / (365 * 86400_000)),
       label: `Live ${window.app.istClock(live.at)}`,
     };
@@ -149,7 +233,11 @@
     if (price <= intr + 0.05) return 0.05;
     let lo = 0.01;
     let hi = 3;
-    for (let i = 0; i < 30; i++) { const mid = (lo + hi) / 2; if (bs(Sx, K, T, mid, call) > price) hi = mid; else lo = mid; }
+    for (let i = 0; i < 30; i++) {
+      const mid = (lo + hi) / 2;
+      if (bs(Sx, K, T, mid, call) > price) hi = mid;
+      else lo = mid;
+    }
     return (lo + hi) / 2;
   }
   const { greeks } = BT.payoff;
@@ -177,38 +265,71 @@
   // leg it came from and where that rule put it, kept so "Save as strategy" can keep the rule and its SL / target) }
   function addLeg(action, type, strike, lots, M, why, extra = {}) {
     const px = extra.px > 0 ? extra.px : M.px(strike, type);
-    if (px == null) { flash(`${strike} ${type} has no price at ${M.label}`); return false; }
+    if (px == null) {
+      flash(`${strike} ${type} has no price at ${M.label}`);
+      return false;
+    }
     // merge (B / S clicked in the chain): the same strike, side and expiry already open is added to, not listed again:
     // more lots at the average entry price
-    const same = extra.merge && S.legs.find((l) => l.open && !l.rule && l.action === action && l.type === type && l.strike === strike && legExp(l) === M.expiry);
+    const same =
+      extra.merge && S.legs.find((l) => l.open && !l.rule && l.action === action && l.type === type && l.strike === strike && legExp(l) === M.expiry);
     if (same) {
       same.entryPx = (same.entryPx * same.lots + px * lots) / (same.lots + lots);
       same.lots += lots;
       same.avg = true;
-      log(`${action === 'B' ? 'Buy' : 'Sell'} ${lots} × ${strike} ${type} @ ${px.toFixed(2)} — added to the open leg: now ${same.lots} lots at avg ${same.entryPx.toFixed(2)}`, M);
+      log(
+        `${action === 'B' ? 'Buy' : 'Sell'} ${lots} × ${strike} ${type} @ ${px.toFixed(2)} — added to the open leg: now ${same.lots} lots at avg ${same.entryPx.toFixed(2)}`,
+        M,
+      );
       return true;
     }
-    if (!openLegs().length) { S.atmIvEntry = atmIv(M); S.spotEntry = M.spot; }
+    if (!openLegs().length) {
+      S.atmIvEntry = atmIv(M);
+      S.spotEntry = M.spot;
+    }
     const rule = extra.rule ? { rule: BT.clone(extra.rule), ruleStrike: extra.ruleStrike ?? strike, ruleExpiry: extra.ruleExpiry ?? M.expiry } : {};
-    S.legs.push({ id: ++S.seq, action, type, strike, lots, expiry: M.expiry, entryPx: px, entryAt: M.label, entryDay: M.day, entryMin: M.minute, spotIn: M.spot, open: true, ...rule });
+    S.legs.push({
+      id: ++S.seq,
+      action,
+      type,
+      strike,
+      lots,
+      expiry: M.expiry,
+      entryPx: px,
+      entryAt: M.label,
+      entryDay: M.day,
+      entryMin: M.minute,
+      spotIn: M.spot,
+      open: true,
+      ...rule,
+    });
     log(`${action === 'B' ? 'Buy' : 'Sell'} ${lots} × ${strike} ${type} @ ${px.toFixed(2)}${why ? ' — ' + why : ''}`, M);
     return true;
   }
   // pxFix: a given fill price instead of the chain's (the backtest's fill when its adjustments are replayed).
   function closeLeg(l, M, lots, why, pxFix) {
     const Ml = mk(l, M);
-    const px = pxFix > 0 ? pxFix : Ml.px(l.strike, l.type) ?? (Ml.T <= 1e-5 ? Math.max(0, l.type === 'CE' ? M.spot - l.strike : l.strike - M.spot) : null);
-    if (px == null) { flash(`${l.strike} ${l.type} has no price now`); return false; }
+    const px = pxFix > 0 ? pxFix : (Ml.px(l.strike, l.type) ?? (Ml.T <= 1e-5 ? Math.max(0, l.type === 'CE' ? M.spot - l.strike : l.strike - M.spot) : null));
+    if (px == null) {
+      flash(`${l.strike} ${l.type} has no price now`);
+      return false;
+    }
     const n = Math.min(l.lots, lots || l.lots);
     if (n < l.lots) {
       // Partial close: split off the closed part.
       l.lots -= n;
       S.legs.push({ ...l, id: ++S.seq, lots: n, open: false, exitPx: px, exitAt: M.label, exitDay: M.day, exitMin: M.minute });
     } else Object.assign(l, { open: false, exitPx: px, exitAt: M.label, exitDay: M.day, exitMin: M.minute });
-    log(`Close ${n} × ${l.strike} ${l.type} (${l.action === 'B' ? 'long' : 'short'}) @ ${px.toFixed(2)} · ${inrS(dir(l) * (px - l.entryPx) * n * Ml.lot)}${why ? ' — ' + why : ''}`, M);
+    log(
+      `Close ${n} × ${l.strike} ${l.type} (${l.action === 'B' ? 'long' : 'short'}) @ ${px.toFixed(2)} · ${inrS(dir(l) * (px - l.entryPx) * n * Ml.lot)}${why ? ' — ' + why : ''}`,
+      M,
+    );
     return true;
   }
-  function log(text, M) { S.log.unshift({ at: M?.label || '', text }); S.log = S.log.slice(0, 200); }
+  function log(text, M) {
+    S.log.unshift({ at: M?.label || '', text });
+    S.log = S.log.slice(0, 200);
+  }
 
   function pnl(M) {
     let realised = 0;
@@ -227,7 +348,10 @@
       by[l.id] = Math.round(v);
       if (!picked(l)) continue;
       if (!l.open) realised += v;
-      else { open += v; credit -= q * l.entryPx; }
+      else {
+        open += v;
+        credit -= q * l.entryPx;
+      }
     }
     return { realised, open, total: realised + open, credit, by };
   }
@@ -235,10 +359,19 @@
   // Payoff, Greeks, capital and risk numbers from the shared engine (payoff.js). whatIf applies the payoff panel's
   // days-ahead / IV controls; the positions table and the suggestions always use the market as it is.
   function analyse(M, whatIf) {
-    const legs = openLegs().filter(picked).map((l) => ({ ...l, ...legNow(l, M) }));
+    const legs = openLegs()
+      .filter(picked)
+      .map((l) => ({ ...l, ...legNow(l, M) }));
     const P = pnl(M);
     const on = whatIf ? payOn(M) : null;
-    const A = BT.payoff.analyse(legs, { spot: M.spot, atmIv: atmIv(M) || 0.12, realised: P.realised, daysAhead: whatIf ? S.pay.daysAhead : 0, ivShift: whatIf ? S.pay.ivShift : 0, horizon: on ? horizonOf(on, M) : null });
+    const A = BT.payoff.analyse(legs, {
+      spot: M.spot,
+      atmIv: atmIv(M) || 0.12,
+      realised: P.realised,
+      daysAhead: whatIf ? S.pay.daysAhead : 0,
+      ivShift: whatIf ? S.pay.ivShift : 0,
+      horizon: on ? horizonOf(on, M) : null,
+    });
     return { ...A, P };
   }
 
@@ -275,7 +408,12 @@
     if (!list.length || document.activeElement === sel) return;
     const exps = new Set(openLegs().filter(picked).map(legExp));
     const v = payOn(M) || nearExp();
-    sel.innerHTML = list.map((d) => `<option value="${d}" ${d === v ? 'selected' : ''}>${WD[new Date(d + 'T00:00:00Z').getUTCDay()]} ${dayShort(d)}${exps.has(d) ? ' · expiry' : ''}${d === M.day ? ' · today' : d < M.day ? ' · past' : ''}</option>`).join('');
+    sel.innerHTML = list
+      .map(
+        (d) =>
+          `<option value="${d}" ${d === v ? 'selected' : ''}>${WD[new Date(d + 'T00:00:00Z').getUTCDay()]} ${dayShort(d)}${exps.has(d) ? ' · expiry' : ''}${d === M.day ? ' · today' : d < M.day ? ' · past' : ''}</option>`,
+      )
+      .join('');
   }
 
   // ---------- strategy resolution on the current chain ----------
@@ -295,9 +433,16 @@
     for (const [li, l] of s.legs.entries()) {
       let exp = expiryFor(l.expiry);
       if (exp && exp !== primary()) {
-        try { await ensureExp(exp); } catch { exp = null; }
+        try {
+          await ensureExp(exp);
+        } catch {
+          exp = null;
+        }
       }
-      if (!exp || !market(exp)) { warn.push(`${l.type} leg: no ${(BT.EXP_LABEL[l.expiry] || l.expiry).toLowerCase()} expiry with prices, placed on this expiry`); exp = primary(); }
+      if (!exp || !market(exp)) {
+        warn.push(`${l.type} leg: no ${(BT.EXP_LABEL[l.expiry] || l.expiry).toLowerCase()} expiry with prices, placed on this expiry`);
+        exp = primary();
+      }
       const M = market(exp);
       if (!M) continue;
       const ks = M.ks.filter((k) => M.px(k, 'CE') || M.px(k, 'PE'));
@@ -307,34 +452,61 @@
       const v = l.strike.value;
       let i;
       switch (l.strike.by) {
-        case 'atm': i = ai + otm * Math.round(v); break;
-        case 'pct': i = near(M.spot * (1 + (otm * v) / 100)); break;
-        case 'pts': i = near(M.spot + otm * v); break;
-        case 'straddle': i = near(ks[ai] + otm * ((M.px(ks[ai], 'CE') || 0) + (M.px(ks[ai], 'PE') || 0)) * (v || 1)); break;
+        case 'atm':
+          i = ai + otm * Math.round(v);
+          break;
+        case 'pct':
+          i = near(M.spot * (1 + (otm * v) / 100));
+          break;
+        case 'pts':
+          i = near(M.spot + otm * v);
+          break;
+        case 'straddle':
+          i = near(ks[ai] + otm * ((M.px(ks[ai], 'CE') || 0) + (M.px(ks[ai], 'PE') || 0)) * (v || 1));
+          break;
         case 'sr': {
-          const list = (lv?.levels || []).filter((x) => (l.strike.lv && l.strike.lv !== 'any' ? x.cls === l.strike.lv : true) && (l.type === 'CE' ? x.price > M.spot : x.price < M.spot));
+          const list = (lv?.levels || []).filter(
+            (x) => (l.strike.lv && l.strike.lv !== 'any' ? x.cls === l.strike.lv : true) && (l.type === 'CE' ? x.price > M.spot : x.price < M.spot),
+          );
           const best = list.sort((a, b) => Math.abs(a.price - M.spot) - Math.abs(b.price - M.spot))[0];
           i = (best ? near(best.price) : ai) + otm * Math.round(v);
           if (!best) warn.push('no S/R level found, used ATM');
           break;
         }
-        case 'signal': i = ai + Math.round(v); warn.push('"signal" strikes placed relative to ATM (no anomaly in the builder)'); break;
+        case 'signal':
+          i = ai + Math.round(v);
+          warn.push('"signal" strikes placed relative to ATM (no anomaly in the builder)');
+          break;
         case 'leg': {
           const b = placed[l.strike.ref];
           i = b == null ? ai : near(b + v);
           if (b == null) warn.push(`leg ${li + 1}: "from leg ${l.strike.ref + 1}" not placed yet — used ATM`);
           break;
         }
-        default: { // premium / delta
+        default: {
+          // premium / delta
           const order = ks.map((_, j) => j).filter((j) => (j - ai) * otm >= -4);
-          const val = (j) => { const px = M.px(ks[j], l.type); if (!px) return null; if (l.strike.by === 'premium') return px; const iv = ivOf(px, M.spot, ks[j], M.T, l.type === 'CE'); return iv ? Math.abs(greeks(M.spot, ks[j], M.T, iv, l.type === 'CE').delta) : null; };
+          const val = (j) => {
+            const px = M.px(ks[j], l.type);
+            if (!px) return null;
+            if (l.strike.by === 'premium') return px;
+            const iv = ivOf(px, M.spot, ks[j], M.T, l.type === 'CE');
+            return iv ? Math.abs(greeks(M.spot, ks[j], M.T, iv, l.type === 'CE').delta) : null;
+          };
           const target = l.strike.by === 'delta' ? Math.abs(v > 1 ? v / 100 : v) : v;
-          i = order.reduce((b, j) => { const x = val(j); return x != null && (b == null || Math.abs(x - target) < Math.abs(val(b) - target)) ? j : b; }, null) ?? ai;
+          i =
+            order.reduce((b, j) => {
+              const x = val(j);
+              return x != null && (b == null || Math.abs(x - target) < Math.abs(val(b) - target)) ? j : b;
+            }, null) ?? ai;
         }
       }
       placed[li] = ks[Math.max(0, Math.min(ks.length - 1, i))];
       out.push({ action: l.action, type: l.type, strike: placed[li], lots: l.lots, M, rule: l });
-      if (l.roll) warn.push(`leg ${li + 1} (${placed[li]} ${l.type}) is set to roll into the next expiry ${l.roll.dteDays} day(s) before it expires at ${l.roll.time}: do it here by changing its expiry in Positions`);
+      if (l.roll)
+        warn.push(
+          `leg ${li + 1} (${placed[li]} ${l.type}) is set to roll into the next expiry ${l.roll.dteDays} day(s) before it expires at ${l.roll.time}: do it here by changing its expiry in Positions`,
+        );
     }
     return { legs: out, warn: [...new Set(warn)] };
   }
@@ -343,11 +515,16 @@
     setFrom(s, note);
     for (const l of r.legs) addLeg(l.action, l.type, l.strike, l.lots * S.lots, l.M, s.name, { rule: l.rule });
     if (s.mode === 'positional' && S.src === 'hist') S.session = 'multi';
-    record(); save(); renderTop(); render();
+    record();
+    save();
+    renderTop();
+    render();
     if (r.warn.length) flash(r.warn.join(' · '));
   }
   // bt: { net, gross, costs } of the backtest trade being replayed, if any
-  function setFrom(s, note, bt) { S.from = s ? { strategy: BT.clone(s), note: note || null, bt: bt || null } : null; }
+  function setFrom(s, note, bt) {
+    S.from = s ? { strategy: BT.clone(s), note: note || null, bt: bt || null } : null;
+  }
 
   // ---------- position -> strategy ----------
   // Open, ticked legs as a relative strategy (ATM offsets + expiry codes), reusable on any expiry. Legs that came
@@ -356,7 +533,10 @@
   // risk rules come from the strategy the position was loaded from, if any.
   function toStrategy() {
     const legs = openLegs().filter(picked);
-    if (!legs.length) { flash('Open a position first: its open, ticked legs become the strategy'); return null; }
+    if (!legs.length) {
+      flash('Open a position first: its open, ticked legs become the strategy');
+      return null;
+    }
     const M = market();
     if (!M) return null;
     const c = BT.meta.calendar || {};
@@ -380,7 +560,8 @@
       const Ml = mk(l, M);
       const def = l.rule ? BT.clone(l.rule) : {};
       Object.assign(def, { action: l.action, type: l.type, lots: l.lots });
-      if (!l.rule || l.strike !== l.ruleStrike) def.strike = { by: 'atm', value: BT.atmOffset(l.strike, l.spotIn ?? M.spot, BT.strikeStep(Ml.ks), l.type), match: 'closest' };
+      if (!l.rule || l.strike !== l.ruleStrike)
+        def.strike = { by: 'atm', value: BT.atmOffset(l.strike, l.spotIn ?? M.spot, BT.strikeStep(Ml.ks), l.type), match: 'closest' };
       if (!l.rule || legExp(l) !== l.ruleExpiry) {
         const code = BT.expiryCode(legExp(l), primary(), list, c.monthly || [], s.expiry === 'monthly');
         if (!code) warn.push(`${l.strike} ${l.type} (${dayShort(legExp(l))}) has no relative expiry code, saved as this week`);
@@ -395,16 +576,22 @@
     if (!r) return;
     const { s, warn } = r;
     const mine = s.id?.startsWith('my-');
-    const name = prompt(`Save the open position as a strategy (strikes relative to ATM, so it works on any expiry).${warn.length ? '\n\n⚠ ' + warn.join('\n⚠ ') : ''}\n\nName:`, mine || s.name.endsWith('(builder)') ? s.name : s.name + ' (mine)');
+    const name = prompt(
+      `Save the open position as a strategy (strikes relative to ATM, so it works on any expiry).${warn.length ? '\n\n⚠ ' + warn.join('\n⚠ ') : ''}\n\nName:`,
+      mine || s.name.endsWith('(builder)') ? s.name : s.name + ' (mine)',
+    );
     if (!name) return;
     if (!mine || name !== s.name) s.id = null; // a new strategy, unless it is one of yours kept under the same name
     s.name = name;
     try {
       const saved = await BT.saveStrategy(s);
       setFrom(saved, S.from?.note);
-      save(); renderTop();
+      save();
+      renderTop();
       flash(`Saved "${saved.name}" ✓ in Strategies › My strategies`);
-    } catch (e) { alert('Could not save: ' + e.message); }
+    } catch (e) {
+      alert('Could not save: ' + e.message);
+    }
   }
   function backtestPosition() {
     const r = toStrategy();
@@ -440,29 +627,65 @@
   async function placePending() {
     const o = pending;
     if (!o) return;
-    if (!o.legs?.length) { pending = null; if (o.strategy) await placeStrategy(o.strategy, o.note); return; }
+    if (!o.legs?.length) {
+      pending = null;
+      if (o.strategy) await placeStrategy(o.strategy, o.note);
+      return;
+    }
     setFrom(o.strategy, o.note, o.bt);
     const warn = [];
     for (const l of o.legs) {
       const exp = l.expiry || primary();
-      try { await ensureExp(exp); } catch { /* reported below */ }
+      try {
+        await ensureExp(exp);
+      } catch {
+        /* reported below */
+      }
       const M = market(exp);
-      if (!M) { warn.push(`${l.strike} ${l.type}: no prices for ${dayShort(exp)}`); continue; }
+      if (!M) {
+        warn.push(`${l.strike} ${l.type}: no prices for ${dayShort(exp)}`);
+        continue;
+      }
       const lots = l.lots || Math.max(1, Math.round((l.qty || M.lot) / M.lot));
-      if (!addLeg(l.action, l.type, l.strike, lots, M, o.note || o.strategy?.name, { px: l.px, rule: l.rule, ruleStrike: l.ruleStrike, ruleExpiry: exp })) warn.push(`${l.strike} ${l.type} has no price`);
+      if (!addLeg(l.action, l.type, l.strike, lots, M, o.note || o.strategy?.name, { px: l.px, rule: l.rule, ruleStrike: l.ruleStrike, ruleExpiry: exp }))
+        warn.push(`${l.strike} ${l.type} has no price`);
     }
     pending = null; // kept until here so loadDay() also fetches the handed-over strikes outside the usual window
     if (o.strategy?.mode === 'positional' && S.src === 'hist') S.session = 'multi';
-    record(); save(); renderTop(); render();
+    record();
+    save();
+    renderTop();
+    render();
     if (warn.length) flash(warn.join(' · '));
   }
 
   // ---------- saved trades ----------
   // What is kept of the Builder's state: everything that makes the position (not the screen preferences).
-  const SNAP = ['src', 'expiry', 'liveExpiry', 'day', 'm', 'startTime', 'session', 'legs', 'log', 'atmIvEntry', 'spotEntry', 'seq', 'from', 'plan', 'lotFix', 'pay'];
+  const SNAP = [
+    'src',
+    'expiry',
+    'liveExpiry',
+    'day',
+    'm',
+    'startTime',
+    'session',
+    'legs',
+    'log',
+    'atmIvEntry',
+    'spotEntry',
+    'seq',
+    'from',
+    'plan',
+    'lotFix',
+    'pay',
+  ];
   const legsText = (legs) => legs.map((l) => `${l.action === 'B' ? 'B' : 'S'} ${l.lots}× ${l.strike} ${l.type} ${dayShort(legExp(l))}`).join(', ');
   async function loadTrades() {
-    try { trades = (await BT.api('/api/sb/trades')).trades; } catch { trades = []; }
+    try {
+      trades = (await BT.api('/api/sb/trades')).trades;
+    } catch {
+      trades = [];
+    }
     renderTrades();
     refreshTrades();
   }
@@ -473,14 +696,28 @@
     const cur = !asNew && trades.find((t) => t.id === S.tradeId);
     let name = cur?.name;
     if (!cur) {
-      name = prompt('Save this trade as', S.from?.strategy?.name ? `${S.from.strategy.name} · ${dayShort(primary())}` : `${S.src === 'live' ? 'Paper' : 'Replay'} · ${dayShort(primary())} expiry · ${S.legs.length} legs`);
+      name = prompt(
+        'Save this trade as',
+        S.from?.strategy?.name
+          ? `${S.from.strategy.name} · ${dayShort(primary())}`
+          : `${S.src === 'live' ? 'Paper' : 'Replay'} · ${dayShort(primary())} expiry · ${S.legs.length} legs`,
+      );
       if (!name) return;
     }
     const P = pnl(M);
     const summary = {
-      src: S.src, expiries: [...new Set(S.legs.map(legExp))].sort(), legs: legsText(openLegs()), open: openLegs().length, closed: S.legs.length - openLegs().length,
-      entered: S.legs.map((l) => l.entryAt).filter(Boolean)[0] || '', at: M.label, spot: M.spot, lot: M.lot,
-      realised: Math.round(P.realised), openPnl: Math.round(P.open), total: Math.round(P.total),
+      src: S.src,
+      expiries: [...new Set(S.legs.map(legExp))].sort(),
+      legs: legsText(openLegs()),
+      open: openLegs().length,
+      closed: S.legs.length - openLegs().length,
+      entered: S.legs.map((l) => l.entryAt).filter(Boolean)[0] || '',
+      at: M.label,
+      spot: M.spot,
+      lot: M.lot,
+      realised: Math.round(P.realised),
+      openPnl: Math.round(P.open),
+      total: Math.round(P.total),
     };
     const snap = Object.fromEntries(SNAP.map((k) => [k, S[k]]));
     snap.mtm = (S.mtm || []).slice(-800);
@@ -490,7 +727,9 @@
       save();
       await loadTrades();
       flash(`Saved "${t.name}" ✓`);
-    } catch (e) { alert('Could not save the trade: ' + e.message); }
+    } catch (e) {
+      alert('Could not save the trade: ' + e.message);
+    }
   }
   async function openTrade(id) {
     const t = trades.find((x) => x.id === id);
@@ -506,14 +745,26 @@
     if (window.app.state.view !== 'sb') window.app.setView('sb');
     else await activate();
     renderTrades();
-    const gone = S.src === 'live' ? openLegs().map(legExp).filter((e) => !(BT.meta.calendar?.live || []).includes(e)) : [];
-    flash(gone.length ? `Loaded "${t.name}". Legs of ${[...new Set(gone)].map(dayShort).join(', ')} have expired: they have no live price any more, exit them.` : `Loaded "${t.name}"`);
+    const gone =
+      S.src === 'live'
+        ? openLegs()
+            .map(legExp)
+            .filter((e) => !(BT.meta.calendar?.live || []).includes(e))
+        : [];
+    flash(
+      gone.length
+        ? `Loaded "${t.name}". Legs of ${[...new Set(gone)].map(dayShort).join(', ')} have expired: they have no live price any more, exit them.`
+        : `Loaded "${t.name}"`,
+    );
   }
   async function deleteTrade(id) {
     const t = trades.find((x) => x.id === id);
     if (!t || !confirm(`Delete the saved trade "${t.name}"?`)) return;
     await BT.api('/api/sb/trades/delete', { id });
-    if (S.tradeId === id) { S.tradeId = null; save(); }
+    if (S.tradeId === id) {
+      S.tradeId = null;
+      save();
+    }
     loadTrades();
   }
   // Live paper trades at the current chain prices (open legs at LTP, closed ones at their exit).
@@ -521,7 +772,11 @@
     const live = trades.filter((t) => t.snap.src === 'live' && t.snap.legs.some((l) => l.open));
     const chains = {};
     for (const e of new Set(live.flatMap((t) => t.snap.legs.filter((l) => l.open).map((l) => l.expiry || t.snap.liveExpiry)))) {
-      try { chains[e] = (await BT.api('/api/bt/chain?expiry=' + e)).rows; } catch { chains[e] = null; }
+      try {
+        chains[e] = (await BT.api('/api/bt/chain?expiry=' + e)).rows;
+      } catch {
+        chains[e] = null;
+      }
     }
     tradesNow = {};
     for (const t of live) {
@@ -530,8 +785,14 @@
       let ok = true;
       for (const l of t.snap.legs) {
         let px = l.exitPx;
-        if (l.open) { const r = chains[l.expiry || t.snap.liveExpiry]?.find((x) => x.strike === l.strike); px = r && (l.type === 'CE' ? r.ce : r.pe).ltp; }
-        if (!(px > 0) && l.open) { ok = false; continue; }
+        if (l.open) {
+          const r = chains[l.expiry || t.snap.liveExpiry]?.find((x) => x.strike === l.strike);
+          px = r && (l.type === 'CE' ? r.ce : r.pe).ltp;
+        }
+        if (!(px > 0) && l.open) {
+          ok = false;
+          continue;
+        }
         total += dir(l) * l.lots * lot * (px - l.entryPx);
       }
       tradesNow[t.id] = { total: Math.round(total), ok };
@@ -556,12 +817,16 @@
         <span class="spacer"></span>
         ${cur ? `<span class="muted small">in the Builder: <b>${esc(cur.name)}</b></span>` : ''}
         ${list.some((t) => t.summary.src === 'live') ? '<button class="btn-sm ghost" data-t="refresh" title="Price the live paper trades at the current chain">↻ Live P&amp;L</button>' : ''}</div>
-      ${!list.length ? '<div class="muted small pad">In the <b>Builder</b>, build a position (B / S in the chain, or Apply a strategy) and press <b>Save trade</b>. Live (paper) trades and replays are listed here; <b>Load</b> puts one back in the Builder with its payoff, to adjust it and save it again.</div>' : `<div class="tbl-wrap sb-trades-wrap"><table class="grid-tbl sb-trades-tbl">
+      ${
+        !list.length
+          ? '<div class="muted small pad">In the <b>Builder</b>, build a position (B / S in the chain, or Apply a strategy) and press <b>Save trade</b>. Live (paper) trades and replays are listed here; <b>Load</b> puts one back in the Builder with its payoff, to adjust it and save it again.</div>'
+          : `<div class="tbl-wrap sb-trades-wrap"><table class="grid-tbl sb-trades-tbl">
         <thead><tr><th class="l">Trade</th><th class="l">Mode</th><th class="l">Expiry</th><th class="l">Open legs</th><th>Entered</th><th>Realised</th><th>Open P&amp;L</th><th>Total at save</th><th title="Live paper trades at the current chain prices">Total now</th><th>Saved</th><th></th></tr></thead>
-        <tbody>${list.map((t) => {
-          const u = t.summary;
-          const now = tradesNow[t.id];
-          return `<tr class="${t.id === S.tradeId ? 'sel' : ''}"><td class="l"><b>${esc(t.name)}</b> ${u.open ? '' : '<span class="cat-pill">closed</span>'}</td>
+        <tbody>${list
+          .map((t) => {
+            const u = t.summary;
+            const now = tradesNow[t.id];
+            return `<tr class="${t.id === S.tradeId ? 'sel' : ''}"><td class="l"><b>${esc(t.name)}</b> ${u.open ? '' : '<span class="cat-pill">closed</span>'}</td>
             <td class="l"><span class="cat-pill ${u.src === 'live' ? 'c-bullish' : 'c-neutral'}">${u.src === 'live' ? 'Live (paper)' : 'Replay'}</span></td>
             <td class="l">${(u.expiries || []).map(dayShort).join(', ')}</td>
             <td class="l legs-cell">${esc(u.legs || '—')}${u.closed ? ` <span class="muted small">+${u.closed} closed</span>` : ''}</td>
@@ -570,7 +835,9 @@
             <td class="${now ? cls(now.total) + ' b' : 'muted'}" title="${now && !now.ok ? 'Some legs have no live price (expired?): they are left out' : ''}">${now ? inrS(now.total) + (now.ok ? '' : ' *') : u.src === 'live' && u.open ? '…' : '—'}</td>
             <td class="muted small">${whenTxt(t.savedAt)}<div>at ${esc(u.at || '')}</div></td>
             <td><button class="btn-sm ghost" data-load="${t.id}" title="Put this trade in the Builder: payoff, positions and P&amp;L, to adjust it and save it again">Load</button> <button class="icon" data-del="${t.id}" title="Delete this saved trade">✕</button></td></tr>`;
-        }).join('')}</tbody></table></div>`}`;
+          })
+          .join('')}</tbody></table></div>`
+      }`;
   }
 
   // ---------- replay ----------
@@ -581,10 +848,14 @@
     try {
       await loadDay(day);
       for (const e of extraExps()) await loadDay(day, false, e).catch(() => {}); // other expiries held / viewed (missing data just shows no price)
-    } finally { busy = false; }
+    } finally {
+      busy = false;
+    }
     loadLevels(day).then(render);
   }
-  function lastMinute() { return MPD - 1; }
+  function lastMinute() {
+    return MPD - 1;
+  }
   // Why the replay cannot leave the current day, or null: an intraday session, the main expiry, or an open leg
   // expiring today (its prices end here). The replay stops at the day's last minute; positions are never closed for
   // you, so the payoff stays and you can step back. Exit the expiring legs to carry on with the later ones.
@@ -592,7 +863,13 @@
     if (S.src !== 'hist' || !cal) return null;
     if (S.session === 'intraday') return 'End of the trading day';
     if (cal.days.indexOf(S.day) >= cal.days.length - 1) return 'Expiry reached (15:30)';
-    const due = [...new Set(openLegs().filter((l) => legExp(l) <= S.day).map(legExp))];
+    const due = [
+      ...new Set(
+        openLegs()
+          .filter((l) => legExp(l) <= S.day)
+          .map(legExp),
+      ),
+    ];
     return due.length ? `Expiry of the ${due.map(dayShort).join(', ')} legs reached (15:30): exit them to step further` : null;
   }
   const atEnd = () => S.src === 'hist' && !!cal && S.m >= lastMinute() && !!dayBlock();
@@ -605,7 +882,10 @@
     let m = S.m;
     let stop = null;
     if (n === '1d' || m + n > lastMinute()) {
-      if (block) { m = lastMinute(); stop = block; } // go to the day's close and stop there
+      if (block) {
+        m = lastMinute();
+        stop = block;
+      } // go to the day's close and stop there
       else {
         day = cal.days[di + 1];
         m = n === '1d' ? m : 0;
@@ -613,7 +893,11 @@
     } else m += n;
     // An adjustment of the replayed backtest trade falls inside this step: stop on its minute and make it.
     const due = planDue(day, m);
-    if (due) { day = due.day; m = due.m; stop = null; }
+    if (due) {
+      day = due.day;
+      m = due.m;
+      stop = null;
+    }
     await setDay(day, m);
     if (due) await applyPlan(day, m);
     record();
@@ -625,21 +909,32 @@
   // S.plan (from the Backtest screen's ▶ Replay): what the backtest did after the entry. ▶ Step and ⏵ Auto play land
   // on each step's minute, make the same trades at the backtest's fill prices and show what was done and why; the
   // alert stays until the next adjustment or until it is dismissed, and auto play keeps running.
-  const planPos = (day, m) => { const i = cal ? cal.days.indexOf(day) : -1; return i < 0 ? null : i * MPD + m; };
+  const planPos = (day, m) => {
+    const i = cal ? cal.days.indexOf(day) : -1;
+    return i < 0 ? null : i * MPD + m;
+  };
   function planDue(day, m) {
     const from = planPos(S.day, S.m);
     const to = planPos(day, m);
     if (from == null || to == null) return null;
-    return S.plan.filter((e) => !e.done && planPos(e.day, e.m) != null && planPos(e.day, e.m) > from && planPos(e.day, e.m) <= to)
-      .sort((a, b) => planPos(a.day, a.m) - planPos(b.day, b.m))[0] || null;
+    return (
+      S.plan
+        .filter((e) => !e.done && planPos(e.day, e.m) != null && planPos(e.day, e.m) > from && planPos(e.day, e.m) <= to)
+        .sort((a, b) => planPos(a.day, a.m) - planPos(b.day, b.m))[0] || null
+    );
   }
-  const opText = (o) => `${o.op === 'close' ? 'Exit' : o.action === 'B' ? 'Buy' : 'Sell'} ${o.strike} ${o.type} (${dayShort(o.expiry)}) @ ${Number(o.px).toFixed(2)}`;
+  const opText = (o) =>
+    `${o.op === 'close' ? 'Exit' : o.action === 'B' ? 'Buy' : 'Sell'} ${o.strike} ${o.type} (${dayShort(o.expiry)}) @ ${Number(o.px).toFixed(2)}`;
   async function applyPlan(day, m) {
     for (const e of S.plan.filter((x) => !x.done && x.day === day && x.m === m)) {
       const done = [];
       for (const o of e.ops) {
         pending = { legs: [o] }; // lets loadDay() fetch this strike of this expiry too
-        try { await ensureExp(o.expiry); } catch { /* reported below */ }
+        try {
+          await ensureExp(o.expiry);
+        } catch {
+          /* reported below */
+        }
         pending = null;
         const Me = market(o.expiry);
         const M = market() || Me;
@@ -647,15 +942,25 @@
         const lots = Math.max(1, Math.round(o.qty / (o.lot || Me?.lot || M.lot)));
         if (o.op === 'close') {
           const l = S.legs.find((x) => x.open && x.action === o.action && x.type === o.type && x.strike === o.strike && legExp(x) === o.expiry);
-          if (!l) { log(`Backtest: ${opText(o)} — that leg is not open here, skipped`, M); continue; }
+          if (!l) {
+            log(`Backtest: ${opText(o)} — that leg is not open here, skipped`, M);
+            continue;
+          }
           if (closeLeg(l, M, Math.min(lots, l.lots), 'backtest: ' + e.title, o.px)) done.push(opText(o));
-        } else if (Me && addLeg(o.action, o.type, o.strike, lots, Me, 'backtest: ' + e.title, { px: o.px, rule: o.rule, ruleStrike: o.strike, ruleExpiry: o.expiry })) done.push(opText(o));
+        } else if (
+          Me &&
+          addLeg(o.action, o.type, o.strike, lots, Me, 'backtest: ' + e.title, { px: o.px, rule: o.rule, ruleStrike: o.strike, ruleExpiry: o.expiry })
+        )
+          done.push(opText(o));
       }
       e.done = true;
       S.alert = { title: e.title, why: e.why, at: `${dayShort(e.day)} ${e.time}`, done };
     }
     // the backtest's last step and nothing left open: the trade is over, so auto play stops here
-    if (S.plan.every((x) => x.done) && !openLegs().length) { S.alert.end = S.from?.note || 'trade finished'; pause(); }
+    if (S.plan.every((x) => x.done) && !openLegs().length) {
+      S.alert.end = S.from?.note || 'trade finished';
+      pause();
+    }
     save();
   }
   // Mirror of step(): move the replay clock back by one step (the reverse of what step() does to the clock and the P&L curve).
@@ -666,12 +971,21 @@
     let day = S.day;
     let m = S.m;
     if (n === '1d') {
-      if (S.session === 'intraday' || di <= 0) { flash('No earlier day in this session'); return; }
+      if (S.session === 'intraday' || di <= 0) {
+        flash('No earlier day in this session');
+        return;
+      }
       day = cal.days[di - 1];
     } else {
       m -= n;
       if (m < 0) {
-        if (S.session === 'intraday' || di <= 0) { if (S.m === 0) { flash('Start of the trading day'); return; } m = 0; } else {
+        if (S.session === 'intraday' || di <= 0) {
+          if (S.m === 0) {
+            flash('Start of the trading day');
+            return;
+          }
+          m = 0;
+        } else {
           day = cal.days[di - 1];
           m = lastMinute();
         }
@@ -701,11 +1015,18 @@
   }
   function play() {
     if (playTimer) return;
-    const tick = async () => { await step(); if (playTimer) playTimer = setTimeout(tick, S.speed); };
+    const tick = async () => {
+      await step();
+      if (playTimer) playTimer = setTimeout(tick, S.speed);
+    };
     playTimer = setTimeout(tick, 50);
     renderReplay();
   }
-  function pause() { clearTimeout(playTimer); playTimer = null; renderReplay(); }
+  function pause() {
+    clearTimeout(playTimer);
+    playTimer = null;
+    renderReplay();
+  }
 
   // ---------- init / top bar ----------
   async function init() {
@@ -729,16 +1050,23 @@
     if (S.src === 'hist') {
       const exp = BT.meta.calendar?.expired || [];
       if (!S.expiry || !exp.includes(S.expiry)) S.expiry = exp[exp.length - 1] || null;
-      if (!S.expiry) { renderEmpty('No expired expiries — log in to Upstox to load the calendar.'); return; }
+      if (!S.expiry) {
+        renderEmpty('No expired expiries — log in to Upstox to load the calendar.');
+        return;
+      }
       try {
         cal = await BT.api('/api/sb/days?expiry=' + S.expiry + (S.day ? '&from=' + S.day : ''));
         // A start date that is not a trading day moves to the next one; without one, start a few days before expiry.
-        if (!S.day || !cal.days.includes(S.day)) S.day = (S.day && cal.days.find((d) => d >= S.day)) || cal.days[Math.max(0, cal.days.length - 5)] || cal.days[0];
+        if (!S.day || !cal.days.includes(S.day))
+          S.day = (S.day && cal.days.find((d) => d >= S.day)) || cal.days[Math.max(0, cal.days.length - 5)] || cal.days[0];
         renderTop();
         $('sbChain').innerHTML = '<div class="muted pad">Loading the day\'s option prices (first time downloads them)…</div>';
         await setDay(S.day, S.m);
         record();
-      } catch (e) { renderEmpty(e.message); return; }
+      } catch (e) {
+        renderEmpty(e.message);
+        return;
+      }
     } else {
       const lv = BT.meta.calendar?.live || [];
       if (!S.liveExpiry || !lv.includes(S.liveExpiry)) S.liveExpiry = lv[0] || null;
@@ -755,9 +1083,14 @@
         try {
           const before = liveMap.get(S.liveExpiry)?.at;
           await loadLive();
-          if (Date.now() - recordedAt >= 5000) { recordedAt = Date.now(); record(); }
+          if (Date.now() - recordedAt >= 5000) {
+            recordedAt = Date.now();
+            record();
+          }
           if (liveMap.get(S.liveExpiry)?.at !== before) render();
-        } finally { inFlight = false; }
+        } finally {
+          inFlight = false;
+        }
       }, LIVE_MS);
       record();
     }
@@ -777,26 +1110,42 @@
     for (const s of BT.meta.library || []) (groups[s.category] ||= []).push(s);
     $('sbTop').innerHTML = `<div class="set-row">
       <div class="seg sm" id="sbSrc"><button data-src="hist" class="${S.src === 'hist' ? 'on' : ''}">Historical replay</button><button data-src="live" class="${S.src === 'live' ? 'on' : ''}">Live (paper)</button></div>
-      ${S.src === 'hist' ? `
-        <span class="lbl">Expiry</span><select id="sbExpiry">${newestFirst(exp).map((e) => `<option value="${e}" ${e === S.expiry ? 'selected' : ''}>${dayLabel(e)}${BT.meta.calendar.monthly.includes(e) ? ' (M)' : ''}</option>`).join('')}</select>
+      ${
+        S.src === 'hist'
+          ? `
+        <span class="lbl">Expiry</span><select id="sbExpiry">${newestFirst(exp)
+          .map((e) => `<option value="${e}" ${e === S.expiry ? 'selected' : ''}>${dayLabel(e)}${BT.meta.calendar.monthly.includes(e) ? ' (M)' : ''}</option>`)
+          .join('')}</select>
         <span class="lbl">Start</span><input type="date" id="sbDay" value="${S.day || ''}" max="${exp[exp.length - 1] || ''}" title="Start date of the replay. A weekend or holiday moves to the next trading day; a date after this expiry switches to the first expiry that covers it.">
         <span class="muted small">${S.day ? WD[new Date(S.day + 'T00:00:00Z').getUTCDay()] + (S.day === S.expiry ? ' (expiry)' : '') : ''}</span>
         <input type="time" id="sbTime" value="${S.startTime}" step="60" title="Start time">
         <button class="btn-sm ghost" id="sbGo" title="Jump to this day and time (keeps the position)">Go</button>
         <span class="lbl">Session</span><div class="seg sm" id="sbSession"><button data-s="intraday" class="${S.session === 'intraday' ? 'on' : ''}">Intraday</button><button data-s="multi" class="${S.session === 'multi' ? 'on' : ''}">Multi-day</button></div>`
-      : `<span class="lbl">Expiry</span><select id="sbLiveExpiry">${nearestFirst(lv).map((e) => `<option value="${e}" ${e === S.liveExpiry ? 'selected' : ''}>${dayLabel(e)}${BT.meta.calendar.monthly.includes(e) ? ' (M)' : ''}</option>`).join('')}</select>
-        <span class="muted small">Paper trading on the live chain (LTP fills); refreshes every 5 s. No orders are sent.</span>`}
+          : `<span class="lbl">Expiry</span><select id="sbLiveExpiry">${nearestFirst(lv)
+              .map(
+                (e) =>
+                  `<option value="${e}" ${e === S.liveExpiry ? 'selected' : ''}>${dayLabel(e)}${BT.meta.calendar.monthly.includes(e) ? ' (M)' : ''}</option>`,
+              )
+              .join('')}</select>
+        <span class="muted small">Paper trading on the live chain (LTP fills); refreshes every 5 s. No orders are sent.</span>`
+      }
       <span class="spacer"></span>
-      <span class="lbl">Strategy</span><select id="sbStrat"><option value="">— custom (click B / S in the chain) —</option>${Object.entries(groups).map(([g, list]) => `<optgroup label="${esc(g)}">${list.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</optgroup>`).join('')}</select>
+      <span class="lbl">Strategy</span><select id="sbStrat"><option value="">— custom (click B / S in the chain) —</option>${Object.entries(groups)
+        .map(([g, list]) => `<optgroup label="${esc(g)}">${list.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</optgroup>`)
+        .join('')}</select>
       <button class="btn-sm" id="sbApply" title="Place this strategy's legs on the chain at the current time">Apply</button>
       <label class="mini">Lots <input class="num xs" type="number" id="sbLots" min="1" max="100" value="${S.lots}"></label>
       <button class="btn-sm ghost" id="sbSaveStrat" title="Save the open, ticked legs as a strategy (strikes relative to ATM, so it works on any expiry)">💾 Save as strategy</button>
       <span id="sbSaveBox"></span>
       <button class="btn-sm ghost" id="sbBacktest" title="Open the open, ticked legs as a strategy in the Backtest">Backtest ▸</button>
       <button class="btn-sm ghost danger" id="sbClear" title="Close the position view and start again">Reset</button>
-    </div>${S.from ? `<div class="sb-from"><span>Loaded from <b>${esc(S.from.strategy.name)}</b>${S.from.note ? ` · ${esc(S.from.note)}` : ''}</span>
+    </div>${
+      S.from
+        ? `<div class="sb-from"><span>Loaded from <b>${esc(S.from.strategy.name)}</b>${S.from.note ? ` · ${esc(S.from.note)}` : ''}</span>
       <span class="muted">${esc(BT.timingLabel(BT.complete(S.from.strategy)))} · ${S.plan.length ? `the ${S.plan.length} adjustment${S.plan.length > 1 ? 's' : ''} the backtest made (roll, stops, target, exit) are repeated automatically as the replay reaches them; you can still trade by hand in between.` : 'its stop-loss / target / exit-time rules are not automated here: step the replay and manage the legs by hand.'}</span>
-      <button class="icon" id="sbFromClose" title="Hide this note (the legs stay)">✕</button></div>` : ''}`;
+      <button class="icon" id="sbFromClose" title="Hide this note (the legs stay)">✕</button></div>`
+        : ''
+    }`;
     void strategies;
     renderSaveBox();
     renderReplay();
@@ -804,7 +1153,10 @@
 
   function renderReplay() {
     const el = $('sbReplay');
-    if (S.src !== 'hist') { el.classList.add('hidden'); return; }
+    if (S.src !== 'hist') {
+      el.classList.add('hidden');
+      return;
+    }
     el.classList.remove('hidden');
     const M = market();
     const di = cal?.days.indexOf(S.day) ?? -1;
@@ -823,9 +1175,13 @@
       <button class="btn-sm ${playTimer ? '' : 'ghost'}" data-r="play" ${end && !playTimer ? `disabled title="${esc(end)}"` : ''}>${playTimer ? '⏸ Pause' : '⏵ Auto play'}</button>
       <span class="lbl">Step</span><div class="seg sm" id="sbStep">${STEPS.map(([v, l]) => `<button data-step="${v}" class="${String(S.step) === String(v) ? 'on' : ''}">${l}</button>`).join('')}</div>
       <span class="lbl">Speed</span><select id="sbSpeed">${SPEEDS.map(([v, l]) => `<option value="${v}" ${S.speed === v ? 'selected' : ''}>${l}/step</option>`).join('')}</select>
-    </div>${S.alert ? `<div class="sb-alert"><div><b>⚠ Adjustment from the backtest · ${esc(S.alert.at)}: ${esc(S.alert.title)}</b><div class="small">${esc(S.alert.why)}</div>
-      <div class="small">${S.alert.done.length ? 'Done for you at the backtest\'s prices: ' + S.alert.done.map(esc).join(' · ') : 'Nothing could be placed here (see the log).'} ${S.alert.end ? `All legs are closed, the trade is finished (${esc(S.alert.end)}; the replay's P&amp;L is before costs and slippage).` : playTimer ? 'Auto play carries on.' : 'Press ▶ Step or ⏵ Auto play to carry on.'}</div></div>
-      <button class="icon" data-r="alert-close" title="Dismiss">✕</button></div>` : ''}`;
+    </div>${
+      S.alert
+        ? `<div class="sb-alert"><div><b>⚠ Adjustment from the backtest · ${esc(S.alert.at)}: ${esc(S.alert.title)}</b><div class="small">${esc(S.alert.why)}</div>
+      <div class="small">${S.alert.done.length ? "Done for you at the backtest's prices: " + S.alert.done.map(esc).join(' · ') : 'Nothing could be placed here (see the log).'} ${S.alert.end ? `All legs are closed, the trade is finished (${esc(S.alert.end)}; the replay's P&amp;L is before costs and slippage).` : playTimer ? 'Auto play carries on.' : 'Press ▶ Step or ⏵ Auto play to carry on.'}</div></div>
+      <button class="icon" data-r="alert-close" title="Dismiss">✕</button></div>`
+        : ''
+    }`;
   }
 
   // ---------- render ----------
@@ -833,14 +1189,22 @@
     if (window.app.state.view !== 'sb') return;
     renderReplay();
     const M = market();
-    if (!M) { const le = liveMap.get(S.liveExpiry); if (S.src === 'live' && le?.error) renderEmpty(le.error); return; }
+    if (!M) {
+      const le = liveMap.get(S.liveExpiry);
+      if (S.src === 'live' && le?.error) renderEmpty(le.error);
+      return;
+    }
     const A = analyse(M);
     const Aw = S.pay.daysAhead || S.pay.ivShift || payOn(M) ? analyse(M, true) : A;
     renderChainExp();
     const Mv = market(viewedExp());
     if (Mv) renderChain(Mv);
-    else if (failedKeys.has(`${S.src}|${viewedExp()}|${S.day}`)) $('sbChain').innerHTML = '<div class="muted pad">No price data for this expiry on this day. Pick another expiry.</div>';
-    else { $('sbChain').innerHTML = '<div class="muted pad">Loading this expiry\'s prices…</div>'; ensureView(); }
+    else if (failedKeys.has(`${S.src}|${viewedExp()}|${S.day}`))
+      $('sbChain').innerHTML = '<div class="muted pad">No price data for this expiry on this day. Pick another expiry.</div>';
+    else {
+      $('sbChain').innerHTML = '<div class="muted pad">Loading this expiry\'s prices…</div>';
+      ensureView();
+    }
     renderPayoff(M, Aw);
     renderPositions(M, A);
     renderSuggestions(M, A);
@@ -851,7 +1215,15 @@
   let arbsShown = []; // after the CE / PE filter, in the order listed
   function renderArb(M) {
     const live = S.src === 'live';
-    const r = BT.arb.html(BT.arb.find(M, { live, basis: S.arbBasis }), M, { live, basis: S.arbBasis, width: arbWidth(), type: S.arbType || 'ALL', lots: chainLots(), btn: 'Add to position', btnTip: 'Add both legs to the position and payoff chart' });
+    const r = BT.arb.html(BT.arb.find(M, { live, basis: S.arbBasis }), M, {
+      live,
+      basis: S.arbBasis,
+      width: arbWidth(),
+      type: S.arbType || 'ALL',
+      lots: chainLots(),
+      btn: 'Add to position',
+      btnTip: 'Add both legs to the position and payoff chart',
+    });
     arbsShown = r.shown;
     $('sbArb').innerHTML = r.html;
   }
@@ -868,7 +1240,10 @@
     const from = hist ? S.day || S.expiry : new Date().toISOString().slice(0, 10);
     const days = (e) => Math.round((Date.parse(e) - Date.parse(from)) / 86400000);
     const cl = $('sbChainLots');
-    if (cl) { cl.placeholder = String(S.lots); if (document.activeElement !== cl) cl.value = S.chainLots || ''; }
+    if (cl) {
+      cl.placeholder = String(S.lots);
+      if (document.activeElement !== cl) cl.value = S.chainLots || '';
+    }
     // Bring the viewed expiry into the window when it changes; < and > then move the window freely.
     const maxStart = Math.max(0, list.length - EXP_SHOWN);
     const at = list.indexOf(v);
@@ -878,13 +1253,17 @@
       if (at >= 0 && (at < expWin.start || at >= expWin.start + EXP_SHOWN)) expWin.start = at;
     }
     expWin.start = Math.max(0, Math.min(maxStart, expWin.start));
-    const html = `<button type="button" class="btn-sm ghost nav" data-nav="-1" title="Earlier expiries" ${expWin.start <= 0 ? 'disabled' : ''}>&lt;</button>${
-      list.slice(expWin.start, expWin.start + EXP_SHOWN).map((e) => {
+    const html = `<button type="button" class="btn-sm ghost nav" data-nav="-1" title="Earlier expiries" ${expWin.start <= 0 ? 'disabled' : ''}>&lt;</button>${list
+      .slice(expWin.start, expWin.start + EXP_SHOWN)
+      .map((e) => {
         const past = hist && e < from;
         return `<button type="button" class="chip${e === v ? ' on' : ''}${past ? ' past' : ''}" data-exp="${e}" title="${past ? 'Expired before the replay day: click to replay this expiry' : 'Show this expiry in the chain'}">${dayLabel(e)}${mo.includes(e) ? ' (M)' : ''}${past ? '' : ` · ${days(e)}d`}</button>`;
-      }).join('')
-    }<button type="button" class="btn-sm ghost nav" data-nav="1" title="Later expiries" ${expWin.start >= maxStart ? 'disabled' : ''}>&gt;</button>`;
-    if (expWin.html !== html) { expWin.html = html; el.innerHTML = html; }
+      })
+      .join('')}<button type="button" class="btn-sm ghost nav" data-nav="1" title="Later expiries" ${expWin.start >= maxStart ? 'disabled' : ''}>&gt;</button>`;
+    if (expWin.html !== html) {
+      expWin.html = html;
+      el.innerHTML = html;
+    }
   }
   // Whenever the chain is opened (the Builder tab, an expiry / day / source / width change, restoring it from
   // minimized) the ATM row is scrolled to the middle of the chain; after that the scroll position is the user's.
@@ -902,8 +1281,15 @@
     const idx = M.ks.indexOf(atm);
     const ks = M.ks.slice(Math.max(0, idx - S.width), idx + S.width + 1);
     const held = new Map();
-    const heldAny = new Set(openLegs().filter((x) => legExp(x) === M.expiry).map((x) => x.strike + x.type)); // incl. unticked legs
-    for (const l of openLegs().filter(picked).filter((x) => legExp(x) === M.expiry)) held.set(l.strike + l.type, (held.get(l.strike + l.type) || 0) + dir(l) * l.lots);
+    const heldAny = new Set(
+      openLegs()
+        .filter((x) => legExp(x) === M.expiry)
+        .map((x) => x.strike + x.type),
+    ); // incl. unticked legs
+    for (const l of openLegs()
+      .filter(picked)
+      .filter((x) => legExp(x) === M.expiry))
+      held.set(l.strike + l.type, (held.get(l.strike + l.type) || 0) + dir(l) * l.lots);
     const lv = levels.get(S.src === 'hist' ? S.day : 'live')?.levels || [];
     const step = ks[1] - ks[0] || 50;
     const tag = (k) => {
@@ -922,19 +1308,34 @@
       const itm = call ? k < M.spot : k > M.spot;
       const btns = `<span class="sb-bs"><button data-add="B" data-k="${k}" data-t="${t}" title="Buy ${k} ${t}">B</button><button data-add="S" data-k="${k}" data-t="${t}" title="Sell ${k} ${t}">S</button>${heldAny.has(k + t) ? `<button data-rm="1" data-k="${k}" data-t="${t}" title="Remove the last added ${k} ${t} leg (deletes the entry, no trade)">✕</button>` : ''}</span>`;
       const pos = h ? `<span class="sb-held ${h > 0 ? 'pos' : 'neg'}" title="Open position">${h > 0 ? '+' : ''}${h}</span>` : '';
-      const parts = [`<td class="${itm ? 'itm' : ''} sb-ltp">${px == null ? '—' : num(px)}${pos}</td>`, `<td class="muted ${itm ? 'itm' : ''}">${d == null ? '—' : d.toFixed(2)}</td>`, `<td class="muted ${itm ? 'itm' : ''}">${iv ? (iv * 100).toFixed(1) : '—'}</td>`];
+      const parts = [
+        `<td class="${itm ? 'itm' : ''} sb-ltp">${px == null ? '—' : num(px)}${pos}</td>`,
+        `<td class="muted ${itm ? 'itm' : ''}">${d == null ? '—' : d.toFixed(2)}</td>`,
+        `<td class="muted ${itm ? 'itm' : ''}">${iv ? (iv * 100).toFixed(1) : '—'}</td>`,
+      ];
       if (S.src === 'live') parts.push(`<td class="muted ${itm ? 'itm' : ''}">${q?.oi ? window.app.compact(q.oi) : '—'}</td>`);
       parts.push(`<td class="${itm ? 'itm' : ''}">${btns}</td>`);
       return call ? parts.reverse().join('') : parts.join('');
     };
-    const head = (call) => { const h = ['LTP', 'Δ', 'IV']; if (S.src === 'live') h.push('OI'); h.push(''); return (call ? h.reverse() : h).map((x) => `<th>${x}</th>`).join(''); };
+    const head = (call) => {
+      const h = ['LTP', 'Δ', 'IV'];
+      if (S.src === 'live') h.push('OI');
+      h.push('');
+      return (call ? h.reverse() : h).map((x) => `<th>${x}</th>`).join('');
+    };
     let spotDone = false;
-    const rows = ks.map((k) => {
-      let pre = '';
-      if (!spotDone && k > M.spot) { pre = `<tr class="spot-row"><td colspan="${S.src === 'live' ? 11 : 9}"></td></tr>`; spotDone = true; }
-      return `${pre}<tr class="${k === atm ? 'atm' : ''}">${cell(k, 'CE')}<td class="strike">${k}${tag(k)}</td>${cell(k, 'PE')}</tr>`;
-    }).join('');
-    $('sbChain').innerHTML = `<table class="chain sb-chain-tbl"><thead><tr class="side-head"><th colspan="${S.src === 'live' ? 5 : 4}" class="ce-h">CALLS</th><th></th><th colspan="${S.src === 'live' ? 5 : 4}" class="pe-h">PUTS</th></tr><tr>${head(true)}<th class="strike-h">Strike</th>${head(false)}</tr></thead><tbody>${rows}</tbody></table>`;
+    const rows = ks
+      .map((k) => {
+        let pre = '';
+        if (!spotDone && k > M.spot) {
+          pre = `<tr class="spot-row"><td colspan="${S.src === 'live' ? 11 : 9}"></td></tr>`;
+          spotDone = true;
+        }
+        return `${pre}<tr class="${k === atm ? 'atm' : ''}">${cell(k, 'CE')}<td class="strike">${k}${tag(k)}</td>${cell(k, 'PE')}</tr>`;
+      })
+      .join('');
+    $('sbChain').innerHTML =
+      `<table class="chain sb-chain-tbl"><thead><tr class="side-head"><th colspan="${S.src === 'live' ? 5 : 4}" class="ce-h">CALLS</th><th></th><th colspan="${S.src === 'live' ? 5 : 4}" class="pe-h">PUTS</th></tr><tr>${head(true)}<th class="strike-h">Strike</th>${head(false)}</tr></thead><tbody>${rows}</tbody></table>`;
     centreAtm();
     renderArb(M);
     $('sbChainInfo').textContent = `· ${dayShort(M.expiry)} · lot ${M.lot} · ATM IV ${((atmIv(M) || 0) * 100).toFixed(1)}%`;
@@ -951,80 +1352,155 @@
     $('sbKpis').innerHTML = BT.payoff.kpis(A, { pnl: A.P.total });
     $('sbPayInfo').textContent = has ? `${SBAdjust.structure(A.legs).name} · ${M.label}` : 'add legs to see the payoff';
     $('sbPayCtl').classList.toggle('hidden', !has);
-    BT.payoff.controls($('sbPayCtl'), A, S.pay, () => { save(); const Mn = market(); if (Mn) renderPayoff(Mn, analyse(Mn, true)); });
+    BT.payoff.controls($('sbPayCtl'), A, S.pay, () => {
+      save();
+      const Mn = market();
+      if (Mn) renderPayoff(Mn, analyse(Mn, true));
+    });
     renderPayOn(M);
     const near = has ? A.legs.map(legExp).sort()[0] : null;
     const on = payOn(M);
-    BT.payoff.draw($('sbPayChart'), A, { expiryLabel: near ? dayShort(near) : '', horizonLabel: on ? `On ${dayShort(on)} (close)` : '', nowLabel: M.label, levels: nearLevels(M) });
+    BT.payoff.draw($('sbPayChart'), A, {
+      expiryLabel: near ? dayShort(near) : '',
+      horizonLabel: on ? `On ${dayShort(on)} (close)` : '',
+      nowLabel: M.label,
+      levels: nearLevels(M),
+    });
   }
 
   const px2 = (v) => (v == null || !Number.isFinite(Number(v)) ? '' : Number(v).toFixed(2));
   function renderPositions(M, A) {
     $('sbPosPanel').classList.toggle('empty', !S.legs.length); // no positions: only the header is shown
-    const lot = M.lot;
-    const rows = S.legs.slice().sort((a, b) => (b.open - a.open) || a.id - b.id).map((l) => {
-      const Ml = mk(l, M);
-      const now = l.open ? Ml.px(l.strike, l.type) : l.exitPx;
-      const p = now == null ? null : dir(l) * l.lots * Ml.lot * (now - l.entryPx);
-      const g = l.open ? A.legs.find((x) => x.id === l.id)?.g : null;
-      return `<tr class="${l.open ? '' : 'closed'}${picked(l) ? '' : ' unpicked'}" ${picked(l) ? '' : 'style="opacity:.45"'}>
+    const rows = S.legs
+      .slice()
+      .sort((a, b) => b.open - a.open || a.id - b.id)
+      .map((l) => {
+        const Ml = mk(l, M);
+        const now = l.open ? Ml.px(l.strike, l.type) : l.exitPx;
+        const p = now == null ? null : dir(l) * l.lots * Ml.lot * (now - l.entryPx);
+        const g = l.open ? A.legs.find((x) => x.id === l.id)?.g : null;
+        return `<tr class="${l.open ? '' : 'closed'}${picked(l) ? '' : ' unpicked'}" ${picked(l) ? '' : 'style="opacity:.45"'}>
         <td><input type="checkbox" data-pick="${l.id}" ${picked(l) ? 'checked' : ''} title="Include this leg in the payoff, Greeks, P&amp;L and suggestions"></td>
         <td><button class="btn-sm ghost sb-side ${l.action === 'B' ? 'pos' : 'neg'}" data-flip="${l.id}" title="Click to change this leg to a ${l.action === 'B' ? 'SELL' : 'BUY'} (same strike, lots and prices)"><b>${l.action === 'B' ? 'BUY' : 'SELL'}</b> ⇄</button><div class="sb-sub">${l.open ? `<input class="num xs" type="number" min="1" step="1" data-lots="${l.id}" value="${l.lots}" title="Change the number of lots of this leg">` : l.lots} <span class="muted">lot${l.lots === 1 ? '' : 's'}</span></div></td><td class="nowrap">${l.open ? `<button class="icon sb-kbtn" data-shift="${l.id}" data-d="-1" ${nextStrike(l, -1, M) == null ? 'disabled' : ''} title="Change to the next lower strike (edits this leg as if entered there; no exit trade)">−</button>` : ''}<b>${l.strike} ${l.type}</b>${l.open ? `<button class="icon sb-kbtn" data-shift="${l.id}" data-d="1" ${nextStrike(l, 1, M) == null ? 'disabled' : ''} title="Change to the next higher strike (edits this leg as if entered there; no exit trade)">+</button>` : ''}
           <div class="sb-sub">${l.open ? expirySelect(l) : `<span class="muted small">${dayShort(legExp(l))}</span>`}</div></td>
         <td><input class="num xs sb-px" type="number" min="0" step="0.05" data-entry="${l.id}" value="${px2(l.entryPx)}" title="Entry price of this leg: edit it to the price you actually got">${l.avg ? ' <span class="sb-avg" title="Average entry price: this strike was added more than once">avg</span>' : ''}
           <div class="sb-sub"><input class="sb-when" type="datetime-local" data-entered="${l.id}" value="${l.entryDay ? `${l.entryDay}T${l.entryClock || hhmm(l.entryMin ?? 0)}` : ''}" title="Entered: ${esc(l.entryAt)}. Edit the date and time this leg was entered (the entry price is not changed)"></div></td>
-        <td>${l.open ? num(now) : `<input class="num xs sb-px" type="number" min="0" step="0.05" data-exit="${l.id}" value="${px2(l.exitPx)}" title="Exit price of this leg: edit it to the price you actually got">
-          <div class="sb-sub"><input class="sb-when" type="datetime-local" data-exited="${l.id}" value="${l.exitDay ? `${l.exitDay}T${l.exitClock || hhmm(l.exitMin ?? 0)}` : ''}" title="Exited: ${esc(l.exitAt)}. Edit the date and time this leg was exited (the exit price is not changed)"></div>`}</td>
+        <td>${
+          l.open
+            ? num(now)
+            : `<input class="num xs sb-px" type="number" min="0" step="0.05" data-exit="${l.id}" value="${px2(l.exitPx)}" title="Exit price of this leg: edit it to the price you actually got">
+          <div class="sb-sub"><input class="sb-when" type="datetime-local" data-exited="${l.id}" value="${l.exitDay ? `${l.exitDay}T${l.exitClock || hhmm(l.exitMin ?? 0)}` : ''}" title="Exited: ${esc(l.exitAt)}. Edit the date and time this leg was exited (the exit price is not changed)"></div>`
+        }</td>
         <td class="${cls(p)} b">${p == null ? '—' : inrS(p)}${g ? `<div class="sb-sub muted" title="Delta of this leg">Δ ${g.delta.toFixed(2)}</div>` : ''}</td>
         <td class="nowrap">${l.open ? `<button class="icon" data-roll="${l.id}" data-d="-1" title="Roll one strike down: exits this leg at the current price (booking its P&amp;L) and opens the next lower strike">◀</button><button class="icon" data-roll="${l.id}" data-d="1" title="Roll one strike up: exits this leg at the current price (booking its P&amp;L) and opens the next higher strike">▶</button><button class="btn-sm ghost" data-close="${l.id}" title="Exit this leg (asks the exit price, and how many lots when more than one)">Exit</button>` : `<button class="btn-sm ghost" data-reopen="${l.id}" title="Undo the exit: the leg becomes open again at its original entry price">Re-open</button>`} <button class="icon" data-remove="${l.id}" title="Remove this strike from the position (deletes the entry as if never added; not an exit)">✕</button></td></tr>`;
-    }).join('');
-    $('sbPnlHead').innerHTML = S.legs.length ? `<span class="tot">Realised <b class="${cls(A.P.realised)}">${inrS(A.P.realised)}</b></span><span class="tot">Open <b class="${cls(A.P.open)}">${inrS(A.P.open)}</b></span><span class="tot total">Total <b class="${cls(A.P.total)}">${inrS(A.P.total)}</b></span>${S.from?.bt ? `<span class="tot" title="Brokerage and taxes of the backtest trade (${inr(S.from.bt.costs)}); its fills already include the slippage. With the backtest's adjustments replayed to the end this is the trade's Net P&amp;L in the backtest (${inrS(S.from.bt.net)}).">After costs <b class="${cls(A.P.total - S.from.bt.costs)}">${inrS(Math.round(A.P.total - S.from.bt.costs))}</b></span>` : ''} ${openLegs().length ? '<button class="btn-sm ghost" id="sbExitAll">Exit all</button>' : ''}` : '';
+      })
+      .join('');
+    $('sbPnlHead').innerHTML = S.legs.length
+      ? `<span class="tot">Realised <b class="${cls(A.P.realised)}">${inrS(A.P.realised)}</b></span><span class="tot">Open <b class="${cls(A.P.open)}">${inrS(A.P.open)}</b></span><span class="tot total">Total <b class="${cls(A.P.total)}">${inrS(A.P.total)}</b></span>${S.from?.bt ? `<span class="tot" title="Brokerage and taxes of the backtest trade (${inr(S.from.bt.costs)}); its fills already include the slippage. With the backtest's adjustments replayed to the end this is the trade's Net P&amp;L in the backtest (${inrS(S.from.bt.net)}).">After costs <b class="${cls(A.P.total - S.from.bt.costs)}">${inrS(Math.round(A.P.total - S.from.bt.costs))}</b></span>` : ''} ${openLegs().length ? '<button class="btn-sm ghost" id="sbExitAll">Exit all</button>' : ''}`
+      : '';
     const typing = !forceRebuild && document.activeElement?.closest?.('#sbPos') && ['INPUT', 'SELECT'].includes(document.activeElement.tagName);
-    if (!typing) $('sbPos').innerHTML = S.legs.length ? `<div class="tbl-wrap"><table class="grid-tbl sb-pos-tbl"><thead><tr><th></th><th>Side / lots</th><th>Strike / expiry</th><th>Entry</th><th>Now / exit</th><th>P&amp;L</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
-      : '<div class="muted pad">No trades yet. Click <b>B</b> or <b>S</b> next to a price in the chain, or pick a strategy and press <b>Apply</b>.</div>';
+    if (!typing)
+      $('sbPos').innerHTML = S.legs.length
+        ? `<div class="tbl-wrap"><table class="grid-tbl sb-pos-tbl"><thead><tr><th></th><th>Side / lots</th><th>Strike / expiry</th><th>Entry</th><th>Now / exit</th><th>P&amp;L</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
+        : '<div class="muted pad">No trades yet. Click <b>B</b> or <b>S</b> next to a price in the chain, or pick a strategy and press <b>Apply</b>.</div>';
   }
 
   // ---------- suggestions ----------
   let lastSugg = [];
   function suggCtx(M, A) {
     const lot = M.lot;
-    const step = (() => { const i = M.ks.indexOf(atmOf(M)); return M.ks[i + 1] - M.ks[i] || 50; })();
+    const step = (() => {
+      const i = M.ks.indexOf(atmOf(M));
+      return M.ks[i + 1] - M.ks[i] || 50;
+    })();
     const lv = levels.get(S.src === 'hist' ? S.day : 'live');
-    const near = (side, cls) => (lv?.levels || []).filter((x) => (cls === 'any' || x.cls === cls) && (side === 'support' ? x.price < M.spot : x.price > M.spot)).sort((a, b) => Math.abs(a.price - M.spot) - Math.abs(b.price - M.spot))[0] || null;
-    const L = lv ? { support: { major: near('support', 'major'), minor: near('support', 'minor'), any: near('support', 'any') }, resistance: { major: near('resistance', 'major'), minor: near('resistance', 'minor'), any: near('resistance', 'any') } } : null;
+    const near = (side, cls) =>
+      (lv?.levels || [])
+        .filter((x) => (cls === 'any' || x.cls === cls) && (side === 'support' ? x.price < M.spot : x.price > M.spot))
+        .sort((a, b) => Math.abs(a.price - M.spot) - Math.abs(b.price - M.spot))[0] || null;
+    const L = lv
+      ? {
+          support: { major: near('support', 'major'), minor: near('support', 'minor'), any: near('support', 'any') },
+          resistance: { major: near('resistance', 'major'), minor: near('resistance', 'minor'), any: near('resistance', 'any') },
+        }
+      : null;
     return {
-      spot: M.spot, strikes: M.ks, step, atm: atmOf(M), minute: M.minute, dte: M.T * 365, expiryDay: M.day === M.expiry,
-      session: S.src === 'live' ? 'multi' : S.session, lot,
-      legs: A.legs.filter((l) => legExp(l) === M.expiry).map((l) => ({ id: l.id, action: l.action, type: l.type, strike: l.strike, lots: l.lots, entryPx: l.entryPx, px: l.px, delta: l.g.delta, iv: l.iv })),
-      pnl: A.P.total, openPnl: A.P.open, credit: A.P.credit, maxProfit: A.unlimP ? Infinity : A.maxP, maxLoss: A.unlimL ? -Infinity : A.maxL,
-      greeks: A.g, atmIv: atmIv(M), atmIvEntry: S.atmIvEntry, levels: L, spotEntry: S.spotEntry,
+      spot: M.spot,
+      strikes: M.ks,
+      step,
+      atm: atmOf(M),
+      minute: M.minute,
+      dte: M.T * 365,
+      expiryDay: M.day === M.expiry,
+      session: S.src === 'live' ? 'multi' : S.session,
+      lot,
+      legs: A.legs
+        .filter((l) => legExp(l) === M.expiry)
+        .map((l) => ({ id: l.id, action: l.action, type: l.type, strike: l.strike, lots: l.lots, entryPx: l.entryPx, px: l.px, delta: l.g.delta, iv: l.iv })),
+      pnl: A.P.total,
+      openPnl: A.P.open,
+      credit: A.P.credit,
+      maxProfit: A.unlimP ? Infinity : A.maxP,
+      maxLoss: A.unlimL ? -Infinity : A.maxL,
+      greeks: A.g,
+      atmIv: atmIv(M),
+      atmIvEntry: S.atmIvEntry,
+      levels: L,
+      spotEntry: S.spotEntry,
       priceOf: (k, t) => M.px(k, t),
-      deltaOf: (k, t) => { const px = M.px(k, t); const iv = ivOf(px, M.spot, k, M.T, t === 'CE'); return iv ? greeks(M.spot, k, M.T, iv, t === 'CE').delta : null; },
+      deltaOf: (k, t) => {
+        const px = M.px(k, t);
+        const iv = ivOf(px, M.spot, k, M.T, t === 'CE');
+        return iv ? greeks(M.spot, k, M.T, iv, t === 'CE').delta : null;
+      },
     };
   }
   function renderSuggestions(M, A) {
     lastSugg = SBAdjust.suggest(suggCtx(M, A));
     const SEV = { act: 'Act now', warn: 'Consider', info: 'Option', ok: 'OK' };
     const next = S.plan.find((e) => !e.done);
-    const planHtml = S.src === 'hist' && S.plan.length ? `<div class="sugg-plan"><div class="muted small"><b>Adjustments from the backtest</b> — made automatically, at the backtest's prices, when the replay reaches them</div>${S.plan.map((e) => `<div class="sugg ${e.done ? 'ok' : e === next ? 'act' : 'info'}">
+    const planHtml =
+      S.src === 'hist' && S.plan.length
+        ? `<div class="sugg-plan"><div class="muted small"><b>Adjustments from the backtest</b> — made automatically, at the backtest's prices, when the replay reaches them</div>${S.plan
+            .map(
+              (e) => `<div class="sugg ${e.done ? 'ok' : e === next ? 'act' : 'info'}">
       <div class="sugg-head"><span class="sugg-sev">${e.done ? 'Done ✓' : e === next ? 'Next' : 'Later'}</span><b>${esc(dayShort(e.day))} ${esc(e.time)} · ${esc(e.title)}</b></div>
       <div class="small">${esc(e.why)}</div>
       <div class="sugg-ops">${e.ops.map((o) => `<span class="leg-chip ${o.op === 'open' ? (o.action === 'B' ? 'buy' : 'sell') : 'close'}">${esc(opText(o))}</span>`).join(' ')}</div>
-    </div>`).join('')}</div>` : '';
-    $('sbSugg').innerHTML = planHtml + lastSugg.map((s, i) => `<div class="sugg ${s.sev}">
+    </div>`,
+            )
+            .join('')}</div>`
+        : '';
+    $('sbSugg').innerHTML =
+      planHtml +
+      lastSugg
+        .map(
+          (s, i) => `<div class="sugg ${s.sev}">
       <div class="sugg-head"><span class="sugg-sev">${SEV[s.sev]}</span><b>${esc(s.title)}</b></div>
       <div class="small">${esc(s.why)}</div>
-      ${s.ops?.length ? `<div class="sugg-ops">${s.ops.map((o) => `<span class="leg-chip ${o.op === 'open' ? (o.action === 'B' ? 'buy' : 'sell') : 'close'}">${o.op === 'close' ? 'Exit ' + legName(o.id) + (o.lots ? ` (${o.lots})` : '') : `${o.action === 'B' ? 'Buy' : 'Sell'} ${o.lots} × ${o.strike} ${o.type}`}</span>`).join(' ')}
-        <button class="btn-sm" data-apply="${i}">Apply</button></div>` : ''}
+      ${
+        s.ops?.length
+          ? `<div class="sugg-ops">${s.ops.map((o) => `<span class="leg-chip ${o.op === 'open' ? (o.action === 'B' ? 'buy' : 'sell') : 'close'}">${o.op === 'close' ? 'Exit ' + legName(o.id) + (o.lots ? ` (${o.lots})` : '') : `${o.action === 'B' ? 'Buy' : 'Sell'} ${o.lots} × ${o.strike} ${o.type}`}</span>`).join(' ')}
+        <button class="btn-sm" data-apply="${i}">Apply</button></div>`
+          : ''
+      }
       ${s.src ? `<div class="muted small sugg-src">Source: ${esc(s.src)}</div>` : ''}
-    </div>`).join('');
+    </div>`,
+        )
+        .join('');
   }
-  const legName = (id) => { const l = S.legs.find((x) => x.id === id); return l ? `${l.strike} ${l.type}` : '#' + id; };
+  const legName = (id) => {
+    const l = S.legs.find((x) => x.id === id);
+    return l ? `${l.strike} ${l.type}` : '#' + id;
+  };
   function applyOps(ops, why) {
     const M = market();
     if (!M) return;
     for (const o of ops) {
-      if (o.op === 'close') { const l = S.legs.find((x) => x.id === o.id && x.open); if (l) closeLeg(l, M, o.lots, why); }
+      if (o.op === 'close') {
+        const l = S.legs.find((x) => x.id === o.id && x.open);
+        if (l) closeLeg(l, M, o.lots, why);
+      }
     }
     for (const o of ops) if (o.op === 'open') addLeg(o.action, o.type, o.strike, o.lots || S.lots, M, why);
     record();
@@ -1045,23 +1521,37 @@
       `P&L: open ${Math.round(A.P.open)}, realised ${Math.round(A.P.realised)} INR. Net ${A.P.credit >= 0 ? 'credit' : 'debit'} ${Math.round(Math.abs(A.P.credit))} INR. Max profit ${A.unlimP ? 'unlimited' : Math.round(A.maxP)}, max loss ${A.unlimL ? 'unlimited' : Math.round(A.maxL)}, breakevens ${A.be.map(Math.round).join(', ') || 'none'}.`,
       `Greeks (position, INR): delta ${A.g.delta.toFixed(1)} (Nifty units), gamma ${A.g.gamma.toFixed(3)}, theta ${Math.round(A.g.theta)}/day, vega ${Math.round(A.g.vega)}/vol pt.`,
       `ATM IV now ${((atmIv(M) || 0) * 100).toFixed(1)}%${S.atmIvEntry ? `, at entry ${(S.atmIvEntry * 100).toFixed(1)}%` : ''}. Nifty at entry ${S.spotEntry?.toFixed(1) ?? '?'}.`,
-      lv ? `Support/resistance: nearest resistance ${lv.resistance.any?.price ?? '-'} (major ${lv.resistance.major?.price ?? '-'}), nearest support ${lv.support.any?.price ?? '-'} (major ${lv.support.major?.price ?? '-'}).` : '',
+      lv
+        ? `Support/resistance: nearest resistance ${lv.resistance.any?.price ?? '-'} (major ${lv.resistance.major?.price ?? '-'}), nearest support ${lv.support.any?.price ?? '-'} (major ${lv.support.major?.price ?? '-'}).`
+        : '',
       `Chain (strike: CE / PE LTP): ${near.map((k) => `${k}: ${M.px(k, 'CE')?.toFixed(1) ?? '-'} / ${M.px(k, 'PE')?.toFixed(1) ?? '-'}`).join(', ')}.`,
       `Rule-engine suggestions: ${lastSugg.map((s) => s.title).join(' | ')}.`,
-    ].filter(Boolean).join('\n');
+    ]
+      .filter(Boolean)
+      .join('\n');
   }
 
   function md(text) {
-    const inline = (s) => esc(s)
-      .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
-      .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    const inline = (s) =>
+      esc(s)
+        .replace(/\*\*(.+?)\*\*/g, '<b>$1</b>')
+        .replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
     const out = [];
     let list = null;
     for (const raw of text.split('\n')) {
       const line = raw.trimEnd();
       const li = line.match(/^\s*(?:[-*]|\d+\.)\s+(.*)/);
-      if (li) { if (!list) { list = []; } list.push(`<li>${inline(li[1])}</li>`); continue; }
-      if (list) { out.push(`<ul>${list.join('')}</ul>`); list = null; }
+      if (li) {
+        if (!list) {
+          list = [];
+        }
+        list.push(`<li>${inline(li[1])}</li>`);
+        continue;
+      }
+      if (list) {
+        out.push(`<ul>${list.join('')}</ul>`);
+        list = null;
+      }
       const h = line.match(/^#{1,4}\s+(.*)/);
       if (h) out.push(`<h4>${inline(h[1])}</h4>`);
       else if (line.trim()) out.push(`<p>${inline(line)}</p>`);
@@ -1073,7 +1563,10 @@
     const M = market();
     if (!M) return;
     const A = analyse(M);
-    if (!A.legs.length) { flash('Open a position first — research looks up adjustments for it'); return; }
+    if (!A.legs.length) {
+      flash('Open a position first — research looks up adjustments for it');
+      return;
+    }
     const box = $('sbResearchOut');
     box.classList.remove('hidden');
     box.innerHTML = '<div class="muted">Searching the web for adjustments for this position (≈20–60 s)…</div>';
@@ -1107,9 +1600,18 @@
       save();
       renderTop();
       activate();
-    } else if (b.dataset.s) { S.session = b.dataset.s; save(); renderTop(); }
-    else if (b.id === 'sbGo') { S.startTime = $('sbTime').value || '09:20'; pause(); await setDay($('sbDay').value, minOf(S.startTime)); record(); save(); render(); }
-    else if (b.id === 'sbApply') {
+    } else if (b.dataset.s) {
+      S.session = b.dataset.s;
+      save();
+      renderTop();
+    } else if (b.id === 'sbGo') {
+      S.startTime = $('sbTime').value || '09:20';
+      pause();
+      await setDay($('sbDay').value, minOf(S.startTime));
+      record();
+      save();
+      render();
+    } else if (b.id === 'sbApply') {
       const s = BT.findStrategy($('sbStrat').value);
       if (!s || !market()) return;
       await placeStrategy(s);
@@ -1117,15 +1619,36 @@
     else if (b.id === 'sbSaveTrade') saveTrade(false);
     else if (b.id === 'sbSaveTradeNew') saveTrade(true);
     else if (b.id === 'sbBacktest') backtestPosition();
-    else if (b.id === 'sbFromClose') { S.from = null; save(); renderTop(); }
-    else if (b.id === 'sbClear') {
+    else if (b.id === 'sbFromClose') {
+      S.from = null;
+      save();
+      renderTop();
+    } else if (b.id === 'sbClear') {
       if (S.legs.length && !confirm('Clear the position, P&L and log?')) return;
       clearPosition();
-      S.chainMin = false; applyChainMin();
-      record(); save(); render();
+      S.chainMin = false;
+      applyChainMin();
+      record();
+      save();
+      render();
     }
   });
-  function clearPosition() { pause(); S.plan = []; S.alert = null; S.legs = []; S.log = []; S.mtm = []; S.atmIvEntry = null; S.spotEntry = null; S.from = null; S.lotFix = null; S.tradeId = null; research = null; $('sbResearchOut').classList.add('hidden'); renderTrades(); }
+  function clearPosition() {
+    pause();
+    S.plan = [];
+    S.alert = null;
+    S.legs = [];
+    S.log = [];
+    S.mtm = [];
+    S.atmIvEntry = null;
+    S.spotEntry = null;
+    S.from = null;
+    S.lotFix = null;
+    S.tradeId = null;
+    research = null;
+    $('sbResearchOut').classList.add('hidden');
+    renderTrades();
+  }
   $('sbTrades').addEventListener('click', (e) => {
     const b = e.target.closest('button');
     if (!b) return;
@@ -1135,27 +1658,41 @@
   });
   // The date picked in the top bar becomes the replay's start date.
   async function pickDay(v) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) { renderTop(); return; }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+      renderTop();
+      return;
+    }
     pause();
     const m = minOf($('sbTime').value || S.startTime);
     if (cal?.expiry === S.expiry && cal.days.includes(v)) await setDay(v, m);
     else {
       if (v > S.expiry) {
         const e = (BT.meta.calendar?.expired || []).find((x) => x >= v);
-        if (!e) { flash(`No historical data for ${dayShort(v)} yet: the last expired expiry is ${dayShort(S.expiry)}`); renderTop(); return; }
-        S.expiry = e; S.chainExp = null;
+        if (!e) {
+          flash(`No historical data for ${dayShort(v)} yet: the last expired expiry is ${dayShort(S.expiry)}`);
+          renderTop();
+          return;
+        }
+        S.expiry = e;
+        S.chainExp = null;
       }
-      S.day = v; S.m = m;
+      S.day = v;
+      S.m = m;
       await activate(); // reloads the expiry's days from this date and starts on the first trading day from it
       if (S.day !== v) flash(`${dayShort(v)} is not a trading day of the ${dayShort(S.expiry)} expiry: started on ${dayShort(S.day)}`);
     }
-    record(); save(); renderTop(); render();
+    record();
+    save();
+    renderTop();
+    render();
   }
   async function setMainExpiry(v) {
-    S.expiry = v; S.chainExp = null;
+    S.expiry = v;
+    S.chainExp = null;
     const moved = openLegs().length && S.day > S.expiry;
     if (!openLegs().length) S.day = null;
-    save(); await activate();
+    save();
+    await activate();
     if (moved) flash(`${dayShort(S.expiry)} expires before the replay day, so the replay moved to ${dayShort(S.day)} (position kept)`);
   }
   $('sbTop').addEventListener('change', async (e) => {
@@ -1165,33 +1702,55 @@
     // trades on the new expiry too.
     if (t.id === 'sbExpiry') await setMainExpiry(t.value);
     else if (t.id === 'sbDay') await pickDay(t.value);
-    else if (t.id === 'sbLiveExpiry') { S.liveExpiry = t.value; S.chainExp = null; save(); activate(); }
-    else if (t.id === 'sbLots') { S.lots = Math.max(1, Number(t.value) || 1); save(); }
+    else if (t.id === 'sbLiveExpiry') {
+      S.liveExpiry = t.value;
+      S.chainExp = null;
+      save();
+      activate();
+    } else if (t.id === 'sbLots') {
+      S.lots = Math.max(1, Number(t.value) || 1);
+      save();
+    }
   });
   $('sbReplay').addEventListener('click', async (e) => {
     const b = e.target.closest('button');
     if (!b) return;
-    if (b.dataset.r === 'alert-close') { S.alert = null; save(); renderReplay(); }
-    else if (b.dataset.step) { S.step = b.dataset.step === '1d' ? '1d' : Number(b.dataset.step); save(); renderReplay(); }
-    else if (b.dataset.r === 'step') await step();
+    if (b.dataset.r === 'alert-close') {
+      S.alert = null;
+      save();
+      renderReplay();
+    } else if (b.dataset.step) {
+      S.step = b.dataset.step === '1d' ? '1d' : Number(b.dataset.step);
+      save();
+      renderReplay();
+    } else if (b.dataset.r === 'step') await step();
     else if (b.dataset.r === 'back') await stepBack();
     else if (b.dataset.r === 'reset') {
       if ((S.legs.length || S.log.length) && !confirm('Reset everything? All strikes, P&L and logs will be cleared.')) return;
       clearPosition();
       S.seq = 0;
-      S.chainMin = false; applyChainMin(); // a fresh start also brings the minimized chain back
+      S.chainMin = false;
+      applyChainMin(); // a fresh start also brings the minimized chain back
       if (S.src === 'hist') await setDay($('sbDay')?.value || S.day, minOf(S.startTime));
-      record(); save(); render();
-    }
-    else if (b.dataset.r === 'play') (playTimer ? pause() : play());
+      record();
+      save();
+      render();
+    } else if (b.dataset.r === 'play') playTimer ? pause() : play();
     else if (b.dataset.r === 'restart') {
       if (S.legs.length && !confirm('Restart from the start day/time? The position and P&L will be cleared.')) return;
       clearPosition();
       await setDay($('sbDay')?.value || S.day, minOf(S.startTime));
-      record(); save(); render();
+      record();
+      save();
+      render();
     }
   });
-  $('sbReplay').addEventListener('change', (e) => { if (e.target.id === 'sbSpeed') { S.speed = Number(e.target.value); save(); } });
+  $('sbReplay').addEventListener('change', (e) => {
+    if (e.target.id === 'sbSpeed') {
+      S.speed = Number(e.target.value);
+      save();
+    }
+  });
   // Delete a leg outright (as if it was never added): no exit trade, no P&L from it.
   function removeLeg(id, M) {
     const i = S.legs.findIndex((x) => x.id === id);
@@ -1199,8 +1758,13 @@
     const l = S.legs[i];
     S.legs.splice(i, 1);
     log(`Removed ${l.lots} × ${l.strike} ${l.type} (${l.action === 'B' ? 'long' : 'short'}) from the position`, M);
-    if (!openLegs().length) { S.atmIvEntry = null; S.spotEntry = null; }
-    record(); save(); render();
+    if (!openLegs().length) {
+      S.atmIvEntry = null;
+      S.spotEntry = null;
+    }
+    record();
+    save();
+    render();
   }
   function setArbWidth(w) {
     S.arbWidth = w;
@@ -1210,18 +1774,35 @@
   }
   $('sbArb').addEventListener('click', (e) => {
     const aw = e.target.closest('button[data-aw]');
-    if (aw) { setArbWidth(Number(aw.dataset.aw)); return; }
+    if (aw) {
+      setArbWidth(Number(aw.dataset.aw));
+      return;
+    }
     const ab = e.target.closest('button[data-ab]');
-    if (ab) { S.arbBasis = ab.dataset.ab; save(); const Mv = market(viewedExp()); if (Mv) renderArb(Mv); return; }
+    if (ab) {
+      S.arbBasis = ab.dataset.ab;
+      save();
+      const Mv = market(viewedExp());
+      if (Mv) renderArb(Mv);
+      return;
+    }
     const b = e.target.closest('button[data-arb]');
     const f = e.target.closest('button[data-af]');
-    if (f) { S.arbType = f.dataset.af; save(); const Mv = market(viewedExp()); if (Mv) renderArb(Mv); return; }
+    if (f) {
+      S.arbType = f.dataset.af;
+      save();
+      const Mv = market(viewedExp());
+      if (Mv) renderArb(Mv);
+      return;
+    }
     const a = b && arbsShown[Number(b.dataset.arb)];
     const M = market(viewedExp());
     if (!a || !M) return;
     let ok = true;
     for (const [act, k] of a.legs) ok = addLeg(act, a.type, k, chainLots(), M, `vertical-spread arbitrage ${a.lo}/${a.hi} ${a.type}`) && ok;
-    record(); save(); render();
+    record();
+    save();
+    render();
     if (!ok) flash('One leg has no price right now');
   });
   $('sbChain').addEventListener('click', async (e) => {
@@ -1237,21 +1818,33 @@
     if (!b) return;
     const M = market(viewedExp()); // the expiry shown in the chain, so legs of different expiries can be mixed
     if (!M) return;
-    if (addLeg(b.dataset.add, b.dataset.t, Number(b.dataset.k), chainLots(), M, null, { merge: true })) { record(); save(); render(); }
+    if (addLeg(b.dataset.add, b.dataset.t, Number(b.dataset.k), chainLots(), M, null, { merge: true })) {
+      record();
+      save();
+      render();
+    }
   });
   $('sbChainLots').addEventListener('change', (e) => {
     const n = Math.floor(Number(e.target.value));
     S.chainLots = n >= 1 ? n : null; // empty / invalid -> follow the global Lots
     e.target.value = S.chainLots || '';
-    save(); render();
+    save();
+    render();
   });
   $('sbChainExp').addEventListener('click', async (e) => {
     const b = e.target.closest('button');
     if (!b || b.disabled) return;
-    if (b.dataset.nav) { expWin.start += Number(b.dataset.nav); renderChainExp(); return; }
+    if (b.dataset.nav) {
+      expWin.start += Number(b.dataset.nav);
+      renderChainExp();
+      return;
+    }
     const exp = b.dataset.exp;
     // An expiry that ended before the replay day has no chain on that day: make it the main expiry instead.
-    if (S.src === 'hist' && exp < (S.day || S.expiry)) { await setMainExpiry(exp); return; }
+    if (S.src === 'hist' && exp < (S.day || S.expiry)) {
+      await setMainExpiry(exp);
+      return;
+    }
     S.chainExp = exp;
     atmPending = true;
     save();
@@ -1274,7 +1867,11 @@
     if (S.src !== 'hist' || !S.day) return;
     // a wider chain than the downloaded strikes: fetch the extra ones for the main and the other shown / held expiries
     busy = true;
-    try { for (const exp of [S.expiry, ...extraExps()]) await loadDay(S.day, false, exp).catch(() => {}); } finally { busy = false; }
+    try {
+      for (const exp of [S.expiry, ...extraExps()]) await loadDay(S.day, false, exp).catch(() => {});
+    } finally {
+      busy = false;
+    }
     atmPending = true; // the extra strikes add rows above ATM
     render();
   });
@@ -1286,7 +1883,11 @@
   // Clicking the header itself minimizes / restores the chain; its controls (lots, expiries, width) do not.
   $('sbChainHead').addEventListener('click', (e) => {
     if (e.target.closest('button, input, select, label, .sb-exps')) return;
-    S.chainMin = !S.chainMin; atmPending = true; save(); applyChainMin(); render();
+    S.chainMin = !S.chainMin;
+    atmPending = true;
+    save();
+    applyChainMin();
+    render();
   });
   applyChainMin();
   // keep Positions the same height as Payoff
@@ -1302,13 +1903,20 @@
     if (b.dataset.reopen) {
       const l = S.legs.find((x) => x.id === Number(b.dataset.reopen));
       if (l && !l.open) {
-        if (!openLegs().length) { S.atmIvEntry = atmIv(M); S.spotEntry = M.spot; }
+        if (!openLegs().length) {
+          S.atmIvEntry = atmIv(M);
+          S.spotEntry = M.spot;
+        }
         l.open = true;
         delete l.exitPx;
         delete l.exitAt;
-        delete l.exitDay; delete l.exitMin; delete l.exitClock;
+        delete l.exitDay;
+        delete l.exitMin;
+        delete l.exitClock;
         log(`Re-open ${l.lots} × ${l.strike} ${l.type} (${l.action === 'B' ? 'long' : 'short'}) — exit undone`, M);
-        record(); save(); render();
+        record();
+        save();
+        render();
       }
     }
     // BUY <-> SELL: the leg changes side in place (same strike, lots, entry / exit prices)
@@ -1317,12 +1925,20 @@
       if (l) {
         l.action = l.action === 'B' ? 'S' : 'B';
         log(`Changed ${l.lots} × ${l.strike} ${l.type} to ${l.action === 'B' ? 'BUY' : 'SELL'} (entry ${px2(l.entryPx)} kept)`, M);
-        record(); save(); render();
+        record();
+        save();
+        render();
       }
     }
     if (b.dataset.remove) {
       const l = S.legs.find((x) => x.id === Number(b.dataset.remove));
-      if (l && confirm(`Remove ${l.action === 'B' ? 'BUY' : 'SELL'} ${l.lots} × ${l.strike} ${l.type} (${dayShort(legExp(l))}) from the position?\n\nThis deletes the leg as if it was never added. It is not an exit, so no P&L is booked.`)) removeLeg(l.id, M);
+      if (
+        l &&
+        confirm(
+          `Remove ${l.action === 'B' ? 'BUY' : 'SELL'} ${l.lots} × ${l.strike} ${l.type} (${dayShort(legExp(l))}) from the position?\n\nThis deletes the leg as if it was never added. It is not an exit, so no P&L is booked.`,
+        )
+      )
+        removeLeg(l.id, M);
     }
     if (b.dataset.close) {
       const l = S.legs.find((x) => x.id === Number(b.dataset.close));
@@ -1337,7 +1953,12 @@
       const l = S.legs.find((x) => x.id === Number(b.dataset.roll));
       const Ml = l && mk(l, M);
       const i = l ? Ml.ks.indexOf(l.strike) + Number(b.dataset.d) : -1;
-      if (l && Ml.ks[i] != null && closeLeg(l, M, null, 'roll')) { addLeg(l.action, l.type, Ml.ks[i], l.lots, Ml, 'roll', { rule: l.rule, ruleStrike: l.ruleStrike, ruleExpiry: l.ruleExpiry }); record(); save(); render(); }
+      if (l && Ml.ks[i] != null && closeLeg(l, M, null, 'roll')) {
+        addLeg(l.action, l.type, Ml.ks[i], l.lots, Ml, 'roll', { rule: l.rule, ruleStrike: l.ruleStrike, ruleExpiry: l.ruleExpiry });
+        record();
+        save();
+        render();
+      }
     }
   });
   // Expiry picker of an open leg: the expiries of the chain's picker (plus the leg's own).
@@ -1359,15 +1980,26 @@
   // minute's prices are available; otherwise (and live) it is re-entered at the current price.
   async function shiftStrike(l, d, M) {
     const to = nextStrike(l, d, M);
-    if (to == null) { flash(`No ${d < 0 ? 'lower' : 'higher'} ${l.type} strike with a price`); return; }
+    if (to == null) {
+      flash(`No ${d < 0 ? 'lower' : 'higher'} ${l.type} strike with a price`);
+      return;
+    }
     await moveLeg(l, to, legExp(l), M);
   }
   async function changeExpiry(l, exp, M) {
     if (exp === legExp(l)) return;
-    try { await ensureExp(exp); } catch { /* checked below */ }
+    try {
+      await ensureExp(exp);
+    } catch {
+      /* checked below */
+    }
     const Me = market(exp);
     const ks = Me ? Me.ks.filter((k) => Me.px(k, l.type) != null) : [];
-    if (!ks.length) { flash(`No ${l.type} prices for ${dayShort(exp)} at ${M.label}`); render(); return; }
+    if (!ks.length) {
+      flash(`No ${l.type} prices for ${dayShort(exp)} at ${M.label}`);
+      render();
+      return;
+    }
     const to = ks.reduce((b, k) => (Math.abs(k - l.strike) < Math.abs(b - l.strike) ? k : b), ks[0]); // same strike, or the nearest
     await moveLeg(l, to, exp, M);
   }
@@ -1382,20 +2014,32 @@
         const i = d0.ks.indexOf(to);
         const v = i >= 0 ? (l.type === 'CE' ? d0.ce : d0.pe)[i][l.entryMin] : null;
         if (v > 0) px = v;
-      } catch { /* fall back to the current price */ }
+      } catch {
+        /* fall back to the current price */
+      }
     }
     if (px == null) {
       const Ml = market(exp);
       px = Ml?.px(to, l.type) ?? null;
-      if (px == null) { Object.assign(l, from); flash(`${to} ${l.type} ${dayShort(exp)} has no price now`); render(); return; }
+      if (px == null) {
+        Object.assign(l, from);
+        flash(`${to} ${l.type} ${dayShort(exp)} has no price now`);
+        render();
+        return;
+      }
       Object.assign(l, { entryAt: Ml.label, entryDay: Ml.day, entryMin: Ml.minute, spotIn: Ml.spot });
     }
     l.entryPx = px;
     const what = [from.strike !== to ? `${from.strike} → ${to}` : `${to}`, from.expiry !== exp ? `${dayShort(from.expiry)} → ${dayShort(exp)}` : dayShort(exp)];
     log(`Moved ${l.action === 'B' ? 'long' : 'short'} ${l.lots} × ${what[0]} ${l.type} (${what[1]}) @ ${px.toFixed(2)}, entry ${l.entryAt}; no exit trade`, M);
-    record(); save();
+    record();
+    save();
     forceRebuild = true;
-    try { render(); } finally { forceRebuild = false; }
+    try {
+      render();
+    } finally {
+      forceRebuild = false;
+    }
   }
   $('sbPos').addEventListener('change', async (e) => {
     const expId = e.target.dataset?.exp;
@@ -1414,12 +2058,20 @@
       if (l && M && (isEntry || !l.open)) {
         const was = isEntry ? l.entryAt : l.exitAt;
         if (setWhen(l, isEntry ? 'entry' : 'exit', e.target.value) && (isEntry ? l.entryAt : l.exitAt) !== was) {
-          log(`${isEntry ? 'Entered' : 'Exited'} date of ${l.action === 'B' ? 'long' : 'short'} ${l.lots} × ${l.strike} ${l.type} edited: ${was || '—'} → ${isEntry ? l.entryAt : l.exitAt}`, M);
-          record(); save();
+          log(
+            `${isEntry ? 'Entered' : 'Exited'} date of ${l.action === 'B' ? 'long' : 'short'} ${l.lots} × ${l.strike} ${l.type} edited: ${was || '—'} → ${isEntry ? l.entryAt : l.exitAt}`,
+            M,
+          );
+          record();
+          save();
         }
       }
       forceRebuild = true;
-      try { render(); } finally { forceRebuild = false; }
+      try {
+        render();
+      } finally {
+        forceRebuild = false;
+      }
       return;
     }
     // Entry / exit price typed by hand (exit only on a closed leg)
@@ -1431,22 +2083,38 @@
       const M = market();
       if (l && M && e.target.value !== '' && v >= 0 && (isEntry || !l.open)) {
         const was = isEntry ? l.entryPx : l.exitPx;
-        if (isEntry) { l.entryPx = v; if (v !== was) delete l.avg; } else l.exitPx = v; // a typed entry price is no longer an average
-        if (v !== was) log(`${isEntry ? 'Entry' : 'Exit'} price of ${l.action === 'B' ? 'long' : 'short'} ${l.lots} × ${l.strike} ${l.type} edited: ${px2(was)} → ${px2(v)}`, M);
-        record(); save();
+        if (isEntry) {
+          l.entryPx = v;
+          if (v !== was) delete l.avg;
+        } else l.exitPx = v; // a typed entry price is no longer an average
+        if (v !== was)
+          log(
+            `${isEntry ? 'Entry' : 'Exit'} price of ${l.action === 'B' ? 'long' : 'short'} ${l.lots} × ${l.strike} ${l.type} edited: ${px2(was)} → ${px2(v)}`,
+            M,
+          );
+        record();
+        save();
       }
       forceRebuild = true;
-      try { render(); } finally { forceRebuild = false; }
+      try {
+        render();
+      } finally {
+        forceRebuild = false;
+      }
       return;
     }
     const lotsId = e.target.dataset?.lots;
-    if (lotsId) { commitLots(Number(lotsId), e.target.value); return; }
+    if (lotsId) {
+      commitLots(Number(lotsId), e.target.value);
+      return;
+    }
     const id = e.target.dataset?.pick;
     if (!id) return;
     const l = S.legs.find((x) => x.id === Number(id));
     if (!l) return;
     l.off = !e.target.checked;
-    save(); render();
+    save();
+    render();
   });
   // Apply a new lot count to an open leg (any number >= 1). The box keeps focus so arrow keys / spinner keep stepping.
   let lotsTimer;
@@ -1457,13 +2125,23 @@
     const boxes = () => [...$('sbPos').querySelectorAll(`input[data-lots="${id}"]`)];
     const at = boxes().indexOf(document.activeElement);
     l.lots = n;
-    record(); save();
+    record();
+    save();
     forceRebuild = true;
-    try { render(); } finally { forceRebuild = false; }
+    try {
+      render();
+    } finally {
+      forceRebuild = false;
+    }
     if (at >= 0) boxes()[at]?.focus();
   }
   $('sbPos').addEventListener('input', (e) => {
-    if (e.target.dataset?.lots) { clearTimeout(lotsTimer); const { lots } = e.target.dataset; const v = e.target.value; lotsTimer = setTimeout(() => commitLots(Number(lots), v), 450); }
+    if (e.target.dataset?.lots) {
+      clearTimeout(lotsTimer);
+      const { lots } = e.target.dataset;
+      const v = e.target.value;
+      lotsTimer = setTimeout(() => commitLots(Number(lots), v), 450);
+    }
   });
   $('sbPnlHead').addEventListener('click', (e) => {
     if (e.target.id === 'sbExitAll') exitDialog(openLegs(), 'exit all');
@@ -1473,7 +2151,12 @@
     const [day, clock] = String(value).split('T');
     if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !/^\d{2}:\d{2}/.test(clock || '')) return false;
     const hm = clock.slice(0, 5);
-    Object.assign(l, { [which + 'Day']: day, [which + 'Clock']: hm, [which + 'Min']: minOf(hm), [which + 'At']: `${WD[new Date(day + 'T00:00:00Z').getUTCDay()]} ${dayShort(day)} ${hm}` });
+    Object.assign(l, {
+      [which + 'Day']: day,
+      [which + 'Clock']: hm,
+      [which + 'Min']: minOf(hm),
+      [which + 'At']: `${WD[new Date(day + 'T00:00:00Z').getUTCDay()]} ${dayShort(day)} ${hm}`,
+    });
     return true;
   }
   // Exit popup: asks the exit price (and lots) of each leg being exited, with the current price filled in; the entry
@@ -1487,15 +2170,22 @@
     document.querySelector('.modal-ov.sb-exit')?.remove();
     const ov = document.createElement('div');
     ov.className = 'modal-ov sb-exit';
-    const nowPx = (l) => { const Ml = mk(l, M); return Ml.px(l.strike, l.type) ?? (Ml.T <= 1e-5 ? Math.max(0, l.type === 'CE' ? M.spot - l.strike : l.strike - M.spot) : null); };
+    const nowPx = (l) => {
+      const Ml = mk(l, M);
+      return Ml.px(l.strike, l.type) ?? (Ml.T <= 1e-5 ? Math.max(0, l.type === 'CE' ? M.spot - l.strike : l.strike - M.spot) : null);
+    };
     ov.innerHTML = `<div class="panel modal sb-exit-box">
       <div class="modal-head"><h3>Exit ${legs.length > 1 ? `${legs.length} legs` : 'position'} <span class="muted small">${esc(M.label)}</span></h3><button class="icon" data-x="cancel" title="Cancel">✕</button></div>
       <div class="sb-exit-body">
-        <table class="grid-tbl"><thead><tr><th class="l">Leg</th><th>Entry price</th><th>Lots to exit</th><th>Exit price</th></tr></thead><tbody>${legs.map((l) => `<tr>
+        <table class="grid-tbl"><thead><tr><th class="l">Leg</th><th>Entry price</th><th>Lots to exit</th><th>Exit price</th></tr></thead><tbody>${legs
+          .map(
+            (l) => `<tr>
           <td class="l"><b class="${l.action === 'B' ? 'pos' : 'neg'}">${l.action === 'B' ? 'BUY' : 'SELL'}</b> ${l.strike} ${l.type} <span class="muted small">${dayShort(legExp(l))}</span></td>
           <td><input class="num xs sb-px" type="number" min="0" step="0.05" data-xe="${l.id}" value="${px2(l.entryPx)}" title="Entry price of this leg"></td>
           <td><input class="num xs" type="number" min="1" max="${l.lots}" step="1" data-xl="${l.id}" value="${l.lots}" ${l.lots > 1 ? '' : 'disabled'}> <span class="muted small">of ${l.lots}</span></td>
-          <td><input class="num xs sb-px" type="number" min="0" step="0.05" data-xp="${l.id}" value="${px2(nowPx(l))}" placeholder="price"></td></tr>`).join('')}</tbody></table>
+          <td><input class="num xs sb-px" type="number" min="0" step="0.05" data-xp="${l.id}" value="${px2(nowPx(l))}" placeholder="price"></td></tr>`,
+          )
+          .join('')}</tbody></table>
         <label class="mini">Exit date &amp; time <input class="sb-when" type="datetime-local" data-x="when" value="${when0}"></label>
         <div class="muted small">The current price and time are filled in: change them to what you actually got. Exiting fewer lots leaves the rest open.</div>
         <div class="err small" data-x="msg"></div>
@@ -1508,37 +2198,62 @@
       for (const l of legs) {
         const px = Number(ov.querySelector(`[data-xp="${l.id}"]`).value);
         const n = Math.floor(Number(ov.querySelector(`[data-xl="${l.id}"]`).value));
-        if (ov.querySelector(`[data-xp="${l.id}"]`).value === '' || !(px >= 0)) { ov.querySelector('[data-x="msg"]').textContent = `Enter an exit price for ${l.strike} ${l.type}`; return; }
-        if (!(n >= 1 && n <= l.lots)) { ov.querySelector('[data-x="msg"]').textContent = `Lots of ${l.strike} ${l.type} must be between 1 and ${l.lots}`; return; }
+        if (ov.querySelector(`[data-xp="${l.id}"]`).value === '' || !(px >= 0)) {
+          ov.querySelector('[data-x="msg"]').textContent = `Enter an exit price for ${l.strike} ${l.type}`;
+          return;
+        }
+        if (!(n >= 1 && n <= l.lots)) {
+          ov.querySelector('[data-x="msg"]').textContent = `Lots of ${l.strike} ${l.type} must be between 1 and ${l.lots}`;
+          return;
+        }
         const eIn = ov.querySelector(`[data-xe="${l.id}"]`).value;
-        if (eIn === '' || !(Number(eIn) >= 0)) { ov.querySelector('[data-x="msg"]').textContent = `Enter an entry price for ${l.strike} ${l.type}`; return; }
+        if (eIn === '' || !(Number(eIn) >= 0)) {
+          ov.querySelector('[data-x="msg"]').textContent = `Enter an entry price for ${l.strike} ${l.type}`;
+          return;
+        }
         jobs.push([l, n, px, Number(eIn)]);
       }
       const when = ov.querySelector('[data-x="when"]').value;
-      if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(when)) { ov.querySelector('[data-x="msg"]').textContent = 'Enter the exit date and time'; return; }
+      if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(when)) {
+        ov.querySelector('[data-x="msg"]').textContent = 'Enter the exit date and time';
+        return;
+      }
       for (const [l, n, px, entry] of jobs) {
         if (!l.open) continue;
-        if (px2(entry) !== px2(l.entryPx)) { log(`Entry price of ${l.action === 'B' ? 'long' : 'short'} ${l.lots} × ${l.strike} ${l.type} edited: ${px2(l.entryPx)} → ${px2(entry)}`, Mn); l.entryPx = entry; }
+        if (px2(entry) !== px2(l.entryPx)) {
+          log(`Entry price of ${l.action === 'B' ? 'long' : 'short'} ${l.lots} × ${l.strike} ${l.type} edited: ${px2(l.entryPx)} → ${px2(entry)}`, Mn);
+          l.entryPx = entry;
+        }
         const partial = n < l.lots;
         // closeLeg takes only a positive fixed price: an exit at 0 (expired worthless) is set on the closed leg after
         if (!closeLeg(l, Mn, n, why, px > 0 ? px : 0.01)) continue;
         const done = partial ? S.legs[S.legs.length - 1] : l;
         if (!(px > 0)) done.exitPx = 0;
-        if (when !== when0) setWhen(done, 'exit', when); // a corrected exit time; otherwise the market's own label stays
+        if (when !== when0)
+          setWhen(done, 'exit', when); // a corrected exit time; otherwise the market's own label stays
         else done.exitClock = when.slice(11, 16);
       }
       close();
-      record(); save(); render();
+      record();
+      save();
+      render();
     };
     ov.addEventListener('click', (e) => {
       const x = e.target.closest('[data-x]')?.dataset.x;
       if (x === 'cancel' || e.target === ov) close();
       else if (x === 'ok') confirmExit();
     });
-    ov.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); else if (e.key === 'Enter') { e.preventDefault(); confirmExit(); } });
+    ov.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') close();
+      else if (e.key === 'Enter') {
+        e.preventDefault();
+        confirmExit();
+      }
+    });
     document.body.appendChild(ov);
     const first = ov.querySelector('[data-xp]');
-    first.focus(); first.select();
+    first.focus();
+    first.select();
   }
   $('sbSugg').addEventListener('click', (e) => {
     const b = e.target.closest('[data-apply]');
@@ -1549,8 +2264,17 @@
   $('sbResearch').addEventListener('click', runResearch);
 
   // The Trades tab lists the saved trades (it needs the calendar for the lot size of live P&L).
-  const initTrades = async () => { await BT.loadMeta().catch(() => {}); loadTrades(); };
-  window.addEventListener('viewchange', (e) => { if (e.detail === 'sb') init(); else { pause(); if (e.detail === 'tr') initTrades(); } });
+  const initTrades = async () => {
+    await BT.loadMeta().catch(() => {});
+    loadTrades();
+  };
+  window.addEventListener('viewchange', (e) => {
+    if (e.detail === 'sb') init();
+    else {
+      pause();
+      if (e.detail === 'tr') initTrades();
+    }
+  });
   if (window.app.state.view === 'sb') init();
   else if (window.app.state.view === 'tr') initTrades();
 })();

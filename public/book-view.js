@@ -5,13 +5,31 @@
   const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   const { state, compact } = window.app;
   const C = {
-    ce: css('--ce-mark'), pe: css('--pe-mark'), up: css('--up'), down: css('--down'), muted: css('--muted'),
-    text: css('--text'), atm: css('--atm'), accent: css('--accent'), surface: css('--panel'),
-    grid: 'rgba(139,148,158,.12)', zero: 'rgba(139,148,158,.45)',
+    ce: css('--ce-mark'),
+    pe: css('--pe-mark'),
+    up: css('--up'),
+    down: css('--down'),
+    muted: css('--muted'),
+    text: css('--text'),
+    atm: css('--atm'),
+    accent: css('--accent'),
+    surface: css('--panel'),
+    grid: 'rgba(139,148,158,.12)',
+    zero: 'rgba(139,148,158,.45)',
   };
   const fmt = (ts) => new Date(ts + 5.5 * 3600_000).toISOString().slice(11, 16);
-  const local = (k, d) => { try { return localStorage.getItem('oc.book.' + k) ?? d; } catch { return d; } };
-  const save = (k, v) => { try { localStorage.setItem('oc.book.' + k, v); } catch {} };
+  const local = (k, d) => {
+    try {
+      return localStorage.getItem('oc.book.' + k) ?? d;
+    } catch {
+      return d;
+    }
+  };
+  const save = (k, v) => {
+    try {
+      localStorage.setItem('oc.book.' + k, v);
+    } catch {}
+  };
   const bs = { data: null, fetchedAt: 0, fetching: false, charts: {}, queueSide: local('queueSide', 'pe'), heatSide: local('heatSide', 'pe') };
 
   const make = (id, config) => (bs.charts[id] ||= new Chart($(id), config));
@@ -23,13 +41,16 @@
     el.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset[attr] === value));
     if (!el.dataset.bound) {
       el.dataset.bound = '1';
-      el.addEventListener('click', (e) => { if (e.target.dataset[attr]) onPick(e.target.dataset[attr]); });
+      el.addEventListener('click', (e) => {
+        if (e.target.dataset[attr]) onPick(e.target.dataset[attr]);
+      });
     }
   }
 
   // ---------- tiles ----------
   function renderTiles(b) {
-    const tile = (label, value, note, vc = '') => `<div class="st"><span class="s">${label}</span><span class="v ${vc}">${value}</span><span class="n">${note}</span></div>`;
+    const tile = (label, value, note, vc = '') =>
+      `<div class="st"><span class="s">${label}</span><span class="v ${vc}">${value}</span><span class="n">${note}</span></div>`;
     const n = b.now;
     const atm = b.strikes.find((s) => s.strike === b.atm);
     const spr = (o) => (o?.bid && o?.ask ? `${(o.ask - o.bid).toFixed(2)}` : '—');
@@ -39,13 +60,26 @@
     const bearTr = m ? m.peBuy + m.ceSell : 0;
     const r = b.reaction;
     $('bTiles').innerHTML = [
-      tile('Book pressure', n?.bull != null ? `${n.bull.toFixed(1)}%` : '—', n?.avg30 != null ? `bullish side · 30-min avg ${n.avg30.toFixed(1)}%` : 'bullish side of waiting qty'),
+      tile(
+        'Book pressure',
+        n?.bull != null ? `${n.bull.toFixed(1)}%` : '—',
+        n?.avg30 != null ? `bullish side · 30-min avg ${n.avg30.toFixed(1)}%` : 'bullish side of waiting qty',
+      ),
       tile('vs 30-min avg', n?.bull != null && n?.avg30 != null ? sgn(n.bull - n.avg30) : '—', 'pts · + = leaning bullish', cls(n?.bull - n?.avg30)),
       tile('Change 5 / 15 min', `${sgn(n?.chg5)} / ${sgn(n?.chg15)}`, 'pts of bullish share'),
       tile(`ATM ${b.atm ?? ''} CE spread`, spr(atm?.ce), sprPct(atm?.ce)),
       tile(`ATM ${b.atm ?? ''} PE spread`, spr(atm?.pe), sprPct(atm?.pe)),
-      tile('Trades, last minute', bullTr + bearTr ? `${((bullTr / (bullTr + bearTr)) * 100).toFixed(0)}% bull` : '—', m ? `bull ${compact(bullTr)} · bear ${compact(bearTr)}` : 'needs tick feed', cls(bullTr - bearTr)),
-      tile('Reaction today', r.leaned ? `${((r.right / r.leaned) * 100).toFixed(0)}%` : '—', r.leaned ? `${r.right}/${r.leaned} leans followed in 5m` : 'not enough data yet'),
+      tile(
+        'Trades, last minute',
+        bullTr + bearTr ? `${((bullTr / (bullTr + bearTr)) * 100).toFixed(0)}% bull` : '—',
+        m ? `bull ${compact(bullTr)} · bear ${compact(bearTr)}` : 'needs tick feed',
+        cls(bullTr - bearTr),
+      ),
+      tile(
+        'Reaction today',
+        r.leaned ? `${((r.right / r.leaned) * 100).toFixed(0)}%` : '—',
+        r.leaned ? `${r.right}/${r.leaned} leans followed in 5m` : 'not enough data yet',
+      ),
     ].join('');
   }
 
@@ -55,20 +89,51 @@
     const pct = (o) => (o.tbq != null && o.tbq + o.tsq > 0 ? (o.tbq / (o.tbq + o.tsq)) * 100 : null);
     const ch = make('bBuyPct', {
       type: 'line',
-      data: { labels: [], datasets: [
-        { label: 'CE', showLine: false, pointRadius: 5, pointHoverRadius: 7, pointBackgroundColor: C.ce, pointBorderColor: C.surface, pointBorderWidth: 2, borderColor: C.ce, data: [] },
-        { label: 'PE', showLine: false, pointRadius: 5, pointHoverRadius: 7, pointBackgroundColor: C.pe, pointBorderColor: C.surface, pointBorderWidth: 2, borderColor: C.pe, data: [] },
-        { label: 'balanced', borderColor: C.muted, borderDash: [4, 4], borderWidth: 1, pointRadius: 0, pointHoverRadius: 0, data: [] },
-      ] },
+      data: {
+        labels: [],
+        datasets: [
+          {
+            label: 'CE',
+            showLine: false,
+            pointRadius: 5,
+            pointHoverRadius: 7,
+            pointBackgroundColor: C.ce,
+            pointBorderColor: C.surface,
+            pointBorderWidth: 2,
+            borderColor: C.ce,
+            data: [],
+          },
+          {
+            label: 'PE',
+            showLine: false,
+            pointRadius: 5,
+            pointHoverRadius: 7,
+            pointBackgroundColor: C.pe,
+            pointBorderColor: C.surface,
+            pointBorderWidth: 2,
+            borderColor: C.pe,
+            data: [],
+          },
+          { label: 'balanced', borderColor: C.muted, borderDash: [4, 4], borderWidth: 1, pointRadius: 0, pointHoverRadius: 0, data: [] },
+        ],
+      },
       options: {
         interaction: { mode: 'index', intersect: false },
-        scales: { x: { grid: { display: false } }, y: { min: 0, max: 100, grid: { color: C.grid }, border: { display: false }, ticks: { callback: (v) => `${v}%` } } },
+        scales: {
+          x: { grid: { display: false } },
+          y: { min: 0, max: 100, grid: { color: C.grid }, border: { display: false }, ticks: { callback: (v) => `${v}%` } },
+        },
         plugins: {
           legend: { position: 'top', align: 'end', labels: { filter: (i) => i.text !== 'balanced' } },
-          tooltip: { filter: (c) => c.datasetIndex < 2, callbacks: { label: (c) => {
-            const o = s[c.dataIndex][c.datasetIndex ? 'pe' : 'ce'];
-            return ` ${c.dataset.label} ${c.raw == null ? '—' : c.raw.toFixed(0) + '% buy'} · waiting buy ${compact(o.tbq)} / sell ${compact(o.tsq)}`;
-          } } },
+          tooltip: {
+            filter: (c) => c.datasetIndex < 2,
+            callbacks: {
+              label: (c) => {
+                const o = s[c.dataIndex][c.datasetIndex ? 'pe' : 'ce'];
+                return ` ${c.dataset.label} ${c.raw == null ? '—' : c.raw.toFixed(0) + '% buy'} · waiting buy ${compact(o.tbq)} / sell ${compact(o.tsq)}`;
+              },
+            },
+          },
         },
       },
     });
@@ -82,29 +147,45 @@
 
   // ---------- 2 · queue size per strike ----------
   function renderQueue(b) {
-    seg('bQueueSide', 's', bs.queueSide, (v) => { bs.queueSide = v; save('queueSide', v); renderQueue(bs.data); });
+    seg('bQueueSide', 's', bs.queueSide, (v) => {
+      bs.queueSide = v;
+      save('queueSide', v);
+      renderQueue(bs.data);
+    });
     const s = b.strikes;
     const side = bs.queueSide;
     const ch = make('bQueue', {
       type: 'bar',
-      data: { labels: [], datasets: [
-        { label: 'Waiting to buy', backgroundColor: C.up, borderRadius: 4, borderSkipped: 'start', data: [] },
-        { label: 'Waiting to sell', backgroundColor: C.down, borderRadius: 4, borderSkipped: 'start', data: [] },
-      ] },
+      data: {
+        labels: [],
+        datasets: [
+          { label: 'Waiting to buy', backgroundColor: C.up, borderRadius: 4, borderSkipped: 'start', data: [] },
+          { label: 'Waiting to sell', backgroundColor: C.down, borderRadius: 4, borderSkipped: 'start', data: [] },
+        ],
+      },
       options: {
         interaction: { mode: 'index', intersect: false },
         scales: {
           x: { stacked: true, grid: { display: false } },
-          y: { stacked: true, grid: { color: (c) => (c.tick.value === 0 ? C.zero : C.grid) }, border: { display: false }, ticks: { callback: (v) => compact(Math.abs(v)) } },
+          y: {
+            stacked: true,
+            grid: { color: (c) => (c.tick.value === 0 ? C.zero : C.grid) },
+            border: { display: false },
+            ticks: { callback: (v) => compact(Math.abs(v)) },
+          },
         },
         plugins: {
           legend: { position: 'top', align: 'end' },
-          tooltip: { callbacks: { label: (c) => {
-            const o = s[c.dataIndex][side];
-            return c.datasetIndex === 0
-              ? ` buy queue ${compact(o.tbq)} · best bid ${o.bid ?? '—'} × ${o.bidQ ?? '—'}`
-              : ` sell queue ${compact(o.tsq)} · best ask ${o.ask ?? '—'} × ${o.askQ ?? '—'}`;
-          } } },
+          tooltip: {
+            callbacks: {
+              label: (c) => {
+                const o = s[c.dataIndex][side];
+                return c.datasetIndex === 0
+                  ? ` buy queue ${compact(o.tbq)} · best bid ${o.bid ?? '—'} × ${o.bidQ ?? '—'}`
+                  : ` sell queue ${compact(o.tsq)} · best ask ${o.ask ?? '—'} × ${o.askQ ?? '—'}`;
+              },
+            },
+          },
         },
         datasets: { bar: { categoryPercentage: 0.8, barPercentage: 0.9 } },
       },
@@ -136,10 +217,12 @@
 
     const pr = make('bPressure', {
       type: 'line',
-      data: { datasets: [
-        { label: 'Book pressure', data: [], borderColor: C.text, borderWidth: 2, pointRadius: 0, pointHoverRadius: 3, tension: 0.2 },
-        { label: '30-min average', data: [], borderColor: C.muted, borderDash: [5, 4], borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 0 },
-      ] },
+      data: {
+        datasets: [
+          { label: 'Book pressure', data: [], borderColor: C.text, borderWidth: 2, pointRadius: 0, pointHoverRadius: 3, tension: 0.2 },
+          { label: '30-min average', data: [], borderColor: C.muted, borderDash: [5, 4], borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 0 },
+        ],
+      },
       options: {
         interaction: { mode: 'index', intersect: false },
         scales: { x, y: { grid: { color: C.grid }, border: { display: false }, ticks: { callback: (v) => `${v}%` } } },
@@ -157,10 +240,17 @@
 
   // ---------- 4 · heatmap: buy share per strike per minute ----------
   function renderHeat(b) {
-    seg('bHeatSide', 's', bs.heatSide, (v) => { bs.heatSide = v; save('heatSide', v); renderHeat(bs.data); });
+    seg('bHeatSide', 's', bs.heatSide, (v) => {
+      bs.heatSide = v;
+      save('heatSide', v);
+      renderHeat(bs.data);
+    });
     const h = b.heat;
     const el = $('bHeat');
-    if (!h.strikes.length) { el.innerHTML = '<div class="muted small">Waiting for order-book data (needs the tick feed).</div>'; return; }
+    if (!h.strikes.length) {
+      el.innerHTML = '<div class="muted small">Waiting for order-book data (needs the tick feed).</div>';
+      return;
+    }
     const vals = h[bs.heatSide];
     const n = h.times.length;
     el.style.gridTemplateColumns = `44px repeat(${n}, minmax(0, 1fr))`;
@@ -193,17 +283,25 @@
     const mins = b.minutes.slice(-60);
     const ch = make('bTrades', {
       type: 'bar',
-      data: { labels: [], datasets: [
-        { label: 'CE bought', backgroundColor: C.ce, stack: 's', data: [] },
-        { label: 'PE sold', backgroundColor: C.pe + '99', stack: 's', data: [] },
-        { label: 'PE bought', backgroundColor: C.pe, stack: 's', data: [] },
-        { label: 'CE sold', backgroundColor: C.ce + '99', stack: 's', data: [] },
-      ] },
+      data: {
+        labels: [],
+        datasets: [
+          { label: 'CE bought', backgroundColor: C.ce, stack: 's', data: [] },
+          { label: 'PE sold', backgroundColor: C.pe + '99', stack: 's', data: [] },
+          { label: 'PE bought', backgroundColor: C.pe, stack: 's', data: [] },
+          { label: 'CE sold', backgroundColor: C.ce + '99', stack: 's', data: [] },
+        ],
+      },
       options: {
         interaction: { mode: 'index', intersect: false },
         scales: {
           x: { stacked: true, grid: { display: false }, ticks: { maxTicksLimit: 8 } },
-          y: { stacked: true, grid: { color: (c) => (c.tick.value === 0 ? C.zero : C.grid) }, border: { display: false }, ticks: { callback: (v) => compact(Math.abs(v)) } },
+          y: {
+            stacked: true,
+            grid: { color: (c) => (c.tick.value === 0 ? C.zero : C.grid) },
+            border: { display: false },
+            ticks: { callback: (v) => compact(Math.abs(v)) },
+          },
         },
         plugins: {
           legend: { position: 'top', align: 'end' },
@@ -232,8 +330,15 @@
       data: { datasets: [{ label: 'minute', data: [], pointRadius: 4, pointHoverRadius: 6, borderWidth: 1 }] },
       options: {
         scales: {
-          x: { title: { display: true, text: 'book lean vs 30-min avg (pts, + = bullish)', color: C.muted }, grid: { color: (c) => (c.tick.value === 0 ? C.zero : C.grid) } },
-          y: { title: { display: true, text: 'Nifty, next 5 min (pts)', color: C.muted }, grid: { color: (c) => (c.tick.value === 0 ? C.zero : C.grid) }, border: { display: false } },
+          x: {
+            title: { display: true, text: 'book lean vs 30-min avg (pts, + = bullish)', color: C.muted },
+            grid: { color: (c) => (c.tick.value === 0 ? C.zero : C.grid) },
+          },
+          y: {
+            title: { display: true, text: 'Nifty, next 5 min (pts)', color: C.muted },
+            grid: { color: (c) => (c.tick.value === 0 ? C.zero : C.grid) },
+            border: { display: false },
+          },
         },
         plugins: {
           legend: { display: false },

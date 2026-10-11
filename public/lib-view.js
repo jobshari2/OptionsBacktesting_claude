@@ -3,7 +3,7 @@
 // the result saved back as a relative strategy (ATM offsets), so it applies to every future expiry, or handed to
 // the Builder ("Customise in Builder") with the same strikes, lots, prices and what-if settings.
 (() => {
-  const { $, esc, inr, inrS, kinr, num, cls, dayShort, bs, ncdf } = BT;
+  const { $, esc, num, dayShort, bs, ncdf } = BT;
   let cat = BT.store.get('libCat', 'All');
   let dep = null; // { strategy, live, legs, shift, pricing, daysAhead, ivShift }
   let inited = false;
@@ -20,13 +20,18 @@
   function renderCards() {
     const cats = ['All', 'My strategies', ...new Set(BT.meta.library.map((s) => s.category))];
     if (!cats.includes(cat)) cat = 'All';
-    $('libCats').innerHTML = cats.map((c) => `<button data-c="${esc(c)}" class="${c === cat ? 'on' : ''}">${esc(c)}${c === 'My strategies' ? ` (${BT.meta.saved.length})` : ''}</button>`).join('');
+    $('libCats').innerHTML = cats
+      .map((c) => `<button data-c="${esc(c)}" class="${c === cat ? 'on' : ''}">${esc(c)}${c === 'My strategies' ? ` (${BT.meta.saved.length})` : ''}</button>`)
+      .join('');
     const q = $('libSearch').value.trim().toLowerCase();
-    let list = cat === 'All' ? [...BT.meta.saved, ...BT.meta.library] : cat === 'My strategies' ? BT.meta.saved : BT.meta.library.filter((s) => s.category === cat);
+    let list =
+      cat === 'All' ? [...BT.meta.saved, ...BT.meta.library] : cat === 'My strategies' ? BT.meta.saved : BT.meta.library.filter((s) => s.category === cat);
     if (q) list = list.filter((s) => (s.name + ' ' + s.desc + ' ' + s.category).toLowerCase().includes(q));
-    $('libCards').innerHTML = list.map((s) => {
-      const mine = s.id?.startsWith('my-');
-      return `<div class="lib-card" data-id="${s.id}">
+    $('libCards').innerHTML =
+      list
+        .map((s) => {
+          const mine = s.id?.startsWith('my-');
+          return `<div class="lib-card" data-id="${s.id}">
         <div class="lc-head"><span class="cat-pill c-${esc((mine ? 'mine' : s.category).toLowerCase())}">${mine ? 'Mine' : esc(s.category)}</span><b>${esc(s.name)}</b>${s.edited ? '<span class="cat-pill c-mine" title="You edited this built-in strategy">edited</span>' : ''}${s.entry?.when === 'signal' ? '<span class="cat-pill c-signal" title="Enters on a signal">signal</span>' : ''}</div>
         <div class="lc-body">
           <div class="lc-text"><div class="muted small">${esc(s.desc || '')}</div><div class="lc-legs">${BT.legChips(s)}</div></div>
@@ -42,7 +47,9 @@
           ${s.edited ? '<button class="btn-sm ghost" data-act="reset" title="Restore the original built-in strategy">Reset</button>' : ''}
         </div>
       </div>`;
-    }).join('') || `<div class="panel empty">${cat === 'My strategies' ? 'No saved strategies yet. Customise a ready-made one (or build one in Backtest) and press Save — it can then be backtested or deployed on any expiry.' : 'Nothing matches.'}</div>`;
+        })
+        .join('') ||
+      `<div class="panel empty">${cat === 'My strategies' ? 'No saved strategies yet. Customise a ready-made one (or build one in Backtest) and press Save — it can then be backtested or deployed on any expiry.' : 'Nothing matches.'}</div>`;
   }
 
   // Schematic payoff at the near expiry: spot 100, 0.2-point strike step (≈ Nifty 50 / 25,000), 14% vol, 4 days.
@@ -51,38 +58,61 @@
     const v = 0.14;
     const T = 4 / 365;
     const step = 0.2;
-    const solveK = (call, f) => { // strike where f(K) crosses 0, searching OTM
+    const solveK = (call, f) => {
+      // strike where f(K) crosses 0, searching OTM
       let lo = S0;
       let hi = call ? S0 * 1.3 : S0 * 0.7;
-      for (let i = 0; i < 40; i++) { const mid = (lo + hi) / 2; if (f(mid) > 0) lo = mid; else hi = mid; }
+      for (let i = 0; i < 40; i++) {
+        const mid = (lo + hi) / 2;
+        if (f(mid) > 0) lo = mid;
+        else hi = mid;
+      }
       return (lo + hi) / 2;
     };
     const legs = [];
-    for (const l of s.legs) legs.push((() => {
-      const call = l.type === 'CE';
-      const otm = call ? 1 : -1;
-      const val = l.strike.value;
-      let K;
-      switch (l.strike.by) {
-        case 'atm': K = S0 + otm * step * val; break;
-        case 'pct': K = S0 * (1 + (otm * val) / 100); break;
-        case 'pts': K = S0 + (otm * val) / 250; break;
-        case 'straddle': K = S0 + otm * (val || 1) * 2 * bs(S0, S0, T, v, true); break;
-        case 'premium': K = solveK(call, (k) => bs(S0, k, T, v, call) - val / 250); break;
-        case 'leg': K = (legs[l.strike.ref]?.K ?? S0) + val / 250; break; // legs listed before it (refs to later legs fall back to ATM)
-        case 'delta': {
-          const d = Math.abs(val > 1 ? val / 100 : val);
-          K = solveK(call, (k) => Math.abs(ncdf((Math.log(S0 / k) + (v * v / 2) * T) / (v * Math.sqrt(T))) - (call ? 0 : 1)) - d);
-          break;
-        }
-        default: K = S0;
-      }
-      const far = l.expiry === 'next' || l.expiry === 'mnext' || (s.expiry === 'weekly' && l.expiry === 'mcur');
-      const Tl = far ? T + 7 / 365 : T;
-      return { call, K, q: (l.action === 'B' ? 1 : -1) * l.lots, p: bs(S0, K, Tl, v, call), far };
-    })());
+    for (const l of s.legs)
+      legs.push(
+        (() => {
+          const call = l.type === 'CE';
+          const otm = call ? 1 : -1;
+          const val = l.strike.value;
+          let K;
+          switch (l.strike.by) {
+            case 'atm':
+              K = S0 + otm * step * val;
+              break;
+            case 'pct':
+              K = S0 * (1 + (otm * val) / 100);
+              break;
+            case 'pts':
+              K = S0 + (otm * val) / 250;
+              break;
+            case 'straddle':
+              K = S0 + otm * (val || 1) * 2 * bs(S0, S0, T, v, true);
+              break;
+            case 'premium':
+              K = solveK(call, (k) => bs(S0, k, T, v, call) - val / 250);
+              break;
+            case 'leg':
+              K = (legs[l.strike.ref]?.K ?? S0) + val / 250;
+              break; // legs listed before it (refs to later legs fall back to ATM)
+            case 'delta': {
+              const d = Math.abs(val > 1 ? val / 100 : val);
+              K = solveK(call, (k) => Math.abs(ncdf((Math.log(S0 / k) + ((v * v) / 2) * T) / (v * Math.sqrt(T))) - (call ? 0 : 1)) - d);
+              break;
+            }
+            default:
+              K = S0;
+          }
+          const far = l.expiry === 'next' || l.expiry === 'mnext' || (s.expiry === 'weekly' && l.expiry === 'mcur');
+          const Tl = far ? T + 7 / 365 : T;
+          return { call, K, q: (l.action === 'B' ? 1 : -1) * l.lots, p: bs(S0, K, Tl, v, call), far };
+        })(),
+      );
     const xs = Array.from({ length: 61 }, (_, i) => S0 * (0.96 + (0.08 * i) / 60));
-    const ys = xs.map((x) => legs.reduce((sum, l) => sum + l.q * ((l.far ? bs(x, l.K, 7 / 365, v, l.call) : Math.max(0, l.call ? x - l.K : l.K - x)) - l.p), 0));
+    const ys = xs.map((x) =>
+      legs.reduce((sum, l) => sum + l.q * ((l.far ? bs(x, l.K, 7 / 365, v, l.call) : Math.max(0, l.call ? x - l.K : l.K - x)) - l.p), 0),
+    );
     const lo = Math.min(0, ...ys);
     const hi = Math.max(0, ...ys);
     const W = 120;
@@ -100,7 +130,13 @@
       <polyline points="${pts}" fill="none" stroke="var(--text)" stroke-width="1.4"/></svg>`;
   }
 
-  $('libCats').addEventListener('click', (e) => { if (e.target.dataset.c) { cat = e.target.dataset.c; BT.store.set('libCat', cat); renderCards(); } });
+  $('libCats').addEventListener('click', (e) => {
+    if (e.target.dataset.c) {
+      cat = e.target.dataset.c;
+      BT.store.set('libCat', cat);
+      renderCards();
+    }
+  });
   $('libSearch').addEventListener('input', renderCards);
   $('libNew').addEventListener('click', () => BT.emit('open-backtest', { strategy: { ...BT.blankStrategy(), id: null }, run: false }));
   $('libCards').addEventListener('click', async (e) => {
@@ -130,23 +166,37 @@
     try {
       const live = await BT.api('/api/bt/resolve', { strategy, shift, hit });
       dep = {
-        strategy: live.strategy, live, shift, hit, pricing: dep?.pricing || 'ltp', daysAhead: 0, ivShift: dep?.ivShift || 0,
+        strategy: live.strategy,
+        live,
+        shift,
+        hit,
+        pricing: dep?.pricing || 'ltp',
+        daysAhead: 0,
+        ivShift: dep?.ivShift || 0,
         legs: live.legs.map((l) => ({ ...l, orig: l.strikeValue })),
       };
       dep.strategy.id = strategy.id;
-      if (!live.levels) { // only sent when the strategy uses S/R; fetched anyway for the payoff chart's S / R marks
+      if (!live.levels) {
+        // only sent when the strategy uses S/R; fetched anyway for the payoff chart's S / R marks
         try {
           const lv = (await BT.api('/api/bt/levels')).levels || [];
           const by = (f) => lv.filter(f).sort((a, b) => Math.abs(a.price - live.spot) - Math.abs(b.price - live.spot))[0] || null;
           dep.chartLevels = { resistance: by((x) => x.price > live.spot), support: by((x) => x.price < live.spot) };
-        } catch { /* optional */ }
+        } catch {
+          /* optional */
+        }
       }
       renderDeploy();
     } catch (e) {
-      $('libDeploy').innerHTML = `<div class="empty-in err"><b>Could not deploy:</b> ${esc(e.message)}<p class="muted small">Deploy needs the live option chain from Upstox.</p></div>`;
+      $('libDeploy').innerHTML =
+        `<div class="empty-in err"><b>Could not deploy:</b> ${esc(e.message)}<p class="muted small">Deploy needs the live option chain from Upstox.</p></div>`;
     }
   }
-  BT.on('deploy', (d) => { init(); dep = null; deploy(d.legs ? d : d.strategy, 0, d.legs ? null : d.hit || null); }); // a strategy, or { strategy, hit }
+  BT.on('deploy', (d) => {
+    init();
+    dep = null;
+    deploy(d.legs ? d : d.strategy, 0, d.legs ? null : d.hit || null);
+  }); // a strategy, or { strategy, hit }
 
   const now = () => Date.now();
   const yearsTo = (exp, plusDays = 0) => Math.max(0, (Date.parse(exp + 'T15:30:00+05:30') - now() - plusDays * 86400_000) / (365 * 86400_000));
@@ -158,7 +208,11 @@
     const T = yearsTo(l.expiryDate);
     let lo = 0.01;
     let hi = 2;
-    for (let i = 0; i < 40; i++) { const m = (lo + hi) / 2; if (bs(S, l.strikeValue, T, m, l.type === 'CE') > (q?.ltp || 0)) hi = m; else lo = m; }
+    for (let i = 0; i < 40; i++) {
+      const m = (lo + hi) / 2;
+      if (bs(S, l.strikeValue, T, m, l.type === 'CE') > (q?.ltp || 0)) hi = m;
+      else lo = m;
+    }
     return (lo + hi) / 2;
   }
   const entryPx = (l) => {
@@ -180,8 +234,16 @@
   function analyse() {
     const lot = dep.live.lot;
     const legs = dep.legs.map((l) => ({
-      action: l.action, type: l.type, strike: l.strikeValue, lots: l.lots, lot, expiryDate: l.expiryDate,
-      entryPx: entryPx(l), px: l.quote?.ltp || entryPx(l), iv: ivOf(l), T: Math.max(1e-6, yearsTo(l.expiryDate)),
+      action: l.action,
+      type: l.type,
+      strike: l.strikeValue,
+      lots: l.lots,
+      lot,
+      expiryDate: l.expiryDate,
+      entryPx: entryPx(l),
+      px: l.quote?.ltp || entryPx(l),
+      iv: ivOf(l),
+      T: Math.max(1e-6, yearsTo(l.expiryDate)),
     }));
     const near = legs.reduce((m, l) => (l.expiryDate < m ? l.expiryDate : m), legs[0].expiryDate);
     const A = BT.payoff.analyse(legs, { spot: dep.live.spot, atmIv: atmIv(near), daysAhead: dep.daysAhead, ivShift: dep.ivShift });
@@ -200,23 +262,31 @@
         <button class="icon" data-act="close" title="Close">✕</button>
       </div>
       <div class="dep-bar">
-        <label title="The expiry that counts as &quot;this week&quot; for the strategy's legs">Deploy for <select id="depShift">${exps.slice(0, 10).map((x, i) => `<option value="${i}" ${i === dep.shift ? 'selected' : ''}>${dayShort(x.e)} ${x.e.slice(0, 4)} · ${x.monthly ? 'monthly' : 'weekly'}${i === 0 ? ' (nearest)' : ''}</option>`).join('')}</select></label>
+        <label title="The expiry that counts as &quot;this week&quot; for the strategy's legs">Deploy for <select id="depShift">${exps
+          .slice(0, 10)
+          .map(
+            (x, i) =>
+              `<option value="${i}" ${i === dep.shift ? 'selected' : ''}>${dayShort(x.e)} ${x.e.slice(0, 4)} · ${x.monthly ? 'monthly' : 'weekly'}${i === 0 ? ' (nearest)' : ''}</option>`,
+          )
+          .join('')}</select></label>
         <div class="seg sm" id="depPricing"><button data-p="ltp" class="${dep.pricing === 'ltp' ? 'on' : ''}">LTP</button><button data-p="market" class="${dep.pricing === 'market' ? 'on' : ''}" title="Buy at ask, sell at bid">Bid / ask</button></div>
         <button class="btn-sm ghost" data-act="refresh">↻ Refresh</button>
       </div>
       ${depContext(L)}
       <div class="tbl-wrap"><table class="grid-tbl dep-legs">
         <thead><tr><th>Action</th><th>Lots</th><th>Strike</th><th>Expiry</th><th>Price</th><th>Bid / ask</th><th>IV</th><th>Δ</th></tr></thead>
-        <tbody>${dep.legs.map((l, i) => {
-          const ks = chainRows(l.expiryDate).map((r) => r.strike);
-          const ki = ks.indexOf(l.strikeValue);
-          const q = l.quote || {};
-          return `<tr><td class="${l.action === 'B' ? 'pos' : 'neg'}"><b>${l.action === 'B' ? 'BUY' : 'SELL'}</b> ${l.type}</td>
+        <tbody>${dep.legs
+          .map((l, i) => {
+            const ks = chainRows(l.expiryDate).map((r) => r.strike);
+            const ki = ks.indexOf(l.strikeValue);
+            const q = l.quote || {};
+            return `<tr><td class="${l.action === 'B' ? 'pos' : 'neg'}"><b>${l.action === 'B' ? 'BUY' : 'SELL'}</b> ${l.type}</td>
             <td><input class="num xs" type="number" min="1" max="100" value="${l.lots}" data-lots="${i}"></td>
             <td class="strike-cell"><button class="icon" data-k="${i}" data-d="-1" ${ki <= 0 ? 'disabled' : ''}>−</button><b>${l.strikeValue}</b>${l.strikeValue !== l.orig ? '<span class="muted">*</span>' : ''}<button class="icon" data-k="${i}" data-d="1" ${ki >= ks.length - 1 ? 'disabled' : ''}>+</button></td>
             <td>${dayShort(l.expiryDate)}</td><td><b>${num(entryPx(l))}</b></td><td class="muted">${num(q.bid)} / ${num(q.ask)}</td>
             <td>${num(q.iv, 1)}</td><td>${num(q.delta)}</td></tr>`;
-        }).join('')}</tbody></table></div>
+          })
+          .join('')}</tbody></table></div>
       <div class="dep-kpis" id="depKpis"></div>
       <div class="dep-chart-head"><span><b>Payoff</b> <span class="muted small">${esc(SBAdjust.structure(a.legs).name)}</span></span><div class="pay-ctl" id="depCtl"></div></div>
       <div class="chart-box dep-chart"><canvas id="depChart"></canvas></div>
@@ -239,10 +309,15 @@
       parts.push(`<div class="dep-cond ${L.conditions.ok ? 'ok' : 'wait'}"><b>${L.conditions.ok ? '✔ Entry conditions met now' : '… Entry conditions not met yet'}</b>
         <span class="muted small">${L.conditions.notes.map(esc).join(' · ')}</span></div>`);
     }
-    if (L.hit) parts.push(`<div class="dep-cond sig"><b>⚡ ${esc(BT.anomalyType(L.hit.type)?.name || L.hit.type)}</b> <span class="muted small">${esc(L.hit.text)}</span></div>`);
+    if (L.hit)
+      parts.push(
+        `<div class="dep-cond sig"><b>⚡ ${esc(BT.anomalyType(L.hit.type)?.name || L.hit.type)}</b> <span class="muted small">${esc(L.hit.text)}</span></div>`,
+      );
     if (L.levels) {
       const lv = (x) => (x ? `${x.price} <span class="muted">(${x.cls})</span>` : '—');
-      parts.push(`<div class="dep-lv"><span>Resistance <b>${lv(L.levels.resistance.any)}</b></span><span>Support <b>${lv(L.levels.support.any)}</b></span><span class="muted small">major R ${L.levels.resistance.major?.price ?? '—'} · major S ${L.levels.support.major?.price ?? '—'}</span></div>`);
+      parts.push(
+        `<div class="dep-lv"><span>Resistance <b>${lv(L.levels.resistance.any)}</b></span><span>Support <b>${lv(L.levels.support.any)}</b></span><span class="muted small">major R ${L.levels.resistance.major?.price ?? '—'} · major S ${L.levels.support.major?.price ?? '—'}</span></div>`,
+      );
     }
     return parts.length ? `<div class="dep-ctx">${parts.join('')}</div>` : '';
   }
@@ -252,7 +327,11 @@
     const a = analyse();
     $('depKpis').innerHTML = BT.payoff.kpis(a);
     const lv = dep.live.levels;
-    BT.payoff.draw($('depChart'), a, { expiryLabel: dayShort(a.near), nowLabel: 'today', levels: lv ? { resistance: lv.resistance.any, support: lv.support.any } : dep.chartLevels });
+    BT.payoff.draw($('depChart'), a, {
+      expiryLabel: dayShort(a.near),
+      nowLabel: 'today',
+      levels: lv ? { resistance: lv.resistance.any, support: lv.support.any } : dep.chartLevels,
+    });
   }
 
   // Convert the deployed legs back into a relative strategy: changed strikes become ATM offsets.
@@ -276,11 +355,19 @@
       const l = dep.legs[Number(b.dataset.k)];
       const rows = dep.live.chains[l.expiryDate];
       const i = rows.findIndex((r) => r.strike === l.strikeValue) + Number(b.dataset.d);
-      if (rows[i]) { l.strikeValue = rows[i].strike; l.quote = l.type === 'CE' ? rows[i].ce : rows[i].pe; renderDeploy(); }
-    } else if (b.dataset.p) { dep.pricing = b.dataset.p; renderDeploy(); }
-    else if (b.dataset.act === 'refresh') deploy(asStrategy(), dep.shift);
-    else if (b.dataset.act === 'close') { dep = null; renderDeployEmpty(); }
-    else if (b.dataset.act === 'bt') BT.emit('open-backtest', { strategy: asStrategy(), run: false });
+      if (rows[i]) {
+        l.strikeValue = rows[i].strike;
+        l.quote = l.type === 'CE' ? rows[i].ce : rows[i].pe;
+        renderDeploy();
+      }
+    } else if (b.dataset.p) {
+      dep.pricing = b.dataset.p;
+      renderDeploy();
+    } else if (b.dataset.act === 'refresh') deploy(asStrategy(), dep.shift);
+    else if (b.dataset.act === 'close') {
+      dep = null;
+      renderDeployEmpty();
+    } else if (b.dataset.act === 'bt') BT.emit('open-backtest', { strategy: asStrategy(), run: false });
     else if (b.dataset.act === 'builder') {
       // Hand the exact position over: strikes, lots, expiries and the entry prices shown here (LTP or bid / ask),
       // each leg tagged with its strategy rule so saving from the Builder keeps the rule, SL and target.
@@ -289,28 +376,45 @@
         src: 'live',
         expiry: dep.live.base,
         legs: dep.legs.map((l) => ({
-          action: l.action, type: l.type, strike: l.strikeValue, lots: l.lots, expiry: l.expiryDate, px: entryPx(l),
-          rule: { action: l.action, type: l.type, lots: l.lots, expiry: l.expiry, strike: l.strike, sl: l.sl, tgt: l.tgt, trail: l.trail, re: l.re }, ruleStrike: l.orig,
+          action: l.action,
+          type: l.type,
+          strike: l.strikeValue,
+          lots: l.lots,
+          expiry: l.expiryDate,
+          px: entryPx(l),
+          rule: { action: l.action, type: l.type, lots: l.lots, expiry: l.expiry, strike: l.strike, sl: l.sl, tgt: l.tgt, trail: l.trail, re: l.re },
+          ruleStrike: l.orig,
         })),
         pay: { daysAhead: dep.daysAhead, ivShift: dep.ivShift },
         note: `deployed for ${dayShort(dep.live.base)} at ${dep.pricing === 'market' ? 'bid / ask' : 'LTP'}`,
       });
-    }
-    else if (b.dataset.act === 'save') {
+    } else if (b.dataset.act === 'save') {
       const s = asStrategy();
       const name = prompt('Save as', s.id?.startsWith('my-') ? s.name : s.name + ' (mine)');
       if (!name) return;
       s.name = name;
       if (!s.id?.startsWith('my-')) s.id = null;
-      try { const saved = await BT.saveStrategy(s); dep.strategy.id = saved.id; dep.strategy.name = saved.name; renderDeploy(); } catch (err) { alert(err.message); }
+      try {
+        const saved = await BT.saveStrategy(s);
+        dep.strategy.id = saved.id;
+        dep.strategy.name = saved.name;
+        renderDeploy();
+      } catch (err) {
+        alert(err.message);
+      }
     }
   });
   $('libDeploy').addEventListener('change', (e) => {
     if (!dep) return;
     if (e.target.id === 'depShift') deploy(asStrategy(), Number(e.target.value));
-    if (e.target.dataset.lots != null) { dep.legs[Number(e.target.dataset.lots)].lots = Math.max(1, Number(e.target.value) || 1); renderDeploy(); }
+    if (e.target.dataset.lots != null) {
+      dep.legs[Number(e.target.dataset.lots)].lots = Math.max(1, Number(e.target.value) || 1);
+      renderDeploy();
+    }
   });
 
-  window.addEventListener('viewchange', (e) => { if (e.detail === 'lib') init(); });
+  window.addEventListener('viewchange', (e) => {
+    if (e.detail === 'lib') init();
+  });
   if (window.app.state.view === 'lib') init();
 })();

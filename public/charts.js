@@ -3,7 +3,7 @@
 (function () {
   const $ = (id) => document.getElementById(id);
   const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  const { state, compact, pctText } = window.app;
+  const { state, compact } = window.app;
 
   const C = {
     ce: css('--ce-mark'),
@@ -30,8 +30,18 @@
   Chart.defaults.plugins.tooltip.titleColor = C.text;
   Chart.defaults.plugins.tooltip.bodyColor = C.text;
 
-  const local = (k, d) => { try { return localStorage.getItem('oc.chart.' + k) ?? d; } catch { return d; } };
-  const save = (k, v) => { try { localStorage.setItem('oc.chart.' + k, v); } catch {} };
+  const local = (k, d) => {
+    try {
+      return localStorage.getItem('oc.chart.' + k) ?? d;
+    } catch {
+      return d;
+    }
+  };
+  const save = (k, v) => {
+    try {
+      localStorage.setItem('oc.chart.' + k, v);
+    } catch {}
+  };
   const cs = {
     bucket: Number(local('bucket', 60)),
     around: Number(local('around', 10)),
@@ -53,7 +63,9 @@
     el.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset[attr] === String(value)));
     if (!el.dataset.bound) {
       el.dataset.bound = '1';
-      el.addEventListener('click', (e) => { if (e.target.dataset[attr] != null) onPick(e.target.dataset[attr]); });
+      el.addEventListener('click', (e) => {
+        if (e.target.dataset[attr] != null) onPick(e.target.dataset[attr]);
+      });
     }
   }
 
@@ -63,13 +75,30 @@
       winSeg.innerHTML = d.windows.map((w) => `<button data-w="${w}">${w}m</button>`).join('');
       winSeg.dataset.built = '1';
     }
-    seg('chartWinSeg', 'w', state.win, (w) => { state.win = Number(w); save('win', w); window.app.render(); });
-    seg('bucketSeg', 'b', cs.bucket, (b) => { cs.bucket = Number(b); save('bucket', b); cs.history = null; window.app.render(); });
-    seg('aroundSeg', 'a', cs.around, (a) => { cs.around = Number(a); save('around', a); cs.history = null; window.app.render(); });
-    seg('heatSideSeg', 's', cs.heatSide, (s) => { cs.heatSide = s; save('heatSide', s); renderHeatmap(); });
-    $('chartsNote').textContent = d.trackingSec < state.win * 60
-      ? `Collecting data — ${Math.floor(d.trackingSec / 60)}m ${d.trackingSec % 60}s of history so far.`
-      : '';
+    seg('chartWinSeg', 'w', state.win, (w) => {
+      state.win = Number(w);
+      save('win', w);
+      window.app.render();
+    });
+    seg('bucketSeg', 'b', cs.bucket, (b) => {
+      cs.bucket = Number(b);
+      save('bucket', b);
+      cs.history = null;
+      window.app.render();
+    });
+    seg('aroundSeg', 'a', cs.around, (a) => {
+      cs.around = Number(a);
+      save('around', a);
+      cs.history = null;
+      window.app.render();
+    });
+    seg('heatSideSeg', 's', cs.heatSide, (s) => {
+      cs.heatSide = s;
+      save('heatSide', s);
+      renderHeatmap();
+    });
+    $('chartsNote').textContent =
+      d.trackingSec < state.win * 60 ? `Collecting data — ${Math.floor(d.trackingSec / 60)}m ${d.trackingSec % 60}s of history so far.` : '';
   }
 
   // ---------- data ----------
@@ -111,10 +140,13 @@
     const w = state.win;
     const chart = make('cDiverging', {
       type: 'bar',
-      data: { labels: [], datasets: [
-        { label: 'CE', backgroundColor: C.ce, borderRadius: 4, borderSkipped: 'start', data: [] },
-        { label: 'PE', backgroundColor: C.pe, borderRadius: 4, borderSkipped: 'start', data: [] },
-      ] },
+      data: {
+        labels: [],
+        datasets: [
+          { label: 'CE', backgroundColor: C.ce, borderRadius: 4, borderSkipped: 'start', data: [] },
+          { label: 'PE', backgroundColor: C.pe, borderRadius: 4, borderSkipped: 'start', data: [] },
+        ],
+      },
       options: {
         interaction: { mode: 'index', intersect: false },
         scales: {
@@ -152,7 +184,9 @@
       return c == null && p == null ? null : (c || 0) + (p || 0);
     };
     let max = 1;
-    h.strikes.forEach((_, si) => { for (let bi = 0; bi < nB; bi++) max = Math.max(max, val(si, bi) || 0); });
+    h.strikes.forEach((_, si) => {
+      for (let bi = 0; bi < nB; bi++) max = Math.max(max, val(si, bi) || 0);
+    });
 
     el.style.gridTemplateColumns = `44px repeat(${nB}, minmax(0, 1fr))`;
     el.style.gridTemplateRows = `repeat(${h.strikes.length}, minmax(0, 1fr)) 14px 16px`;
@@ -193,10 +227,13 @@
     };
     const chart = make('cTimeline', {
       type: 'line',
-      data: { labels: [], datasets: [
-        { label: 'CE', borderColor: C.ce, backgroundColor: C.ce, borderWidth: 2, pointRadius: 2.5, pointHoverRadius: 5, tension: 0.25, data: [] },
-        { label: 'PE', borderColor: C.pe, backgroundColor: C.pe, borderWidth: 2, pointRadius: 2.5, pointHoverRadius: 5, tension: 0.25, data: [] },
-      ] },
+      data: {
+        labels: [],
+        datasets: [
+          { label: 'CE', borderColor: C.ce, backgroundColor: C.ce, borderWidth: 2, pointRadius: 2.5, pointHoverRadius: 5, tension: 0.25, data: [] },
+          { label: 'PE', borderColor: C.pe, backgroundColor: C.pe, borderWidth: 2, pointRadius: 2.5, pointHoverRadius: 5, tension: 0.25, data: [] },
+        ],
+      },
       options: {
         interaction: { mode: 'index', intersect: false },
         scales: {
@@ -219,18 +256,22 @@
   function renderBubble(d, rows) {
     const w = state.win;
     const maxVol = Math.max(1, ...rows.flatMap((r) => [r.ce.dVol[w], r.pe.dVol[w]]));
-    const pts = (key) => rows.filter((r) => r[key].dVol[w] > 0 && r[key].dLtp?.[w] != null && r[key].ltp - r[key].dLtp[w] > 0)
-      .map((r) => {
-        const o = r[key];
-        const base = o.ltp - o.dLtp[w];
-        return { x: r.strike, y: (o.dLtp[w] / base) * 100, r: 3 + 17 * Math.sqrt(o.dVol[w] / maxVol), vol: o.dVol[w], ltp: o.ltp, chg: o.dLtp[w] };
-      });
+    const pts = (key) =>
+      rows
+        .filter((r) => r[key].dVol[w] > 0 && r[key].dLtp?.[w] != null && r[key].ltp - r[key].dLtp[w] > 0)
+        .map((r) => {
+          const o = r[key];
+          const base = o.ltp - o.dLtp[w];
+          return { x: r.strike, y: (o.dLtp[w] / base) * 100, r: 3 + 17 * Math.sqrt(o.dVol[w] / maxVol), vol: o.dVol[w], ltp: o.ltp, chg: o.dLtp[w] };
+        });
     const chart = make('cBubble', {
       type: 'bubble',
-      data: { datasets: [
-        { label: 'CE', backgroundColor: C.ce + 'b3', borderColor: C.surface, borderWidth: 2, data: [] },
-        { label: 'PE', backgroundColor: C.pe + 'b3', borderColor: C.surface, borderWidth: 2, data: [] },
-      ] },
+      data: {
+        datasets: [
+          { label: 'CE', backgroundColor: C.ce + 'b3', borderColor: C.surface, borderWidth: 2, data: [] },
+          { label: 'PE', backgroundColor: C.pe + 'b3', borderColor: C.surface, borderWidth: 2, data: [] },
+        ],
+      },
       options: {
         scales: {
           x: { type: 'linear', grid: { display: false }, ticks: { stepSize: 100, callback: (v) => v } },
@@ -238,7 +279,12 @@
         },
         plugins: {
           legend: { position: 'top', align: 'end' },
-          tooltip: { callbacks: { label: (c) => ` ${c.raw.x} ${c.dataset.label} · vol +${compact(c.raw.vol)} · ₹${c.raw.ltp.toFixed(2)} (${c.raw.chg >= 0 ? '+' : ''}${c.raw.chg.toFixed(2)}, ${signedPct(c.raw.y)})` } },
+          tooltip: {
+            callbacks: {
+              label: (c) =>
+                ` ${c.raw.x} ${c.dataset.label} · vol +${compact(c.raw.vol)} · ₹${c.raw.ltp.toFixed(2)} (${c.raw.chg >= 0 ? '+' : ''}${c.raw.chg.toFixed(2)}, ${signedPct(c.raw.y)})`,
+            },
+          },
         },
       },
     });
@@ -254,11 +300,34 @@
     const w = state.win;
     const chart = make('cGrowth', {
       type: 'line',
-      data: { labels: [], datasets: [
-        { label: 'CE', showLine: false, pointRadius: 5, pointHoverRadius: 7, pointBackgroundColor: C.ce, pointBorderColor: C.surface, pointBorderWidth: 2, borderColor: C.ce, data: [] },
-        { label: 'PE', showLine: false, pointRadius: 5, pointHoverRadius: 7, pointBackgroundColor: C.pe, pointBorderColor: C.surface, pointBorderWidth: 2, borderColor: C.pe, data: [] },
-        { label: 'Highlight threshold', borderColor: C.atm, borderDash: [5, 4], borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 0, data: [] },
-      ] },
+      data: {
+        labels: [],
+        datasets: [
+          {
+            label: 'CE',
+            showLine: false,
+            pointRadius: 5,
+            pointHoverRadius: 7,
+            pointBackgroundColor: C.ce,
+            pointBorderColor: C.surface,
+            pointBorderWidth: 2,
+            borderColor: C.ce,
+            data: [],
+          },
+          {
+            label: 'PE',
+            showLine: false,
+            pointRadius: 5,
+            pointHoverRadius: 7,
+            pointBackgroundColor: C.pe,
+            pointBorderColor: C.surface,
+            pointBorderWidth: 2,
+            borderColor: C.pe,
+            data: [],
+          },
+          { label: 'Highlight threshold', borderColor: C.atm, borderDash: [5, 4], borderWidth: 1.5, pointRadius: 0, pointHoverRadius: 0, data: [] },
+        ],
+      },
       options: {
         interaction: { mode: 'index', intersect: false },
         scales: {

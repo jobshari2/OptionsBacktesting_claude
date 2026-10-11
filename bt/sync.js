@@ -22,16 +22,29 @@ const breathe = () => new Promise((r) => setImmediate(r));
 async function pool(items, n, fn) {
   const out = new Array(items.length);
   let next = 0;
-  await Promise.all(Array.from({ length: n }, async () => { while (next < items.length) { const i = next++; out[i] = await fn(items[i]); } }));
+  await Promise.all(
+    Array.from({ length: n }, async () => {
+      while (next < items.length) {
+        const i = next++;
+        out[i] = await fn(items[i]);
+      }
+    }),
+  );
   return out;
 }
 
 // file: where the settings are kept (bt-data/data-sync.json).
 function createSync({ data, getToken, file, logError = () => {} }) {
   // band / daysBefore are the depth of every download (the Data screen's two boxes); auto = the automatic update.
-  const clean = (s, d) => ({ auto: s?.auto == null ? d.auto : Boolean(s.auto), band: int(s?.band, 2, 80, d.band), daysBefore: int(s?.daysBefore, 0, 30, d.daysBefore) });
+  const clean = (s, d) => ({
+    auto: s?.auto == null ? d.auto : Boolean(s.auto),
+    band: int(s?.band, 2, 80, d.band),
+    daysBefore: int(s?.daysBefore, 0, 30, d.daysBefore),
+  });
   let settings = { ...DEFAULTS };
-  try { settings = clean(JSON.parse(fs.readFileSync(file, 'utf8')), DEFAULTS); } catch {}
+  try {
+    settings = clean(JSON.parse(fs.readFileSync(file, 'utf8')), DEFAULTS);
+  } catch {}
   function saveSettings(s) {
     const turnedOn = s?.auto && !settings.auto;
     settings = clean(s, settings);
@@ -40,7 +53,9 @@ function createSync({ data, getToken, file, logError = () => {} }) {
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(file + '.tmp', JSON.stringify(settings));
       fs.renameSync(file + '.tmp', file);
-    } catch (e) { logError('bt-sync-settings', e); }
+    } catch (e) {
+      logError('bt-sync-settings', e);
+    }
   }
 
   // ---------- what is missing ----------
@@ -98,7 +113,10 @@ function createSync({ data, getToken, file, logError = () => {} }) {
         let hi = -Infinity;
         for (const d of win) {
           const s = data.spotDay(d);
-          for (let i = 0; i < s.length; i += 4) { lo = Math.min(lo, s[i + 2]); hi = Math.max(hi, s[i + 1]); }
+          for (let i = 0; i < s.length; i += 4) {
+            lo = Math.min(lo, s[i + 2]);
+            hi = Math.max(hi, s[i + 1]);
+          }
         }
         const ks = info.strikes;
         const near = (x) => ks.reduce((b, k, j) => (Math.abs(k - x) < Math.abs(ks[b] - x) ? j : b), 0);
@@ -118,8 +136,15 @@ function createSync({ data, getToken, file, logError = () => {} }) {
       }
       return row;
     });
-    for (const r of out.rows) { out.contracts += r.contracts; out.missing += r.missing; out.requests += r.requests; }
-    out.tasks = out.rows.slice().reverse().flatMap((r) => r.tasks);
+    for (const r of out.rows) {
+      out.contracts += r.contracts;
+      out.missing += r.missing;
+      out.requests += r.requests;
+    }
+    out.tasks = out.rows
+      .slice()
+      .reverse()
+      .flatMap((r) => r.tasks);
     return out;
   }
   const planView = (p) => ({ ...p, tasks: undefined, rows: undefined, expiries: p.rows.map(({ tasks, ...r }) => r) });
@@ -129,7 +154,12 @@ function createSync({ data, getToken, file, logError = () => {} }) {
   let seq = 0;
 
   async function run(j) {
-    const p = await plan(j.opts, { skipFailed: j.auto, say: (phase) => { j.progress = { phase, done: 0, total: 0 }; } });
+    const p = await plan(j.opts, {
+      skipFailed: j.auto,
+      say: (phase) => {
+        j.progress = { phase, done: 0, total: 0 };
+      },
+    });
     if (!p.rows.length && !j.auto) throw new Error('No expired expiries in that selection');
     // India VIX for the same days: backtests with a VIX condition read it; the download works without it.
     if (p.index) await data.loadIndex(...p.index, true).catch((e) => logError('bt-sync', e, 'India VIX'));
@@ -139,7 +169,9 @@ function createSync({ data, getToken, file, logError = () => {} }) {
     let done = 0;
     let streak = 0;
     let lastErr = null;
-    const tell = (e) => { j.progress = { phase: 'Downloading option candles' + (e ? ' · ' + e : ''), done, total: tasks.length, failed: fails.length }; };
+    const tell = (e) => {
+      j.progress = { phase: 'Downloading option candles' + (e ? ' · ' + e : ''), done, total: tasks.length, failed: fails.length };
+    };
     tell();
     const worker = async () => {
       while (next < tasks.length && !j.stop && streak < FAIL_STREAK) {
@@ -162,8 +194,14 @@ function createSync({ data, getToken, file, logError = () => {} }) {
     for (const id of fails) failedAt.set(id, Date.now());
     const unchecked = p.rows.filter((r) => r.error);
     return {
-      expiries: p.rows.length, wanted: tasks.length, contracts: done - fails.length, failed: fails.length, stopped: done < tasks.length,
-      unchecked: unchecked.length, why: unchecked[0] ? `${unchecked[0].expiry}: ${unchecked[0].error}` : null, stale: p.stale,
+      expiries: p.rows.length,
+      wanted: tasks.length,
+      contracts: done - fails.length,
+      failed: fails.length,
+      stopped: done < tasks.length,
+      unchecked: unchecked.length,
+      why: unchecked[0] ? `${unchecked[0].expiry}: ${unchecked[0].error}` : null,
+      stale: p.stale,
       downloaded: [...new Set(tasks.slice(0, next).map((t) => t[0]))].sort(),
     };
   }
@@ -179,13 +217,38 @@ function createSync({ data, getToken, file, logError = () => {} }) {
       job.stop = job.takenOver = true;
     }
     const j = {
-      id: ++seq, auto: isAuto, status: 'running', startedAt: Date.now(), progress: { phase: 'Starting', done: 0, total: 0 },
-      opts: { scope: ['recent', 'range'].includes(o?.scope) ? o.scope : 'new', months: o?.months, from: o?.from, to: o?.to, kind: o?.kind, band: o?.band, daysBefore: o?.daysBefore },
+      id: ++seq,
+      auto: isAuto,
+      status: 'running',
+      startedAt: Date.now(),
+      progress: { phase: 'Starting', done: 0, total: 0 },
+      opts: {
+        scope: ['recent', 'range'].includes(o?.scope) ? o.scope : 'new',
+        months: o?.months,
+        from: o?.from,
+        to: o?.to,
+        kind: o?.kind,
+        band: o?.band,
+        daysBefore: o?.daysBefore,
+      },
     };
     job = j;
     j.promise = run(j)
-      .then((r) => { j.result = r; j.status = 'done'; }, (e) => { j.error = e.message; j.status = 'error'; if (!j.auto || e.message !== auto.error) logError('bt-sync', e); })
-      .then(() => { j.endedAt = Date.now(); if (j.auto) autoDone(j); });
+      .then(
+        (r) => {
+          j.result = r;
+          j.status = 'done';
+        },
+        (e) => {
+          j.error = e.message;
+          j.status = 'error';
+          if (!j.auto || e.message !== auto.error) logError('bt-sync', e);
+        },
+      )
+      .then(() => {
+        j.endedAt = Date.now();
+        if (j.auto) autoDone(j);
+      });
     return j;
   }
 
@@ -196,7 +259,8 @@ function createSync({ data, getToken, file, logError = () => {} }) {
   const auto = { at: 0, ok: null, text: '', error: null, nextAt: 0 };
   function autoDone(j) {
     const r = j.result;
-    if (r?.stopped) { // interrupted: the next look continues it, soon when a download from the Data screen took over
+    if (r?.stopped) {
+      // interrupted: the next look continues it, soon when a download from the Data screen took over
       if (j.takenOver) auto.nextAt = Date.now() + AUTO_RETRY_MS;
       return;
     }
@@ -205,14 +269,18 @@ function createSync({ data, getToken, file, logError = () => {} }) {
     auto.ok = Boolean(r) && !r.unchecked && !r.stale;
     if (!r) auto.text = j.error;
     else if (r.unchecked) auto.text = `could not check ${r.unchecked} ${r.unchecked === 1 ? 'expiry' : 'expiries'} (${r.why})`;
-    else if (r.contracts || r.failed) auto.text = `downloaded ${r.contracts} contracts of ${r.downloaded.join(', ')}` + (r.failed ? `, ${r.failed} failed` : '');
+    else if (r.contracts || r.failed)
+      auto.text = `downloaded ${r.contracts} contracts of ${r.downloaded.join(', ')}` + (r.failed ? `, ${r.failed} failed` : '');
     else auto.text = r.stale ? 'Upstox could not be reached; nothing is missing by the saved expiry list' : 'nothing new';
     if (!auto.ok) auto.nextAt = Date.now() + AUTO_RETRY_MS;
   }
   function tick() {
     if (!settings.auto || job?.status === 'running') return;
     const token = getToken();
-    if (!token || token === 'demo') { auto.nextAt = 0; return; } // look as soon as there is a login
+    if (!token || token === 'demo') {
+      auto.nextAt = 0;
+      return;
+    } // look as soon as there is a login
     if (Date.now() < auto.nextAt) return;
     auto.nextAt = Date.now() + AUTO_EVERY_MS;
     start({ scope: 'new' }, true);
@@ -223,8 +291,24 @@ function createSync({ data, getToken, file, logError = () => {} }) {
     const token = getToken();
     return {
       settings,
-      job: job && { id: job.id, auto: job.auto, status: job.status, error: job.error, opts: job.opts, startedAt: job.startedAt, endedAt: job.endedAt, progress: { ...job.progress, api: data.apiStats() }, result: job.result },
-      auto: { state: token === 'demo' ? 'demo' : !settings.auto ? 'off' : token ? 'on' : 'login', at: auto.at, ok: auto.ok, text: auto.text, nextAt: auto.nextAt },
+      job: job && {
+        id: job.id,
+        auto: job.auto,
+        status: job.status,
+        error: job.error,
+        opts: job.opts,
+        startedAt: job.startedAt,
+        endedAt: job.endedAt,
+        progress: { ...job.progress, api: data.apiStats() },
+        result: job.result,
+      },
+      auto: {
+        state: token === 'demo' ? 'demo' : !settings.auto ? 'off' : token ? 'on' : 'login',
+        at: auto.at,
+        ok: auto.ok,
+        text: auto.text,
+        nextAt: auto.nextAt,
+      },
     };
   }
 
@@ -234,14 +318,28 @@ function createSync({ data, getToken, file, logError = () => {} }) {
     const b = await readJson(req);
     if (p === '/api/bt/sync/plan') {
       // Not being able to check (not logged in on an empty cache, offline) is an answer, not a server error.
-      try { return sendJson(res, 200, planView(await plan(b))); } catch (e) { return sendJson(res, 200, { error: e.message }); }
+      try {
+        return sendJson(res, 200, planView(await plan(b)));
+      } catch (e) {
+        return sendJson(res, 200, { error: e.message });
+      }
     }
     if (p === '/api/bt/sync/start') {
-      try { start(b); } catch (e) { return sendJson(res, 400, { error: e.message }); } // demo mode, not logged in
+      try {
+        start(b);
+      } catch (e) {
+        return sendJson(res, 400, { error: e.message });
+      } // demo mode, not logged in
       return sendJson(res, 200, status());
     }
-    if (p === '/api/bt/sync/stop') { if (job?.status === 'running') job.stop = true; return sendJson(res, 200, status()); }
-    if (p === '/api/bt/sync/settings') { saveSettings(b); return sendJson(res, 200, status()); }
+    if (p === '/api/bt/sync/stop') {
+      if (job?.status === 'running') job.stop = true;
+      return sendJson(res, 200, status());
+    }
+    if (p === '/api/bt/sync/settings') {
+      saveSettings(b);
+      return sendJson(res, 200, status());
+    }
     return sendJson(res, 404, { error: 'Not found' });
   }
 

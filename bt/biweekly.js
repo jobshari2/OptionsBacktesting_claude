@@ -49,7 +49,13 @@ function createBiweekly({ data, ext, dir, startJob, settle, breathe, findStrateg
   const file = path.join(dir, 'biweekly.json');
   let state = null;
   function load() {
-    if (state === null) { try { state = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { state = false; } }
+    if (state === null) {
+      try {
+        state = JSON.parse(fs.readFileSync(file, 'utf8'));
+      } catch {
+        state = false;
+      }
+    }
     return state || null;
   }
   function save(s) {
@@ -58,7 +64,9 @@ function createBiweekly({ data, ext, dir, startJob, settle, breathe, findStrateg
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(file + '.tmp', JSON.stringify(s));
       fs.renameSync(file + '.tmp', file);
-    } catch (e) { logError('bw-save', e); }
+    } catch (e) {
+      logError('bw-save', e);
+    }
   }
 
   // strikes: null = the short strikes as each strategy defines them (by premium), or { by: 'pts', value } = both
@@ -74,7 +82,16 @@ function createBiweekly({ data, ext, dir, startJob, settle, breathe, findStrateg
       const sig = JSON.stringify(rules);
       if (seen.has(sig)) continue; // e.g. a built-in that is one of the adjustment variations
       seen.add(sig);
-      rows.push({ ...v, strategy: { ...v.strategy, id: null, name: v.key === 'own' ? base.name : v.group === 'Built-in' ? v.name : `${f.name}: ${v.name}`, category: 'Bi-weekly' }, risky: Boolean(v.risky) || unlimitedRisk(v.strategy) });
+      rows.push({
+        ...v,
+        strategy: {
+          ...v.strategy,
+          id: null,
+          name: v.key === 'own' ? base.name : v.group === 'Built-in' ? v.name : `${f.name}: ${v.name}`,
+          category: 'Bi-weekly',
+        },
+        risky: Boolean(v.risky) || unlimitedRisk(v.strategy),
+      });
     }
     return { id: f.id, name: f.name, base: base.name, lots: baseLots(base), rows };
   }
@@ -89,7 +106,9 @@ function createBiweekly({ data, ext, dir, startJob, settle, breathe, findStrateg
       if (overlap) c.entry.noOverlap = false;
       return c;
     };
-    const libs = library().filter((s) => s.category === 'Bi-weekly').map(move);
+    const libs = library()
+      .filter((s) => s.category === 'Bi-weekly')
+      .map(move);
     const bases = {
       hedge: findStrategy('my-biweekly-hari') || biweekly('bw-hedge', 'Bi-weekly Hedge', ''),
       rev: findStrategy('lib-biweekly-rev') || biweekly('bw-rev', 'Bi-weekly Hedge Reverse', '', { reverse: true }),
@@ -97,7 +116,15 @@ function createBiweekly({ data, ext, dir, startJob, settle, breathe, findStrateg
     return FAMILIES.map((f) => {
       const base = normalizeStrategy(move(bases[f.id]));
       const list = buildAdjustments(base).filter((v) => v.group !== 'Reverse'); // the mirror image is the other family
-      for (const s of libs) if (familyOf(s) === f.id) list.push({ key: s.id, group: 'Built-in', name: s.name, note: strikes ? `Built-in variant, with the short strikes ${strikes.value} pts out of the money instead of chosen by premium.` : s.desc, strategy: normalizeStrategy(s) });
+      for (const s of libs)
+        if (familyOf(s) === f.id)
+          list.push({
+            key: s.id,
+            group: 'Built-in',
+            name: s.name,
+            note: strikes ? `Built-in variant, with the short strikes ${strikes.value} pts out of the money instead of chosen by premium.` : s.desc,
+            strategy: normalizeStrategy(s),
+          });
       return family(f, base, list);
     });
   }
@@ -114,16 +141,20 @@ function createBiweekly({ data, ext, dir, startJob, settle, breathe, findStrateg
   // of the whole position, so the two net credits and the two risk limits add up.
   function merge(rules, h, r, cfg) {
     const s = JSON.parse(JSON.stringify(rules));
-    const legs = (x, lots, shift) => JSON.parse(JSON.stringify(x.legs)).map((l) => ({
-      ...l, lots: Math.max(1, Math.round((l.lots / baseLots(x)) * lots)),
-      strike: l.strike.by === 'leg' ? { ...l.strike, ref: l.strike.ref + shift } : l.strike,
-    }));
+    const legs = (x, lots, shift) =>
+      JSON.parse(JSON.stringify(x.legs)).map((l) => ({
+        ...l,
+        lots: Math.max(1, Math.round((l.lots / baseLots(x)) * lots)),
+        strike: l.strike.by === 'leg' ? { ...l.strike, ref: l.strike.ref + shift } : l.strike,
+      }));
     s.legs = [...legs(h, cfg.hedgeLots, 0), ...legs(r, cfg.revLots, h.legs.length)];
     const add = (a, b) => (a == null && b == null ? null : (a ?? 0) + (b ?? 0));
     const [fh, fr] = [h.filters, r.filters];
     s.filters = {
-      ...rules.filters, minCredit: add(fh.minCredit, fr.minCredit),
-      maxLossDown: add(fh.maxLossDown ?? fh.maxLossUp, fr.maxLossDown ?? fr.maxLossUp), maxLossUp: add(fh.maxLossUp ?? fh.maxLossDown, fr.maxLossUp ?? fr.maxLossDown),
+      ...rules.filters,
+      minCredit: add(fh.minCredit, fr.minCredit),
+      maxLossDown: add(fh.maxLossDown ?? fh.maxLossUp, fr.maxLossDown ?? fr.maxLossUp),
+      maxLossUp: add(fh.maxLossUp ?? fh.maxLossDown, fr.maxLossUp ?? fr.maxLossDown),
     };
     return normalizeStrategy(s);
   }
@@ -133,9 +164,22 @@ function createBiweekly({ data, ext, dir, startJob, settle, breathe, findStrateg
     const list = buildAdjustments(base).filter((x) => x.group !== 'Reverse');
     const [bh, bv] = [h, v].map((f) => f.best && f.rows.find((r) => r.key === f.best));
     if (bh && bv) {
-      const note = (who) => `The legs of the best Hedge variation (${bh.name}) and of the best Reverse variation (${bv.name}) in one position; exit, target, stop and entry filters as in the ${who} one.`;
-      list.push({ key: 'best-h', group: 'Best + best', name: 'Best Hedge + best Reverse, position rules of the Hedge', note: note('Hedge'), strategy: merge(bh.strategy, bh.strategy, bv.strategy, cfg) });
-      list.push({ key: 'best-r', group: 'Best + best', name: 'Best Hedge + best Reverse, position rules of the Reverse', note: note('Reverse'), strategy: merge(bv.strategy, bh.strategy, bv.strategy, cfg) });
+      const note = (who) =>
+        `The legs of the best Hedge variation (${bh.name}) and of the best Reverse variation (${bv.name}) in one position; exit, target, stop and entry filters as in the ${who} one.`;
+      list.push({
+        key: 'best-h',
+        group: 'Best + best',
+        name: 'Best Hedge + best Reverse, position rules of the Hedge',
+        note: note('Hedge'),
+        strategy: merge(bh.strategy, bh.strategy, bv.strategy, cfg),
+      });
+      list.push({
+        key: 'best-r',
+        group: 'Best + best',
+        name: 'Best Hedge + best Reverse, position rules of the Reverse',
+        note: note('Reverse'),
+        strategy: merge(bv.strategy, bh.strategy, bv.strategy, cfg),
+      });
     }
     return { ...family(COMBINED, base, list), cfg };
   }
@@ -159,7 +203,9 @@ function createBiweekly({ data, ext, dir, startJob, settle, breathe, findStrateg
         logError('bw-run', e, row.key);
       }
     }
-    f.top = ranked(f.rows).slice(0, TOP).map((r) => r.key);
+    f.top = ranked(f.rows)
+      .slice(0, TOP)
+      .map((r) => r.key);
     f.best = f.top[0] || null;
     return optsN;
   }
@@ -173,7 +219,10 @@ function createBiweekly({ data, ext, dir, startJob, settle, breathe, findStrateg
       const total = Math.round(n * 1.5); // the combined variations are only known once the two are ranked
       let optsN = null;
       let done = 0;
-      for (const f of fams) { optsN = (await runFamily(job, f, opts, done, total)) || optsN; done += f.rows.length; }
+      for (const f of fams) {
+        optsN = (await runFamily(job, f, opts, done, total)) || optsN;
+        done += f.rows.length;
+      }
       // Failed for missing data (not logged in): nothing worth keeping.
       const bad = () => fams.flatMap((f) => f.rows).find((r) => r.error);
       if (!optsN) throw new Error(bad()?.error || 'Nothing could be backtested');
@@ -181,7 +230,8 @@ function createBiweekly({ data, ext, dir, startJob, settle, breathe, findStrateg
       fams.push(combinedFamily(fams, cleanCfg(prev, optsN)));
       await runFamily(job, fams[2], opts, done, done + fams[2].rows.length);
       const st = { at: Date.now(), optsRaw: opts, opts: optsN, strikes, overlap, families: fams };
-      if (!bad()) save(st); else state = st;
+      if (!bad()) save(st);
+      else state = st;
       return { view: st };
     });
   }
@@ -209,15 +259,37 @@ function createBiweekly({ data, ext, dir, startJob, settle, breathe, findStrateg
       const f = st.families.find((x) => x.id === b.family);
       const row = f?.rows.find((r) => r.key === b.key);
       if (!row) throw new Error('Variation not found — backtest the variations again');
-      const r = await runBacktest(data, row.strategy, optsOf(f, st.optsRaw), (p) => { job.progress = p; }, ext);
+      const r = await runBacktest(
+        data,
+        row.strategy,
+        optsOf(f, st.optsRaw),
+        (p) => {
+          job.progress = p;
+        },
+        ext,
+      );
       job.paths = r.paths;
-      return { view: { family: f.id, key: row.key, strategy: r.strategy, opts: r.opts, stats: computeStats(r.trades, r.opts.capital), trades: r.trades, skipped: r.skipped.slice(0, 200), skippedCount: r.skipped.length } };
+      return {
+        view: {
+          family: f.id,
+          key: row.key,
+          strategy: r.strategy,
+          opts: r.opts,
+          stats: computeStats(r.trades, r.opts.capital),
+          trades: r.trades,
+          skipped: r.skipped.slice(0, 200),
+          skippedCount: r.skipped.length,
+        },
+      };
     });
   }
 
   async function handle(req, res, p, sendJson, readJson) {
     // a result saved before Combined became one position is not shown: it has to be backtested again
-    if (p === '/api/bt/bw/state') { const st = load(); return sendJson(res, 200, { state: st?.families?.length === 3 ? st : null }); }
+    if (p === '/api/bt/bw/state') {
+      const st = load();
+      return sendJson(res, 200, { state: st?.families?.length === 3 ? st : null });
+    }
     if (req.method !== 'POST') return sendJson(res, 404, { error: 'Not found' });
     const b = await readJson(req);
     if (p === '/api/bt/bw/run') return sendJson(res, 200, await settle(startRun(b.opts || {}, b.strikes, b.overlap)));

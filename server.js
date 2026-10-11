@@ -97,8 +97,6 @@ async function upstox(pathname, params = {}) {
   return upstoxClient.live(pathname, params);
 }
 
-
-
 // Expiries and lot size of the live Nifty options. Re-read hourly and whenever the IST day changes, so newly listed
 // expiries appear and past ones drop off.
 async function getContracts() {
@@ -125,14 +123,27 @@ async function restChain(expiry, maxAgeMs) {
   return restChains.get(expiry);
 }
 
-// Latest tick (if subscribed) laid over the REST values.
-function overlay(o) {
+// Latest tick (if subscribed) laid over the REST values. `at` = when the quote was last refreshed: the tick's
+// arrival, or the moment the REST chain was fetched (the arbitrage scanner rejects stale quotes on it).
+function overlay(o, restAt) {
   const t = o.key ? feed.tick(o.key) : null;
-  if (!t) return o;
+  if (!t) return { ...o, at: restAt };
   return {
-    ...o, ltp: t.ltp ?? o.ltp, close: t.cp ?? o.close, vol: t.vol ?? o.vol, oi: t.oi ?? o.oi, iv: t.iv ?? o.iv,
-    buy: t.buy, sell: t.sell,
-    bid: t.bid ?? o.bid, ask: t.ask ?? o.ask, bidQ: t.bidQ ?? o.bidQ, askQ: t.askQ ?? o.askQ, tbq: t.tbq ?? null, tsq: t.tsq ?? null,
+    ...o,
+    ltp: t.ltp ?? o.ltp,
+    close: t.cp ?? o.close,
+    vol: t.vol ?? o.vol,
+    oi: t.oi ?? o.oi,
+    iv: t.iv ?? o.iv,
+    buy: t.buy,
+    sell: t.sell,
+    bid: t.bid ?? o.bid,
+    ask: t.ask ?? o.ask,
+    bidQ: t.bidQ ?? o.bidQ,
+    askQ: t.askQ ?? o.askQ,
+    tbq: t.tbq ?? null,
+    tsq: t.tsq ?? null,
+    at: t.at ?? restAt,
   };
 }
 
@@ -141,19 +152,34 @@ function buildSnapshot(expiry) {
   if (!base) return null;
   const now = Date.now();
   const spot = feed.tick(NIFTY_KEY)?.ltp ?? base.spot;
-  const rows = base.rows.map((r) => ({ strike: r.strike, ce: overlay(r.ce), pe: overlay(r.pe) }));
+  const rows = base.rows.map((r) => ({ strike: r.strike, ce: overlay(r.ce, base.fetchedAt), pe: overlay(r.pe, base.fetchedAt) }));
 
   const hist = histories.get(expiry) || [];
   const d = {};
   // [0-5] ceLtp, ceVol, ceOi, peLtp, peVol, peOi
   // [6-9] ceBuy, ceSell, peBuy, peSell            — trade volume by aggressor (tick feed only)
   // [10-17] ceBid, ceAsk, ceTbq, ceTsq, peBid, peAsk, peTbq, peTsq — order book (tick feed only)
+  // [18-21] ceBidQ, ceAskQ, peBidQ, peAskQ        — quantity at the best bid / ask (tick feed only), so a scan of
+  //                                                 the recorded tape can tell how many lots were fillable
   for (const r of rows) {
     d[r.strike] = [r.ce.ltp, r.ce.vol, r.ce.oi, r.pe.ltp, r.pe.vol, r.pe.oi];
     if (r.ce.buy != null && r.pe.buy != null) {
       d[r.strike].push(r.ce.buy, r.ce.sell, r.pe.buy, r.pe.sell);
       if (r.ce.tbq != null && r.pe.tbq != null) {
-        d[r.strike].push(r.ce.bid, r.ce.ask, r.ce.tbq, r.ce.tsq, r.pe.bid, r.pe.ask, r.pe.tbq, r.pe.tsq);
+        d[r.strike].push(
+          r.ce.bid,
+          r.ce.ask,
+          r.ce.tbq,
+          r.ce.tsq,
+          r.pe.bid,
+          r.pe.ask,
+          r.pe.tbq,
+          r.pe.tsq,
+          r.ce.bidQ ?? 0,
+          r.ce.askQ ?? 0,
+          r.pe.bidQ ?? 0,
+          r.pe.askQ ?? 0,
+        );
       }
     }
   }
@@ -202,7 +228,9 @@ function updateSubscriptions() {
     if (!c?.rows.length) continue;
     const spot = feed.tick(NIFTY_KEY)?.ltp ?? c.spot;
     let atm = 0;
-    c.rows.forEach((r, i) => { if (Math.abs(r.strike - spot) < Math.abs(c.rows[atm].strike - spot)) atm = i; });
+    c.rows.forEach((r, i) => {
+      if (Math.abs(r.strike - spot) < Math.abs(c.rows[atm].strike - spot)) atm = i;
+    });
     for (const r of c.rows.slice(Math.max(0, atm - FEED_STRIKES), atm + FEED_STRIKES + 1)) {
       if (r.ce.key) keys.add(r.ce.key);
       if (r.pe.key) keys.add(r.pe.key);
@@ -318,7 +346,8 @@ function surgeHistory(expiry, bucketSec, around) {
     let hi = hist.length - 1;
     while (lo < hi) {
       const mid = (lo + hi) >> 1;
-      if (hist[mid].t >= t) hi = mid; else lo = mid + 1;
+      if (hist[mid].t >= t) hi = mid;
+      else lo = mid + 1;
     }
     return hist[lo];
   };
@@ -326,7 +355,9 @@ function surgeHistory(expiry, bucketSec, around) {
 
   const rows = snap.rows;
   let atm = 0;
-  rows.forEach((r, i) => { if (Math.abs(r.strike - snap.spot) < Math.abs(rows[atm].strike - snap.spot)) atm = i; });
+  rows.forEach((r, i) => {
+    if (Math.abs(r.strike - snap.spot) < Math.abs(rows[atm].strike - snap.spot)) atm = i;
+  });
   const strikes = rows.slice(Math.max(0, atm - around), atm + around + 1).map((r) => r.strike);
 
   const added = (k, idx, i) => {
@@ -408,6 +439,7 @@ const backtester = createBacktester({
   getRestChain: restChain,
   cacheDir: env.BT_CACHE_DIR ? path.resolve(env.BT_CACHE_DIR) : path.join(__dirname, 'bt-cache'),
   storeFile: path.join(__dirname, 'bt-data', 'strategies.json'),
+  tapeDir: CFG.signals.dir, // the recorded quotes the Arbitrage screen's quote scan reads
   logError,
 });
 
@@ -420,9 +452,10 @@ const anomalyLive = createAnomalyLive({
   getNextChain: async () => {
     const list = await getExpiries();
     if (!list[1]) return null;
-    const c = await restChain(list[1], 30_000); // the scanner asks every 30 s
-    return { expiry: list[1], spot: c.spot, rows: c.rows };
+    const c = await restChain(list[1], 10_000); // the scanner asks every 10 s while the calendar is switched on
+    return { expiry: list[1], spot: c.spot, rows: c.rows, fetchedAt: c.fetchedAt };
   },
+  getFeed: () => (DEMO ? null : feed.status()),
   data: backtester.data,
   isMarketOpen,
   demo: DEMO,
@@ -449,7 +482,11 @@ function readBody(req, limit) {
     let size = 0;
     req.on('data', (c) => {
       size += c.length;
-      if (size > limit) { reject(new Error('Request too large')); req.destroy(); return; }
+      if (size > limit) {
+        reject(new Error('Request too large'));
+        req.destroy();
+        return;
+      }
       chunks.push(c);
     });
     req.on('end', () => resolve(Buffer.concat(chunks)));
@@ -478,14 +515,24 @@ async function handleHedge(req, res, p) {
       hedge.deleteStructure(body.id);
       return sendJson(res, 200, { ok: true });
     }
-    if (p === '/api/hedge/reload' && req.method === 'POST') { hedge.reload(); return sendJson(res, 200, { ok: true }); }
-    if (p === '/api/hedge/betas' && req.method === 'POST') { await hedge.refreshBetas(); return sendJson(res, 200, { ok: true }); }
+    if (p === '/api/hedge/reload' && req.method === 'POST') {
+      hedge.reload();
+      return sendJson(res, 200, { ok: true });
+    }
+    if (p === '/api/hedge/betas' && req.method === 'POST') {
+      await hedge.refreshBetas();
+      return sendJson(res, 200, { ok: true });
+    }
     if (p === '/api/hedge/upload' && req.method === 'POST') {
       const r = hedge.upload(await readBody(req, 5_000_000));
       await hedge.refreshBetas();
       return sendJson(res, 200, { ok: true, count: r.holdings.length, asOf: r.asOf });
     }
-    if (p === '/api/hedge/clear-upload' && req.method === 'POST') { hedge.clearUpload(); await hedge.refreshBetas(); return sendJson(res, 200, { ok: true }); }
+    if (p === '/api/hedge/clear-upload' && req.method === 'POST') {
+      hedge.clearUpload();
+      await hedge.refreshBetas();
+      return sendJson(res, 200, { ok: true });
+    }
     return sendJson(res, 404, { error: 'Not found' });
   } catch (e) {
     logError('hedge', e);
@@ -597,10 +644,22 @@ const server = http.createServer(async (req, res) => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return sendJson(res, 400, { error: 'date must be YYYY-MM-DD' });
     const q = (k) => (url.searchParams.has(k) ? Number(url.searchParams.get(k)) : undefined);
     try {
-      return sendJson(res, 200, replayFlow(CFG.signals.dir, day, flowConfig(env, {
-        mode: url.searchParams.get('mode') || undefined,
-        imbalance: q('imbalance'), holdSec: q('holdSec'), minQty: q('minQty'), reactPts: q('reactPts'), horizonMin: q('horizonMin'),
-      })));
+      return sendJson(
+        res,
+        200,
+        replayFlow(
+          CFG.signals.dir,
+          day,
+          flowConfig(env, {
+            mode: url.searchParams.get('mode') || undefined,
+            imbalance: q('imbalance'),
+            holdSec: q('holdSec'),
+            minQty: q('minQty'),
+            reactPts: q('reactPts'),
+            horizonMin: q('horizonMin'),
+          }),
+        ),
+      );
     } catch (e) {
       logError('replay', e);
       return sendJson(res, 500, { error: e.message });
@@ -641,9 +700,15 @@ const server = http.createServer(async (req, res) => {
   }
   if (p === '/api/an/config' && req.method === 'POST') {
     let body = '';
-    req.on('data', (c) => { if (body.length < 100_000) body += c; });
+    req.on('data', (c) => {
+      if (body.length < 100_000) body += c;
+    });
     req.on('end', () => {
-      try { sendJson(res, 200, { ok: true, config: anomalyLive.saveConfig(JSON.parse(body || '{}')) }); } catch (e) { sendJson(res, 400, { error: e.message }); }
+      try {
+        sendJson(res, 200, { ok: true, config: anomalyLive.saveConfig(JSON.parse(body || '{}')) });
+      } catch (e) {
+        sendJson(res, 400, { error: e.message });
+      }
     });
     return;
   }
@@ -667,9 +732,10 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
-  // Option pricing shared with the page (public/bt-common.js): the file the server itself prices with.
-  if (p === '/lib/pricing.js') {
-    return fs.readFile(path.join(__dirname, 'lib/pricing.js'), (err, buf) => {
+  // Option pricing (public/bt-common.js) and trading charges (public/an-view.js) shared with the page: the files
+  // the server itself prices with.
+  if (p === '/lib/pricing.js' || p === '/lib/costs.js') {
+    return fs.readFile(path.join(__dirname, p.slice(1)), (err, buf) => {
       if (err) return sendJson(res, 404, { error: 'Not found' });
       res.writeHead(200, { 'Content-Type': 'text/javascript' });
       res.end(buf);
@@ -688,7 +754,9 @@ const server = http.createServer(async (req, res) => {
   // Errors from the browser page are written to the same log file.
   if (p === '/api/client-error' && req.method === 'POST') {
     let body = '';
-    req.on('data', (c) => { if (body.length < 10_000) body += c; });
+    req.on('data', (c) => {
+      if (body.length < 10_000) body += c;
+    });
     req.on('end', () => {
       try {
         const e = JSON.parse(body);
@@ -752,7 +820,9 @@ function saveToken(t) {
 
 function clearToken() {
   token = null;
-  try { fs.unlinkSync(TOKEN_FILE); } catch {}
+  try {
+    fs.unlinkSync(TOKEN_FILE);
+  } catch {}
 }
 
 // Every DEMO_BURST_EVERY polls there's a short burst (volume ×12 on all strikes, spot jumps ~40 pts)
@@ -780,18 +850,37 @@ function demoData(pathname) {
   demo.tv = burst && kind === 2 ? demo.tv * 1.04 : 1 + (demo.tv - 1) * 0.98;
   const s = demo.spot;
   const rows = [];
+  // So the Arbitrage screen has something to show: for part of every cycle one put just above the money is quoted
+  // 6 points too low (a cheap box), and for a shorter part one call is quoted 5 too high (a butterfly credit).
+  const atm = Math.round(s / 50) * 50;
+  const cyc = phase / demo.burstEvery;
+  const off = (k, isCall) => (!isCall && k === atm + 50 && cyc >= 0.3 && cyc < 0.6 ? -6 : isCall && k === atm + 100 && cyc >= 0.6 && cyc < 0.72 ? 5 : 0);
   for (let k = 23500; k <= 26000; k += 50) {
     const dist = (k - s) / 50;
     const mk = (isCall) => {
       const key = k + (isCall ? 'c' : 'p');
       const hot = (burst ? 12 : 1) * (lead && kind === (isCall ? 0 : 1) ? 4 : 1);
-      demo.vols[key] = (demo.vols[key] ?? Math.round(2e6 * Math.exp(-Math.abs(dist) / 6))) +
-        Math.round((0.5 + Math.random()) * 1500 * Math.exp(-Math.abs(dist) / 5) * hot);
+      demo.vols[key] =
+        (demo.vols[key] ?? Math.round(2e6 * Math.exp(-Math.abs(dist) / 6))) + Math.round((0.5 + Math.random()) * 1500 * Math.exp(-Math.abs(dist) / 5) * hot);
       const intrinsic = Math.max(0, isCall ? s - k : k - s);
       const ltp = +(intrinsic + 120 * demo.tv * Math.exp(-Math.abs(dist) / 5) + 1).toFixed(2);
       const oi = Math.round(4e6 * Math.exp(-Math.abs(dist + (isCall ? -4 : 4)) / 5));
+      // a two-sided quote around the price: about 0.25 % of the premium wide, some lots on each side
+      const half = Math.max(0.05, Math.round((ltp * 0.00125) / 0.05) * 0.05);
+      const mid = ltp + off(k, isCall);
+      const qty = () => 65 * (4 + Math.floor(Math.random() * 30));
       return {
-        market_data: { ltp, close_price: +(ltp * 0.95).toFixed(2), volume: demo.vols[key], oi, prev_oi: Math.round(oi * (0.85 + Math.random() * 0.3)) },
+        market_data: {
+          ltp,
+          close_price: +(ltp * 0.95).toFixed(2),
+          volume: demo.vols[key],
+          oi,
+          prev_oi: Math.round(oi * (0.85 + Math.random() * 0.3)),
+          bid_price: +Math.max(0.05, mid - half).toFixed(2),
+          ask_price: +(mid + half).toFixed(2),
+          bid_qty: qty(),
+          ask_qty: qty(),
+        },
         option_greeks: { iv: 11 + Math.abs(dist) * 0.15, delta: 0 },
       };
     };

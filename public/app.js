@@ -51,8 +51,18 @@ function expiryLabel(e) {
   const d = new Date(e + 'T00:00:00');
   return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', weekday: 'short' });
 }
-function localGet(k) { try { return localStorage.getItem('oc.' + k); } catch { return null; } }
-function localSet(k, v) { try { localStorage.setItem('oc.' + k, v); } catch {} }
+function localGet(k) {
+  try {
+    return localStorage.getItem('oc.' + k);
+  } catch {
+    return null;
+  }
+}
+function localSet(k, v) {
+  try {
+    localStorage.setItem('oc.' + k, v);
+  } catch {}
+}
 
 // ---------- data loop ----------
 const API_VERSION = 18; // must match API_VERSION in server.js
@@ -80,7 +90,10 @@ async function refresh() {
       return;
     }
     $('login').classList.add('hidden');
-    if (state.loggedOut) { state.loggedOut = false; showViews(); }
+    if (state.loggedOut) {
+      state.loggedOut = false;
+      showViews();
+    }
     // Chain errors only matter on the live screens; the other screens report their own.
     setError(groupOf(state.view) === 'live' ? json.error : null);
     if (json.expiries) renderExpiries(json.expiries, json.data?.expiry);
@@ -153,7 +166,10 @@ function updateStatus() {
   const el = $('status');
   const d = state.data;
   el.className = 'status';
-  if (!d) { $('statusText').textContent = 'Waiting for data…'; return; }
+  if (!d) {
+    $('statusText').textContent = 'Waiting for data…';
+    return;
+  }
 
   const src = $('source');
   src.classList.remove('hidden');
@@ -174,9 +190,7 @@ function updateStatus() {
   } else {
     el.classList.add('live');
     const f = state.feed;
-    $('statusText').textContent = f?.connected
-      ? `Live · ticks (${f.instruments})`
-      : d.source === 'demo' ? 'Live' : 'Live · polling (tick feed connecting…)';
+    $('statusText').textContent = f?.connected ? `Live · ticks (${f.instruments})` : d.source === 'demo' ? 'Live' : 'Live · polling (tick feed connecting…)';
   }
 }
 
@@ -187,7 +201,10 @@ function renderExpiries(list, current) {
     sel.innerHTML = list.map((e) => `<option value="${e}">${expiryLabel(e)}</option>`).join('');
     sel.dataset.key = key;
   }
-  if (current) { sel.value = current; state.expiry = current; }
+  if (current) {
+    sel.value = current;
+    state.expiry = current;
+  }
 }
 
 // ---------- rendering ----------
@@ -228,7 +245,9 @@ function render() {
       renderChain(d, rows);
     }
   }
-  $('windowSeg').querySelectorAll('button').forEach((b) => b.classList.toggle('on', Number(b.dataset.w) === state.win));
+  $('windowSeg')
+    .querySelectorAll('button')
+    .forEach((b) => b.classList.toggle('on', Number(b.dataset.w) === state.win));
   renderLevels(d);
   renderSurge(d, rows);
   renderSignals(state.signals, d.source);
@@ -279,7 +298,7 @@ function renderChain(d, rows) {
     if (o.bid && o.ask) tip += ` · spread ${(o.ask - o.bid).toFixed(2)}`;
     if (o.tbq != null && o.tsq != null && o.tbq + o.tsq > 0) {
       const buyPct = (o.tbq / (o.tbq + o.tsq)) * 100;
-      const a = Math.min(0.45, Math.abs(buyPct - 50) / 50 * 0.45);
+      const a = Math.min(0.45, (Math.abs(buyPct - 50) / 50) * 0.45);
       style = ` style="background-color:rgba(${buyPct >= 50 ? '63,182,139' : '240,113,107'},${a.toFixed(2)})"`;
       tip += ` · waiting to buy ${compact(o.tbq)} vs to sell ${compact(o.tsq)} (${buyPct.toFixed(0)}% buy)`;
     }
@@ -353,12 +372,17 @@ function renderSurge(d, rows) {
   const tracked = d.trackingSec;
   const need = w * 60;
   const since = new Date(d.updatedAt - tracked * 1000).toLocaleTimeString('en-IN', { hour12: false, hour: '2-digit', minute: '2-digit' });
-  $('tracking').textContent = tracked < need
-    ? `Filling ${w}m window: ${Math.floor(tracked / 60)}m ${tracked % 60}s so far (since ${since})`
-    : `Volume added per strike, last ${w} min · numbers = top 3`;
+  $('tracking').textContent =
+    tracked < need
+      ? `Filling ${w}m window: ${Math.floor(tracked / 60)}m ${tracked % 60}s so far (since ${since})`
+      : `Volume added per strike, last ${w} min · numbers = top 3`;
 
-  $('metricSeg').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.m === state.metric));
-  $('thSeg').querySelectorAll('button').forEach((b) => b.classList.toggle('on', Number(b.dataset.t) === state.threshold));
+  $('metricSeg')
+    .querySelectorAll('button')
+    .forEach((b) => b.classList.toggle('on', b.dataset.m === state.metric));
+  $('thSeg')
+    .querySelectorAll('button')
+    .forEach((b) => b.classList.toggle('on', Number(b.dataset.t) === state.threshold));
 
   // Calls vs puts totals use the whole chain.
   const ceTotal = d.rows.reduce((s, r) => s + r.ce.dVol[w], 0);
@@ -377,23 +401,24 @@ function renderSurge(d, rows) {
     return o.pVol[w];
   };
   const isHit = (o) => state.threshold > 0 && o.dVol[w] > 0 && (o.pVol[w] == null || o.pVol[w] >= state.threshold);
-  const label = (o) => {
-    const v = o.dVol[w];
-    if (!v) return '';
-    const p = pctText(o.pVol[w], v);
-    return byPct ? `${p} · ${compact(v)}` : `${compact(v)} · ${p}`;
-  };
 
   $('topBy').textContent = byPct ? '(by %)' : '(by qty)';
-  const top = (key) => rows
-    .filter((r) => r[key].dVol[w] > 0)
-    .sort((a, b) => metric(b[key]) - metric(a[key]))
-    .slice(0, 3);
+  const top = (key) =>
+    rows
+      .filter((r) => r[key].dVol[w] > 0)
+      .sort((a, b) => metric(b[key]) - metric(a[key]))
+      .slice(0, 3);
   const topCe = top('ce');
   const topPe = top('pe');
-  const li = (list, key) => list.length
-    ? list.map((r) => `<li><b>${r.strike}</b> +${compact(r[key].dVol[w])}<span class="p">${pctText(r[key].pVol[w], r[key].dVol[w])}</span>${priceChange(r[key], w)}</li>`).join('')
-    : '<li class="muted">No new volume yet</li>';
+  const li = (list, key) =>
+    list.length
+      ? list
+          .map(
+            (r) =>
+              `<li><b>${r.strike}</b> +${compact(r[key].dVol[w])}<span class="p">${pctText(r[key].pVol[w], r[key].dVol[w])}</span>${priceChange(r[key], w)}</li>`,
+          )
+          .join('')
+      : '<li class="muted">No new volume yet</li>';
   $('topCe').innerHTML = li(topCe, 'ce');
   $('topPe').innerHTML = li(topPe, 'pe');
 
@@ -413,12 +438,17 @@ function renderSurge(d, rows) {
     const cls = isHit(o) ? 'hit' : rank ? '' : 'dim';
     return `<div class="bar ${cls}" style="height:${h}%"></div>${rank ? `<span class="lbl" style="--h:${h}%">${rank}</span>` : ''}`;
   };
-  const tip = (r) => `${r.strike} · last ${w}m&#10;CE +${compact(r.ce.dVol[w])} (${pctText(r.ce.pVol[w], r.ce.dVol[w]) || '0%'})&#10;PE +${compact(r.pe.dVol[w])} (${pctText(r.pe.pVol[w], r.pe.dVol[w]) || '0%'})`;
-  $('bars').innerHTML = rows.map((r) => `<div class="col${r.strike === d.atm ? ' atm' : ''}" title="${tip(r)}">
+  const tip = (r) =>
+    `${r.strike} · last ${w}m&#10;CE +${compact(r.ce.dVol[w])} (${pctText(r.ce.pVol[w], r.ce.dVol[w]) || '0%'})&#10;PE +${compact(r.pe.dVol[w])} (${pctText(r.pe.pVol[w], r.pe.dVol[w]) || '0%'})`;
+  $('bars').innerHTML = rows
+    .map(
+      (r) => `<div class="col${r.strike === d.atm ? ' atm' : ''}" title="${tip(r)}">
       <div class="up">${bar(r.ce, rankCe.get(r.strike))}</div>
       <div class="k">${r.strike % 100 === 0 || r.strike === d.atm ? r.strike : String(r.strike).slice(-3)}</div>
       <div class="down">${bar(r.pe, rankPe.get(r.strike))}</div>
-    </div>`).join('');
+    </div>`,
+    )
+    .join('');
 }
 
 // One-line Market Pulse headline in the Signals panel (click to open the full screen).
@@ -442,7 +472,7 @@ function priceChange(o, w) {
   return `<div class="px ${cls}">₹ ${d >= 0 ? '+' : ''}${d.toFixed(2)}${pct}</div>`;
 }
 
-const mmss =(sec) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
+const mmss = (sec) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
 
 // e.g. "1:20 · calm 12/30s" — a recording stops after the minimum time once nothing has fired for calmSec.
 function recordingStatus(rec, now) {
@@ -482,8 +512,10 @@ function renderPremium(p, r) {
 // Track record of this kind of signal on earlier days (from sigstats.js), e.g. "▼ 81%  Nifty fell 10 pts before ...".
 function oddsText(o) {
   const [did, other] = o.dir === 'up' ? ['rose', 'falling'] : ['fell', 'rising'];
-  return `Nifty ${did} ${o.pts} pts before ${other} ${o.pts}, within ${o.min} min, in ${o.hits} of ${o.n} past cases`
-    + ` (any moment: ${Math.round(o.base * 100)}%) · ${o.days} day${o.days === 1 ? '' : 's'} of data`;
+  return (
+    `Nifty ${did} ${o.pts} pts before ${other} ${o.pts}, within ${o.min} min, in ${o.hits} of ${o.n} past cases` +
+    ` (any moment: ${Math.round(o.base * 100)}%) · ${o.days} day${o.days === 1 ? '' : 's'} of data`
+  );
 }
 function oddsLine(o) {
   if (!o) return '';
@@ -565,25 +597,25 @@ function renderSignals(sig, source) {
     return;
   }
   const freshIds = new Set(firstLoad ? [] : fresh.map((e) => e.id));
-  $('events').innerHTML = sig.events.map((e) => {
-    const a = e.after;
-    let after = sig.recording
-      ? `<span class="muted">recording ${mmss((state.data.updatedAt - e.t) / 1000)}</span>`
-      : '<span class="muted">recording…</span>';
-    let summary = '';
-    if (a) {
-      const chg = a.change ?? 0;
-      after = `<span class="${chg >= 0 ? 'pos' : 'neg'}">${chg >= 0 ? '+' : ''}${chg.toFixed(1)} pts</span> <span class="muted">in ${dur(a.afterSec)}</span>`;
-      summary = `<div class="ev-detail">Before → after: CE vol +${compact(a.ceBefore)} → +${compact(a.ceAfter)},
+  $('events').innerHTML = sig.events
+    .map((e) => {
+      const a = e.after;
+      let after = sig.recording ? `<span class="muted">recording ${mmss((state.data.updatedAt - e.t) / 1000)}</span>` : '<span class="muted">recording…</span>';
+      let summary = '';
+      if (a) {
+        const chg = a.change ?? 0;
+        after = `<span class="${chg >= 0 ? 'pos' : 'neg'}">${chg >= 0 ? '+' : ''}${chg.toFixed(1)} pts</span> <span class="muted">in ${dur(a.afterSec)}</span>`;
+        summary = `<div class="ev-detail">Before → after: CE vol +${compact(a.ceBefore)} → +${compact(a.ceAfter)},
         PE vol +${compact(a.peBefore)} → +${compact(a.peAfter)} · max ↑${(a.maxUp ?? 0).toFixed(1)} ↓${Math.abs(a.maxDown ?? 0).toFixed(1)}
         · <code>${esc(e.file || '')}</code></div>`;
-    }
-    const hp = e.odds?.high ? ` hp ${e.odds.dir}` : '';
-    return `<li class="${freshIds.has(e.id) ? 'new' : ''}${hp}">
+      }
+      const hp = e.odds?.high ? ` hp ${e.odds.dir}` : '';
+      return `<li class="${freshIds.has(e.id) ? 'new' : ''}${hp}">
       <div class="ev-top"><span class="ev-time">${istClock(e.t)}</span><span class="pill ${e.type}">${TYPE_LABEL[e.type] || e.type}</span><span class="ev-after">${after}</span></div>
       <div class="ev-detail">${esc(e.detail)}</div>${oddsLine(e.odds)}${summary}
     </li>`;
-  }).join('');
+    })
+    .join('');
 }
 
 // New signals raised while the Signals pane is hidden are counted on its switch.
@@ -612,7 +644,11 @@ async function loadLevels() {
 
 // The two highest-OI call strikes (resistance) and put strikes (support) on this expiry.
 function oiLevels(d) {
-  const top = (side) => d.rows.filter((r) => r[side].oi > 0).sort((a, b) => b[side].oi - a[side].oi).slice(0, 2);
+  const top = (side) =>
+    d.rows
+      .filter((r) => r[side].oi > 0)
+      .sort((a, b) => b[side].oi - a[side].oi)
+      .slice(0, 2);
   return [
     ...top('ce').map((r, i) => ({ price: r.strike, cls: i ? 'minor' : 'major', src: `${i ? '2nd' : 'max'} call OI ${compact(r.ce.oi)}`, oi: 'ce' })),
     ...top('pe').map((r, i) => ({ price: r.strike, cls: i ? 'minor' : 'major', src: `${i ? '2nd' : 'max'} put OI ${compact(r.pe.oi)}`, oi: 'pe' })),
@@ -637,17 +673,26 @@ function lvBadge(k, rows) {
 // .lv-nearest grid. Shown on the Chain screen and on Market Pulse.
 function nearestLevelsHtml(spot) {
   const lv = state.levels?.levels || [];
-  const near = (side, cls) => lv.filter((l) => l.cls === cls && (side === 'S' ? l.price < spot : l.price > spot))
-    .sort((a, b) => Math.abs(a.price - spot) - Math.abs(b.price - spot))[0];
-  const cell = (label, l, side) => `<div class="lvn ${side === 'S' ? 's' : 'r'}"><span>${label}</span><b>${l ? l.price : '—'}</b><span class="muted">${l ? (l.price - spot >= 0 ? '+' : '') + Math.round(l.price - spot) + ' pts' : ''}</span></div>`;
-  return cell('Major R', near('R', 'major'), 'R') + cell('Minor R', near('R', 'minor'), 'R') + cell('Minor S', near('S', 'minor'), 'S') + cell('Major S', near('S', 'major'), 'S');
+  const near = (side, cls) =>
+    lv.filter((l) => l.cls === cls && (side === 'S' ? l.price < spot : l.price > spot)).sort((a, b) => Math.abs(a.price - spot) - Math.abs(b.price - spot))[0];
+  const cell = (label, l, side) =>
+    `<div class="lvn ${side === 'S' ? 's' : 'r'}"><span>${label}</span><b>${l ? l.price : '—'}</b><span class="muted">${l ? (l.price - spot >= 0 ? '+' : '') + Math.round(l.price - spot) + ' pts' : ''}</span></div>`;
+  return (
+    cell('Major R', near('R', 'major'), 'R') +
+    cell('Minor R', near('R', 'minor'), 'R') +
+    cell('Minor S', near('S', 'minor'), 'S') +
+    cell('Major S', near('S', 'major'), 'S')
+  );
 }
 
 function renderLevels(d) {
   loadLevels();
   const L = state.levels;
   const spot = d.spot;
-  if (!L) { $('lvLadder').innerHTML = '<div class="muted small pad">Loading levels…</div>'; return; }
+  if (!L) {
+    $('lvLadder').innerHTML = '<div class="muted small pad">Loading levels…</div>';
+    return;
+  }
   $('lvAsOf').textContent = L.error ? 'price levels unavailable' : `from ${L.sessions} sessions to ${L.basedOn}`;
   const all = [...(L.levels || []).map((l) => ({ ...l })), ...oiLevels(d).map((l) => ({ ...l, cls: l.cls, isOi: true }))];
   $('lvNearest').innerHTML = nearestLevelsHtml(spot);
@@ -655,7 +700,10 @@ function renderLevels(d) {
   let html = '';
   let spotDone = false;
   for (const l of all) {
-    if (!spotDone && l.price < spot) { html += `<div class="lv-spot">Nifty ${price(spot)}</div>`; spotDone = true; }
+    if (!spotDone && l.price < spot) {
+      html += `<div class="lv-spot">Nifty ${price(spot)}</div>`;
+      spotDone = true;
+    }
     const side = l.price > spot ? 'r' : 's';
     html += `<div class="lv-row ${side} ${l.cls}${l.isOi ? ' oi' : ''}"><span class="lv-p">${l.price}</span><span class="lv-c">${l.isOi ? 'OI' : l.cls}</span><span class="lv-src" title="${esc(l.src)}">${esc(l.src)}</span><span class="lv-d">${l.price - spot >= 0 ? '+' : ''}${Math.round(l.price - spot)}</span></div>`;
   }
@@ -697,7 +745,9 @@ $('range').addEventListener('change', (e) => {
   if (state.data) render();
 });
 
-window.addEventListener('resize', () => { if (state.data) render(); });
+window.addEventListener('resize', () => {
+  if (state.data) render();
+});
 
 // Chain screen: the right column shows the Nifty chart with support / resistance or the signals; the panel under
 // the chain shows the spread arbitrage or the volume surge.
@@ -711,7 +761,9 @@ function setPane(which, name) {
   state[P.key] = name;
   localSet(P.key, name);
   for (const [p, ids] of Object.entries(P.panes)) ids.forEach((id) => $(id).classList.toggle('hidden', p !== name));
-  $(P.seg).querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.p === name));
+  $(P.seg)
+    .querySelectorAll('button')
+    .forEach((b) => b.classList.toggle('on', b.dataset.p === name));
   if (state.sidePane === 'signals') {
     state.unseenSignals = 0;
     state.unseenHigh = false;
@@ -720,14 +772,22 @@ function setPane(which, name) {
   if (state.data && state.view === 'chain') render(); // "Fit screen" depends on the height the bottom pane leaves
 }
 for (const [which, P] of Object.entries(PANES)) {
-  $(P.seg).addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) setPane(which, b.dataset.p); });
+  $(P.seg).addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (b) setPane(which, b.dataset.p);
+  });
   setPane(which, state[P.key]);
 }
 
 // Screens, grouped as in the top bar: the groups and their screens are read from the page (#subtabs).
-const GROUPS = Object.fromEntries([...document.querySelectorAll('#subtabs .sub-group')]
-  .map((g) => [g.dataset.group, [...g.querySelectorAll('button')].map((b) => b.dataset.view)]));
-const VIEWS = Object.fromEntries(Object.values(GROUPS).flat().map((v) => [v, v === 'chain' ? 'app' : v])); // screen -> its <main>
+const GROUPS = Object.fromEntries(
+  [...document.querySelectorAll('#subtabs .sub-group')].map((g) => [g.dataset.group, [...g.querySelectorAll('button')].map((b) => b.dataset.view)]),
+);
+const VIEWS = Object.fromEntries(
+  Object.values(GROUPS)
+    .flat()
+    .map((v) => [v, v === 'chain' ? 'app' : v]),
+); // screen -> its <main>
 const NO_LOGIN = new Set(['sigtest']); // reads recorded days only, so it also works before logging in
 const NEEDS_DATA = new Set(GROUPS.live.filter((v) => !NO_LOGIN.has(v))); // drawn from the live chain: shown once it has arrived
 function groupOf(view) {
@@ -749,10 +809,16 @@ function setView(view) {
   localSet('view', view);
   const group = groupOf(view);
   localSet('view.' + group, view); // a group reopens on the screen last used in it
-  $('tabs').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.group === group));
+  $('tabs')
+    .querySelectorAll('button')
+    .forEach((b) => b.classList.toggle('on', b.dataset.group === group));
   $('subtabs').classList.toggle('hidden', GROUPS[group].length < 2);
-  $('subtabs').querySelectorAll('.sub-group').forEach((g) => g.classList.toggle('hidden', g.dataset.group !== group));
-  $('subtabs').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.view === view));
+  $('subtabs')
+    .querySelectorAll('.sub-group')
+    .forEach((g) => g.classList.toggle('hidden', g.dataset.group !== group));
+  $('subtabs')
+    .querySelectorAll('button')
+    .forEach((b) => b.classList.toggle('on', b.dataset.view === view));
   showViews();
   if (state.loggedOut) $('login').classList.toggle('hidden', NO_LOGIN.has(view));
   if (group === 'live' && state.data) render();
@@ -764,7 +830,9 @@ $('tabs').addEventListener('click', (e) => {
   const g = e.target.dataset.group;
   if (g) setView(localGet('view.' + g) || GROUPS[g][0]);
 });
-$('subtabs').addEventListener('click', (e) => { if (e.target.dataset.view) setView(e.target.dataset.view); });
+$('subtabs').addEventListener('click', (e) => {
+  if (e.target.dataset.view) setView(e.target.dataset.view);
+});
 
 window.app = { state, compact, pctText, render, istClock, esc, setView, setError, price, TYPE_LABEL, nearestLevelsHtml };
 setView(state.view);

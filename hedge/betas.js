@@ -25,7 +25,11 @@ function fallbackBeta(h) {
 function createBetas({ upstoxGet, cacheDir, logError }) {
   const file = path.join(cacheDir, 'betas.json');
   let cache = {};
-  try { cache = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* first run */ }
+  try {
+    cache = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    /* first run */
+  }
   let amfiMap = null;
 
   async function amfiCode(isin) {
@@ -55,10 +59,13 @@ function createBetas({ upstoxGet, cacheDir, logError }) {
     if (!code) return null;
     const j = await (await fetch(`https://api.mfapi.in/mf/${code}`)).json();
     // "dd-mm-yyyy" → sorted [{t, nav}]
-    return (j.data || []).map((d) => {
-      const [dd, mm, yy] = d.date.split('-');
-      return { t: Date.parse(`${yy}-${mm}-${dd}`), nav: Number(d.nav) };
-    }).filter((x) => x.nav > 0).sort((a, b) => a.t - b.t);
+    return (j.data || [])
+      .map((d) => {
+        const [dd, mm, yy] = d.date.split('-');
+        return { t: Date.parse(`${yy}-${mm}-${dd}`), nav: Number(d.nav) };
+      })
+      .filter((x) => x.nav > 0)
+      .sort((a, b) => a.t - b.t);
   }
 
   // Align a daily NAV series to the Nifty weeks: last NAV on or before each week's Friday.
@@ -77,19 +84,32 @@ function createBetas({ upstoxGet, cacheDir, logError }) {
     const xs = [];
     const ys = [];
     for (let i = 1; i < weeks.length; i++) {
-      const a = series.get(weeks[i - 1]), b = series.get(weeks[i]);
-      const na = nifty.get(weeks[i - 1]), nb = nifty.get(weeks[i]);
-      if (a > 0 && b > 0 && na > 0 && nb > 0) { ys.push(b / a - 1); xs.push(nb / na - 1); }
+      const a = series.get(weeks[i - 1]),
+        b = series.get(weeks[i]);
+      const na = nifty.get(weeks[i - 1]),
+        nb = nifty.get(weeks[i]);
+      if (a > 0 && b > 0 && na > 0 && nb > 0) {
+        ys.push(b / a - 1);
+        xs.push(nb / na - 1);
+      }
     }
     if (xs.length < 26) return null;
     const mean = (v) => v.reduce((s, x) => s + x, 0) / v.length;
-    const mx = mean(xs), my = mean(ys);
-    let sxy = 0, sxx = 0, syy = 0, dxy = 0, dxx = 0;
+    const mx = mean(xs),
+      my = mean(ys);
+    let sxy = 0,
+      sxx = 0,
+      syy = 0,
+      dxy = 0,
+      dxx = 0;
     for (let i = 0; i < xs.length; i++) {
       sxy += (xs[i] - mx) * (ys[i] - my);
       sxx += (xs[i] - mx) ** 2;
       syy += (ys[i] - my) ** 2;
-      if (xs[i] < 0) { dxy += xs[i] * ys[i]; dxx += xs[i] * xs[i]; }
+      if (xs[i] < 0) {
+        dxy += xs[i] * ys[i];
+        dxx += xs[i] * xs[i];
+      }
     }
     const beta = sxy / sxx;
     return {
@@ -125,13 +145,18 @@ function createBetas({ upstoxGet, cacheDir, logError }) {
         if (!series && h.isin.startsWith('INF')) {
           try {
             const daily = await mfDaily(h.isin);
-            if (daily?.length) { series = navOnWeeks(daily, weeks); source = 'AMFI NAV'; }
+            if (daily?.length) {
+              series = navOnWeeks(daily, weeks);
+              source = 'AMFI NAV';
+            }
           } catch (e) {
             logError('hedge-beta', `${h.symbol}: ${e.message}`);
           }
         }
         const s = series ? stats(series, nifty, weeks) : null;
-        results[h.isin] = s ? { ...s, source, at: Date.now() } : { beta: fallbackBeta(h), downBeta: fallbackBeta(h), r2: null, weeks: 0, source: 'estimate', at: Date.now() };
+        results[h.isin] = s
+          ? { ...s, source, at: Date.now() }
+          : { beta: fallbackBeta(h), downBeta: fallbackBeta(h), r2: null, weeks: 0, source: 'estimate', at: Date.now() };
       }
     };
     await Promise.all([worker(), worker(), worker()]);

@@ -1,0 +1,144 @@
+# GitHub Actions: the same checks as azure-pipelines.yml. Both call the npm scripts in package.json,
+# so what a check does is changed in one place.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Mondays 08:00 IST: a dependency can get a security advisory, and a runner image can change, without a commit
+    - cron: '30 2 * * 1'
+
+# The jobs only read the repository.
+permissions:
+  contents: read
+
+# A newer commit on a pull request stops the run of the older one. Runs on main are never stopped.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+# Actions are pinned to a commit; the tag it belongs to is in the comment.
+jobs:
+  lint:
+    name: Lint and format
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: ESLint
+        run: npm run lint
+      - name: Prettier
+        run: npm run format:check
+
+  test:
+    name: Unit tests (${{ matrix.os }}, Node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            node: 22 # the oldest version package.json allows
+            coverage: true
+          - os: ubuntu-24.04
+            node: 24
+          - os: windows-2025
+            node: 22
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - name: Unit tests with coverage
+        run: npm run test:ci
+      - name: Coverage on the run's summary page
+        if: ${{ !cancelled() && matrix.coverage }}
+        run: node ci/coverage-summary.js reports/coverage.lcov >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the test and coverage reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unit-test-reports-${{ matrix.os }}-node${{ matrix.node }}
+          path: reports/
+          retention-days: 14
+
+  e2e:
+    name: End-to-end tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install Chromium for Playwright
+        run: npx playwright install --with-deps --only-shell chromium
+      - name: End-to-end tests (the app in demo mode)
+        run: npm run test:e2e
+      - name: Keep the Playwright report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-report
+          path: |
+            playwright-report/
+            reports/
+            test-results/
+          retention-days: 14
+
+  security:
+    name: Security checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the secret scan reads the whole history
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Known vulnerabilities in the packages the app runs on
+        run: npm audit --omit=dev --audit-level=high
+      - name: Registry signatures of the installed packages
+        run: npm audit signatures
+      - name: Secrets in the git history
+        run: bash ci/gitleaks.sh
+
+  # One check to require in the branch protection rule for main: it passes only if every job above passed.
+  ci-passed:
+    name: CI passed
+    if: ${{ always() }}
+    needs: [lint, test, e2e, security]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Fail unless every job succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Job results: $RESULTS"
+          for result in $RESULTS; do
+            [ "$result" = "success" ] || exit 1
+          done

@@ -21,8 +21,13 @@ function parseHoldings(buf) {
     const head = Array.from(rows[h], (v) => (typeof v === 'string' ? v.trim().toLowerCase() : ''));
     const col = (...keys) => head.findIndex((x) => keys.some((k) => x === k || x.startsWith(k)));
     const c = {
-      symbol: col('symbol'), isin: col('isin'), sector: col('sector'), type: col('instrument type'),
-      qty: col('quantity available'), avg: col('average price'), close: col('previous closing price'),
+      symbol: col('symbol'),
+      isin: col('isin'),
+      sector: col('sector'),
+      type: col('instrument type'),
+      qty: col('quantity available'),
+      avg: col('average price'),
+      close: col('previous closing price'),
     };
     for (const r of rows.slice(h + 1)) {
       if (!r) continue;

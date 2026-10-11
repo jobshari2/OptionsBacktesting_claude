@@ -74,7 +74,8 @@
       "mcp__1a59c906-04da-521d-bda7-7f71b9f9e01c__batch",
       "PowerShell(git ls-files | Where-Object { $_ -notmatch '^legacy/|package-lock|xlsx$' } | ForEach-Object { \"{0,6} {1}\" -f \\(Get-Content $_ | Measure-Object -Line\\).Lines, $_ })",
       "mcp__1a59c906-04da-521d-bda7-7f71b9f9e01c__guide",
-      "mcp__1a59c906-04da-521d-bda7-7f71b9f9e01c__update"
+      "mcp__1a59c906-04da-521d-bda7-7f71b9f9e01c__update",
+      "Bash(cp .claude/launch.json \"C:/Users/Admin/AppData/Local/Temp/claude/D--Claude-new-OptionsBacktesting-claude/4d10147a-3e1d-4d0c-821b-f9c521d355ab/scratchpad/launch.json.bak\")"
     ]
   }
 }

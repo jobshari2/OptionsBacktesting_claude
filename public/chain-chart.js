@@ -6,9 +6,35 @@
 // Times on the chart are IST.
 (() => {
   const LC = window.LightweightCharts;
-  const TFS = [['1', '1m'], ['5', '5m'], ['10', '10m'], ['15', '15m'], ['60', '1h'], ['120', '2h'], ['D', 'D'], ['W', 'W'], ['M', 'M']];
-  const TF_TITLE = { 1: '1-minute candles', 5: '5-minute candles', 10: '10-minute candles', 15: '15-minute candles', 60: '1-hour candles', 120: '2-hour candles', D: 'Daily candles', W: 'Weekly candles', M: 'Monthly candles' };
-  const TYPES = [['candle', 'Candles'], ['bar', 'Bars'], ['ha', 'Heikin Ashi'], ['line', 'Line'], ['area', 'Area']];
+  const TFS = [
+    ['1', '1m'],
+    ['5', '5m'],
+    ['10', '10m'],
+    ['15', '15m'],
+    ['60', '1h'],
+    ['120', '2h'],
+    ['D', 'D'],
+    ['W', 'W'],
+    ['M', 'M'],
+  ];
+  const TF_TITLE = {
+    1: '1-minute candles',
+    5: '5-minute candles',
+    10: '10-minute candles',
+    15: '15-minute candles',
+    60: '1-hour candles',
+    120: '2-hour candles',
+    D: 'Daily candles',
+    W: 'Weekly candles',
+    M: 'Monthly candles',
+  };
+  const TYPES = [
+    ['candle', 'Candles'],
+    ['bar', 'Bars'],
+    ['ha', 'Heikin Ashi'],
+    ['line', 'Line'],
+    ['area', 'Area'],
+  ];
   const TICK_MS = 1000;
   const RELOAD_LIVE_MS = 30_000;
   const RELOAD_IDLE_MS = 5 * 60_000;
@@ -19,7 +45,10 @@
   const PALETTE = ['#e0a030', '#58a6ff', '#b392f0', '#39c5cf', '#f778ba', '#8bc34a'];
 
   const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
-  const rgba = (hex, a) => { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; };
+  const rgba = (hex, a) => {
+    const n = parseInt(hex.slice(1), 16);
+    return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`;
+  };
   const num = (x) => (x == null ? '—' : x.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
   const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
   async function api(path) {
@@ -38,7 +67,10 @@
     let e = null;
     for (let i = 0; i < v.length; i++) {
       if (v[i] == null) continue;
-      if (e == null) { s += v[i]; if (++cnt === n) out[i] = e = s / n; } else out[i] = e = v[i] * k + e * (1 - k);
+      if (e == null) {
+        s += v[i];
+        if (++cnt === n) out[i] = e = s / n;
+      } else out[i] = e = v[i] * k + e * (1 - k);
     }
     return out;
   }
@@ -49,14 +81,19 @@
     let s = 0;
     let cnt = 0;
     for (let i = 0; i < v.length; i++) {
-      if (v[i] == null) { s = 0; cnt = 0; continue; }
+      if (v[i] == null) {
+        s = 0;
+        cnt = 0;
+        continue;
+      }
       s += v[i];
       if (++cnt > n) s -= v[i - n];
       if (cnt >= n) out[i] = s / n;
     }
     return out;
   }
-  const trueRange = (b) => b.map((x, i) => (i ? Math.max(x.high - x.low, Math.abs(x.high - b[i - 1].close), Math.abs(x.low - b[i - 1].close)) : x.high - x.low));
+  const trueRange = (b) =>
+    b.map((x, i) => (i ? Math.max(x.high - x.low, Math.abs(x.high - b[i - 1].close), Math.abs(x.low - b[i - 1].close)) : x.high - x.low));
   const closes = (b) => b.map((x) => x.close);
 
   // Each indicator: its parameters, the series it draws (kind 'line' / 'hist') and calc() returning one array per series.
@@ -65,7 +102,10 @@
     sma: { name: 'SMA', title: 'Simple moving average', params: { len: 20 }, series: ['line'], calc: (b, p) => [sma(closes(b), p.len)] },
     ema: { name: 'EMA', title: 'Exponential moving average', params: { len: 20 }, series: ['line'], calc: (b, p) => [ema(closes(b), p.len)] },
     bb: {
-      name: 'BB', title: 'Bollinger Bands', params: { len: 20, mult: 2 }, series: ['line', 'thin', 'thin'],
+      name: 'BB',
+      title: 'Bollinger Bands',
+      params: { len: 20, mult: 2 },
+      series: ['line', 'thin', 'thin'],
       calc(b, p) {
         const c = closes(b);
         const mid = sma(c, p.len);
@@ -83,7 +123,10 @@
       },
     },
     st: {
-      name: 'Supertrend', title: 'Supertrend (ATR trailing stop: green below price = up-trend, red above = down-trend)', params: { len: 10, mult: 3 }, series: ['line'],
+      name: 'Supertrend',
+      title: 'Supertrend (ATR trailing stop: green below price = up-trend, red above = down-trend)',
+      params: { len: 10, mult: 3 },
+      series: ['line'],
       calc(b, p, col) {
         const atr = rma(trueRange(b), p.len);
         const out = new Array(b.length).fill(null);
@@ -109,7 +152,12 @@
       },
     },
     rsi: {
-      name: 'RSI', title: 'Relative Strength Index', params: { len: 14 }, pane: true, series: ['line'], guides: [70, 30],
+      name: 'RSI',
+      title: 'Relative Strength Index',
+      params: { len: 14 },
+      pane: true,
+      series: ['line'],
+      guides: [70, 30],
       calc(b, p) {
         const g = b.map((x, i) => (i ? Math.max(0, x.close - b[i - 1].close) : null));
         const l = b.map((x, i) => (i ? Math.max(0, b[i - 1].close - x.close) : null));
@@ -119,7 +167,11 @@
       },
     },
     macd: {
-      name: 'MACD', title: 'MACD (fast EMA − slow EMA, its signal line and their difference)', params: { fast: 12, slow: 26, signal: 9 }, pane: true, series: ['hist', 'line', 'line2'],
+      name: 'MACD',
+      title: 'MACD (fast EMA − slow EMA, its signal line and their difference)',
+      params: { fast: 12, slow: 26, signal: 9 },
+      pane: true,
+      series: ['hist', 'line', 'line2'],
       calc(b, p, col) {
         const c = closes(b);
         const f = ema(c, p.fast);
@@ -132,13 +184,21 @@
     },
     atr: { name: 'ATR', title: 'Average True Range', params: { len: 14 }, pane: true, series: ['line'], calc: (b, p) => [rma(trueRange(b), p.len)] },
     stoch: {
-      name: 'Stoch', title: 'Stochastic oscillator (%K and %D)', params: { k: 14, d: 3 }, pane: true, series: ['line', 'line2'], guides: [80, 20],
+      name: 'Stoch',
+      title: 'Stochastic oscillator (%K and %D)',
+      params: { k: 14, d: 3 },
+      pane: true,
+      series: ['line', 'line2'],
+      guides: [80, 20],
       calc(b, p) {
         const k = b.map((x, i) => {
           if (i < p.k - 1) return null;
           let hi = -Infinity;
           let lo = Infinity;
-          for (let j = i - p.k + 1; j <= i; j++) { hi = Math.max(hi, b[j].high); lo = Math.min(lo, b[j].low); }
+          for (let j = i - p.k + 1; j <= i; j++) {
+            hi = Math.max(hi, b[j].high);
+            lo = Math.min(lo, b[j].low);
+          }
           return hi === lo ? 50 : ((x.close - lo) / (hi - lo)) * 100;
         });
         return [k, sma(k, p.d)];
@@ -149,26 +209,60 @@
   // store: prefix of this chart's saved settings (each place remembers its own); tf0: the timeframe it first opens on.
   function mount(root, { full = false, store = full ? 'ncw.' : 'nc.', tf0 = '5' } = {}) {
     const pre = store;
-    const get = (k, d) => { try { return localStorage.getItem(pre + k) ?? d; } catch { return d; } };
-    const set = (k, v) => { try { localStorage.setItem(pre + k, v); } catch { /* storage unavailable */ } };
-    const getJson = (k, d) => { try { return JSON.parse(get(k, '')) ?? d; } catch { return d; } };
+    const get = (k, d) => {
+      try {
+        return localStorage.getItem(pre + k) ?? d;
+      } catch {
+        return d;
+      }
+    };
+    const set = (k, v) => {
+      try {
+        localStorage.setItem(pre + k, v);
+      } catch {
+        /* storage unavailable */
+      }
+    };
+    const getJson = (k, d) => {
+      try {
+        return JSON.parse(get(k, '')) ?? d;
+      } catch {
+        return d;
+      }
+    };
 
-    const indMenu = Object.entries(IND).map(([k, d]) => `<div class="nc-menu-row" data-kind="${k}" title="${esc(d.title)}"><b>${d.name}</b><span>${Object.entries(d.params).map(([p, v]) => `<label>${p} <input class="num xs" type="number" min="1" step="${p === 'mult' ? 0.1 : 1}" data-p="${p}" value="${v}"></label>`).join('')}</span><button class="btn-sm" data-add="${k}">Add</button></div>`).join('');
+    const indMenu = Object.entries(IND)
+      .map(
+        ([k, d]) =>
+          `<div class="nc-menu-row" data-kind="${k}" title="${esc(d.title)}"><b>${d.name}</b><span>${Object.entries(d.params)
+            .map(([p, v]) => `<label>${p} <input class="num xs" type="number" min="1" step="${p === 'mult' ? 0.1 : 1}" data-p="${p}" value="${v}"></label>`)
+            .join('')}</span><button class="btn-sm" data-add="${k}">Add</button></div>`,
+      )
+      .join('');
     root.innerHTML = `
       <div class="panel-head nc-head">
         <h3>Nifty 50 <span class="nc-last" data-r="last"></span></h3>
         <div class="nc-tools">
           <span class="seg sm" data-r="tf">${TFS.map(([v, l]) => `<button data-tf="${v}" title="${TF_TITLE[v]}">${l}</button>`).join('')}</span>
-          <select data-r="type" title="Chart type">${TYPES.filter(([v]) => full || v === 'candle' || v === 'line').map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>
-          ${full ? `<span class="nc-dd"><button class="btn-sm ghost" data-r="indBtn" title="Add indicators: moving averages, Bollinger Bands, Supertrend, RSI, MACD, ATR, Stochastic">ƒx Indicators ▾</button>
+          <select data-r="type" title="Chart type">${TYPES.filter(([v]) => full || v === 'candle' || v === 'line')
+            .map(([v, l]) => `<option value="${v}">${l}</option>`)
+            .join('')}</select>
+          ${
+            full
+              ? `<span class="nc-dd"><button class="btn-sm ghost" data-r="indBtn" title="Add indicators: moving averages, Bollinger Bands, Supertrend, RSI, MACD, ATR, Stochastic">ƒx Indicators ▾</button>
             <div class="nc-menu hidden" data-r="indMenu"><div class="muted small">Set the parameters and press Add. The same indicator can be added more than once (e.g. EMA 20 and EMA 50). Remove one with ✕ in the legend at the top left of the chart.</div>${indMenu}</div></span>
           <span class="seg sm" data-r="draw"><button data-draw="h" title="Horizontal line: click the chart at the price">― Line</button><button data-draw="t" title="Trend line: click its two ends">╱ Trend</button><button data-draw="clear" title="Remove all drawings (right-click a single drawing to remove only that one)">Clear</button></span>
-          <button class="btn-sm ghost" data-r="log" title="Logarithmic price scale">Log</button>` : ''}
+          <button class="btn-sm ghost" data-r="log" title="Logarithmic price scale">Log</button>`
+              : ''
+          }
           <button class="btn-sm ghost" data-r="sr" title="Show / hide the support and resistance levels">S/R</button>
           <button class="btn-sm ghost" data-r="now" title="Jump back to the latest candle">Latest ▸</button>
-          ${full ? `<button class="btn-sm ghost" data-r="shot" title="Save the chart as a PNG image">📷</button>
+          ${
+            full
+              ? `<button class="btn-sm ghost" data-r="shot" title="Save the chart as a PNG image">📷</button>
           <button class="btn-sm ghost" data-r="fs" title="Full screen">⛶</button>`
-    : '<button class="btn-sm ghost" data-r="pop" title="Open the chart in its own window, with indicators and drawing tools">⧉ New window</button>'}
+              : '<button class="btn-sm ghost" data-r="pop" title="Open the chart in its own window, with indicators and drawing tools">⧉ New window</button>'
+          }
         </div>
       </div>
       <div class="nc-wrap">
@@ -178,10 +272,13 @@
       </div>
       <div class="muted small nc-legend"><span><i class="nc-sw r"></i>Resistance</span><span><i class="nc-sw s"></i>Support</span><span>solid = major · dotted = minor · hover a level for details</span><span>drag to move · wheel to zoom · scroll back for older candles</span><span data-r="msg"></span></div>`;
     const el = {};
-    root.querySelectorAll('[data-r]').forEach((n) => { el[n.dataset.r] = n; });
+    root.querySelectorAll('[data-r]').forEach((n) => {
+      el[n.dataset.r] = n;
+    });
 
     let tf = TF_TITLE[get('tf', tf0)] ? get('tf', tf0) : tf0;
-    let type = TYPES.some(([v]) => v === get('type', 'candle')) && el.type.querySelector(`[value="${get('type', 'candle')}"]`) ? get('type', 'candle') : 'candle';
+    let type =
+      TYPES.some(([v]) => v === get('type', 'candle')) && el.type.querySelector(`[value="${get('type', 'candle')}"]`) ? get('type', 'candle') : 'candle';
     let showLevels = get('sr', '1') === '1';
     let logScale = full && get('log', '0') === '1';
     let bars = []; // { time, open, high, low, close }, oldest first
@@ -230,7 +327,10 @@
       let found = -1;
       while (lo <= hi) {
         const mid = (lo + hi) >> 1;
-        if (bars[mid].time <= time) { found = mid; lo = mid + 1; } else hi = mid - 1;
+        if (bars[mid].time <= time) {
+          found = mid;
+          lo = mid + 1;
+        } else hi = mid - 1;
       }
       return found;
     }
@@ -255,7 +355,8 @@
     function seriesOptions() {
       const c = colours();
       if (type === 'line') return { color: c.accent, lineWidth: 2, priceLineColor: c.accent };
-      if (type === 'area') return { lineColor: c.accent, lineWidth: 2, topColor: rgba(c.accent, 0.28), bottomColor: rgba(c.accent, 0.02), priceLineColor: c.accent };
+      if (type === 'area')
+        return { lineColor: c.accent, lineWidth: 2, topColor: rgba(c.accent, 0.28), bottomColor: rgba(c.accent, 0.02), priceLineColor: c.accent };
       if (type === 'bar') return { upColor: c.up, downColor: c.down, priceLineColor: c.accent };
       return { upColor: c.up, downColor: c.down, wickUpColor: c.up, wickDownColor: c.down, borderVisible: false, priceLineColor: c.accent };
     }
@@ -281,7 +382,12 @@
     function applyTheme() {
       const line = css('--line');
       chart.applyOptions({
-        layout: { background: { color: css('--panel') }, textColor: css('--muted'), fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif', panes: { separatorColor: line } },
+        layout: {
+          background: { color: css('--panel') },
+          textColor: css('--muted'),
+          fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+          panes: { separatorColor: line },
+        },
         grid: { vertLines: { color: rgba(line, 0.35) }, horzLines: { color: rgba(line, 0.35) } },
         rightPriceScale: { borderColor: line },
         timeScale: { borderColor: line },
@@ -303,10 +409,16 @@
       for (const l of levels) {
         const major = l.cls === 'major';
         const res = l.price > b.close;
-        lines.push(series.createPriceLine({
-          price: l.price, color: rgba(css(res ? '--down' : '--up'), major ? 0.95 : 0.6), lineWidth: major ? 2 : 1,
-          lineStyle: major ? LC.LineStyle.Solid : LC.LineStyle.Dotted, axisLabelVisible: major, title: major ? (res ? 'R' : 'S') : '',
-        }));
+        lines.push(
+          series.createPriceLine({
+            price: l.price,
+            color: rgba(css(res ? '--down' : '--up'), major ? 0.95 : 0.6),
+            lineWidth: major ? 2 : 1,
+            lineStyle: major ? LC.LineStyle.Solid : LC.LineStyle.Dotted,
+            axisLabelVisible: major,
+            title: major ? (res ? 'R' : 'S') : '',
+          }),
+        );
       }
     }
     async function loadLevels() {
@@ -315,7 +427,9 @@
       try {
         levels = (await api('/api/bt/levels')).levels || [];
         drawLevels();
-      } catch { /* chart without levels */ }
+      } catch {
+        /* chart without levels */
+      }
     }
     // The level under the mouse (y in pixels of the price pane), if any.
     function levelAt(y) {
@@ -326,7 +440,10 @@
         const py = series.priceToCoordinate(l.price);
         if (py == null) continue;
         const d = Math.abs(py - y);
-        if (d < bestD || (d === bestD && l.cls === 'major')) { best = l; bestD = d; }
+        if (d < bestD || (d === bestD && l.cls === 'major')) {
+          best = l;
+          bestD = d;
+        }
       }
       return best;
     }
@@ -340,10 +457,17 @@
       const pane = def.pane ? chart.panes().length : 0;
       const base = { priceLineVisible: false, lastValueVisible: Boolean(def.pane), crosshairMarkerVisible: false };
       const ind = { id, kind, params, color, last: [] };
-      ind.series = def.series.map((s) => (s === 'hist'
-        ? chart.addSeries(LC.HistogramSeries, base, pane)
-        : chart.addSeries(LC.LineSeries, { ...base, color: s === 'line' ? color : s === 'line2' ? css('--down') : rgba(color, 0.6), lineWidth: s === 'thin' ? 1 : 2 }, pane)));
-      for (const g of def.guides || []) ind.series[0].createPriceLine({ price: g, color: css('--muted'), lineWidth: 1, lineStyle: LC.LineStyle.Dashed, axisLabelVisible: false, title: '' });
+      ind.series = def.series.map((s) =>
+        s === 'hist'
+          ? chart.addSeries(LC.HistogramSeries, base, pane)
+          : chart.addSeries(
+              LC.LineSeries,
+              { ...base, color: s === 'line' ? color : s === 'line2' ? css('--down') : rgba(color, 0.6), lineWidth: s === 'thin' ? 1 : 2 },
+              pane,
+            ),
+      );
+      for (const g of def.guides || [])
+        ind.series[0].createPriceLine({ price: g, color: css('--muted'), lineWidth: 1, lineStyle: LC.LineStyle.Dashed, axisLabelVisible: false, title: '' });
       inds.push(ind);
       chart.panes().forEach((p, i) => p.setStretchFactor(i ? 1 : 3)); // the price pane stays the tall one
       fillInd(ind);
@@ -354,7 +478,9 @@
       const out = IND[ind.kind].calc(bars, ind.params, colours());
       ind.series.forEach((s, j) => {
         const data = [];
-        out[j].forEach((v, i) => { if (v != null) data.push(typeof v === 'object' ? { time: bars[i].time, ...v } : { time: bars[i].time, value: v }); });
+        out[j].forEach((v, i) => {
+          if (v != null) data.push(typeof v === 'object' ? { time: bars[i].time, ...v } : { time: bars[i].time, value: v });
+        });
         s.setData(data);
         ind.last[j] = data.length ? data[data.length - 1].value : null;
       });
@@ -377,7 +503,9 @@
     const saveDraw = () => set('draw', JSON.stringify(draw));
     function drawHLines() {
       for (const l of hLines) series.removePriceLine(l);
-      hLines = draw.h.map((price) => series.createPriceLine({ price, color: css('--accent'), lineWidth: 1, lineStyle: LC.LineStyle.Dashed, axisLabelVisible: true, title: '' }));
+      hLines = draw.h.map((price) =>
+        series.createPriceLine({ price, color: css('--accent'), lineWidth: 1, lineStyle: LC.LineStyle.Dashed, axisLabelVisible: true, title: '' }),
+      );
     }
     // Pixel position of a drawing's point: on the candle that holds its time in the current timeframe.
     function pointPx(time, price) {
@@ -389,35 +517,45 @@
     }
     // Trend lines are painted on the price pane by this primitive (the library has no drawing tools of its own).
     const trendLines = {
-      attached(p) { this.request = p.requestUpdate; },
-      detached() { this.request = null; },
+      attached(p) {
+        this.request = p.requestUpdate;
+      },
+      detached() {
+        this.request = null;
+      },
       paneViews() {
-        return [{
-          renderer: () => ({
-            draw: (target) => target.useMediaCoordinateSpace(({ context: ctx }) => {
-              segs = [];
-              ctx.save();
-              ctx.strokeStyle = css('--accent');
-              ctx.lineWidth = 1.5;
-              const stroke = (a, b, dashed) => {
-                ctx.setLineDash(dashed ? [4, 4] : []);
-                ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
-              };
-              draw.t.forEach((t, i) => {
-                const a = pointPx(t.t1, t.p1);
-                const b = pointPx(t.t2, t.p2);
-                if (!a || !b) return;
-                stroke(a, b, false);
-                segs.push({ i, a, b });
-              });
-              if (pending && cursor) {
-                const a = pointPx(pending.time, pending.price);
-                if (a) stroke(a, cursor, true);
-              }
-              ctx.restore();
+        return [
+          {
+            renderer: () => ({
+              draw: (target) =>
+                target.useMediaCoordinateSpace(({ context: ctx }) => {
+                  segs = [];
+                  ctx.save();
+                  ctx.strokeStyle = css('--accent');
+                  ctx.lineWidth = 1.5;
+                  const stroke = (a, b, dashed) => {
+                    ctx.setLineDash(dashed ? [4, 4] : []);
+                    ctx.beginPath();
+                    ctx.moveTo(a.x, a.y);
+                    ctx.lineTo(b.x, b.y);
+                    ctx.stroke();
+                  };
+                  draw.t.forEach((t, i) => {
+                    const a = pointPx(t.t1, t.p1);
+                    const b = pointPx(t.t2, t.p2);
+                    if (!a || !b) return;
+                    stroke(a, b, false);
+                    segs.push({ i, a, b });
+                  });
+                  if (pending && cursor) {
+                    const a = pointPx(pending.time, pending.price);
+                    if (a) stroke(a, cursor, true);
+                  }
+                  ctx.restore();
+                }),
             }),
-          }),
-        }];
+          },
+        ];
       },
     };
     function drawingAt(x, y) {
@@ -442,21 +580,33 @@
     }
 
     // ---------- top-left legend and the hover tooltip ----------
-    const when = (t) => new Date(t * 1000).toLocaleString('en-IN', intraday()
-      ? { timeZone: 'UTC', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false }
-      : { timeZone: 'UTC', day: '2-digit', month: 'short', year: 'numeric' });
+    const when = (t) =>
+      new Date(t * 1000).toLocaleString(
+        'en-IN',
+        intraday()
+          ? { timeZone: 'UTC', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: false }
+          : { timeZone: 'UTC', day: '2-digit', month: 'short', year: 'numeric' },
+      );
 
     function info() {
       const b = last();
       const pc = meta?.prevClose;
       const chg = b && pc ? b.close - pc : null;
-      el.last.innerHTML = !b ? '' : `${num(b.close)}${chg == null ? '' : ` <span class="${chg >= 0 ? 'pos' : 'neg'}">${chg >= 0 ? '+' : ''}${num(chg)} (${((chg / pc) * 100).toFixed(2)}%)</span>`}`;
+      el.last.innerHTML = !b
+        ? ''
+        : `${num(b.close)}${chg == null ? '' : ` <span class="${chg >= 0 ? 'pos' : 'neg'}">${chg >= 0 ? '+' : ''}${num(chg)} (${((chg / pc) * 100).toFixed(2)}%)</span>`}`;
       const s = hover || b;
-      if (!s) { el.ohlc.innerHTML = ''; return; }
+      if (!s) {
+        el.ohlc.innerHTML = '';
+        return;
+      }
       const c = s.close >= s.open ? 'pos' : 'neg';
       const i = barAt(s.time);
       const prev = i > 0 ? bars[i - 1].close : null;
-      const d = prev == null ? '' : ` <span class="${s.close >= prev ? 'pos' : 'neg'}">${s.close >= prev ? '+' : ''}${num(s.close - prev)} (${(((s.close - prev) / prev) * 100).toFixed(2)}%)</span>`;
+      const d =
+        prev == null
+          ? ''
+          : ` <span class="${s.close >= prev ? 'pos' : 'neg'}">${s.close >= prev ? '+' : ''}${num(s.close - prev)} (${(((s.close - prev) / prev) * 100).toFixed(2)}%)</span>`;
       let html = `<div><span class="muted">${when(s.time)}</span> O <b class="${c}">${num(s.open)}</b> H <b class="${c}">${num(s.high)}</b> L <b class="${c}">${num(s.low)}</b> C <b class="${c}">${num(s.close)}</b>${d}</div>`;
       for (const ind of inds) {
         const vals = ind.series.map((sr, j) => (hover ? hoverData?.get(sr)?.value : ind.last[j]));
@@ -473,9 +623,17 @@
       el.tip.style.top = Math.max(4, pt.y - el.tip.offsetHeight - 10 < 4 ? pt.y + 14 : pt.y - el.tip.offsetHeight - 10) + 'px';
     }
     function status(err) {
-      if (err) { el.msg.textContent = 'chart unavailable: ' + err; el.msg.className = 'err'; return; }
+      if (err) {
+        el.msg.textContent = 'chart unavailable: ' + err;
+        el.msg.className = 'err';
+        return;
+      }
       el.msg.className = live ? 'pos' : '';
-      el.msg.textContent = live ? '● live' : meta?.day ? `market closed · last session ${new Date(meta.day + 'T00:00:00Z').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', timeZone: 'UTC' })}` : '';
+      el.msg.textContent = live
+        ? '● live'
+        : meta?.day
+          ? `market closed · last session ${new Date(meta.day + 'T00:00:00Z').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', timeZone: 'UTC' })}`
+          : '';
     }
 
     // ---------- data ----------
@@ -509,7 +667,10 @@
         status(block.length ? null : 'no Nifty candles in the cache yet (log in to Upstox to download them)');
         nextLoadAt = Date.now() + (live ? RELOAD_LIVE_MS : RELOAD_IDLE_MS);
       } catch (e) {
-        if (my === seq) { status(e.message); nextLoadAt = Date.now() + 10_000; }
+        if (my === seq) {
+          status(e.message);
+          nextLoadAt = Date.now() + 10_000;
+        }
       } finally {
         loading = false;
         if (my !== seq) load(true);
@@ -528,10 +689,15 @@
         if (d.candles.length) {
           first = d.first;
           const t0 = bars[0].time;
-          bars = d.candles.map(toBar).filter((b) => b.time < t0).concat(bars);
+          bars = d.candles
+            .map(toBar)
+            .filter((b) => b.time < t0)
+            .concat(bars);
           render();
         }
-      } catch { /* try again on the next scroll */ } finally {
+      } catch {
+        /* try again on the next scroll */
+      } finally {
         loadingOlder = false;
       }
     }
@@ -545,7 +711,7 @@
       if (intraday()) return day + (OPEN_MIN + Math.floor(m / Number(tf)) * Number(tf)) * 60;
       const b = last();
       if (!b || tf === 'D') return day;
-      const week = (t) => t - (((Math.floor(t / 86400) + 3) % 7) * 86400); // Monday of that week
+      const week = (t) => t - ((Math.floor(t / 86400) + 3) % 7) * 86400; // Monday of that week
       const month = (t) => new Date(t * 1000).toISOString().slice(0, 7);
       return (tf === 'W' ? week(b.time) === week(day) : month(b.time) === month(day)) ? b.time : day;
     }
@@ -582,10 +748,21 @@
         const t = await api('/api/nifty/ltp');
         const was = live;
         live = Boolean(t.live && t.ltp != null);
-        if (live) { lastTick = t; applyTick(t); } else lastTick = null;
-        if (dirty) { refreshInds(); info(); }
-        if (live !== was) { status(); if (live) nextLoadAt = 0; } // market just opened: fetch today's candles now
-      } catch { live = false; } finally {
+        if (live) {
+          lastTick = t;
+          applyTick(t);
+        } else lastTick = null;
+        if (dirty) {
+          refreshInds();
+          info();
+        }
+        if (live !== was) {
+          status();
+          if (live) nextLoadAt = 0;
+        } // market just opened: fetch today's candles now
+      } catch {
+        live = false;
+      } finally {
         ticking = false;
       }
     }
@@ -608,32 +785,65 @@
       el.sr.classList.toggle('on', showLevels);
       el.log?.classList.toggle('on', logScale);
     }
-    el.tf.addEventListener('click', (e) => { if (e.target.dataset.tf && e.target.dataset.tf !== tf) setTf(e.target.dataset.tf); });
-    el.type.addEventListener('change', () => { type = el.type.value; set('type', type); makeSeries(); });
-    el.sr.addEventListener('click', () => { showLevels = !showLevels; set('sr', showLevels ? '1' : '0'); buttons(); drawLevels(); });
+    el.tf.addEventListener('click', (e) => {
+      if (e.target.dataset.tf && e.target.dataset.tf !== tf) setTf(e.target.dataset.tf);
+    });
+    el.type.addEventListener('change', () => {
+      type = el.type.value;
+      set('type', type);
+      makeSeries();
+    });
+    el.sr.addEventListener('click', () => {
+      showLevels = !showLevels;
+      set('sr', showLevels ? '1' : '0');
+      buttons();
+      drawLevels();
+    });
     el.now.addEventListener('click', () => chart.timeScale().scrollToRealTime());
     el.pop?.addEventListener('click', () => window.open('chart.html', 'niftyChart', 'popup,width=1400,height=820'));
-    el.ohlc.addEventListener('pointerdown', (e) => { if (e.target.dataset.rm) removeInd(Number(e.target.dataset.rm)); });
+    el.ohlc.addEventListener('pointerdown', (e) => {
+      if (e.target.dataset.rm) removeInd(Number(e.target.dataset.rm));
+    });
 
     if (full) {
       const applyLog = () => chart.priceScale('right').applyOptions({ mode: logScale ? LC.PriceScaleMode.Logarithmic : LC.PriceScaleMode.Normal });
-      el.log.addEventListener('click', () => { logScale = !logScale; set('log', logScale ? '1' : '0'); buttons(); applyLog(); });
+      el.log.addEventListener('click', () => {
+        logScale = !logScale;
+        set('log', logScale ? '1' : '0');
+        buttons();
+        applyLog();
+      });
       el.indBtn.addEventListener('click', () => el.indMenu.classList.toggle('hidden'));
-      document.addEventListener('pointerdown', (e) => { if (!e.target.closest('.nc-dd')) el.indMenu.classList.add('hidden'); });
+      document.addEventListener('pointerdown', (e) => {
+        if (!e.target.closest('.nc-dd')) el.indMenu.classList.add('hidden');
+      });
       el.indMenu.addEventListener('click', (e) => {
         const kind = e.target.dataset.add;
         if (!kind) return;
         const params = {};
-        e.target.closest('.nc-menu-row').querySelectorAll('input').forEach((i) => { params[i.dataset.p] = Math.max(i.dataset.p === 'mult' ? 0.1 : 1, Number(i.value) || IND[kind].params[i.dataset.p]); });
+        e.target
+          .closest('.nc-menu-row')
+          .querySelectorAll('input')
+          .forEach((i) => {
+            params[i.dataset.p] = Math.max(i.dataset.p === 'mult' ? 0.1 : 1, Number(i.value) || IND[kind].params[i.dataset.p]);
+          });
         addInd(kind, params);
       });
       el.draw.addEventListener('click', (e) => {
         const d = e.target.dataset.draw;
         if (!d) return;
-        if (d === 'clear') { draw.h = []; draw.t = []; saveDraw(); drawHLines(); return setMode(null); }
+        if (d === 'clear') {
+          draw.h = [];
+          draw.t = [];
+          saveDraw();
+          drawHLines();
+          return setMode(null);
+        }
         setMode(mode === d ? null : d);
       });
-      document.addEventListener('keydown', (e) => { if (e.key === 'Escape') setMode(null); });
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') setMode(null);
+      });
       chart.subscribeClick((p) => {
         if (!mode || !p.point || (p.paneIndex ?? 0) !== 0) return;
         const price = series.coordinateToPrice(p.point.y);
@@ -644,7 +854,10 @@
         } else {
           const time = p.time ?? chart.timeScale().coordinateToTime(p.point.x);
           if (time == null) return; // right of the last candle
-          if (!pending) { pending = { time, price }; return; }
+          if (!pending) {
+            pending = { time, price };
+            return;
+          }
           draw.t.push({ t1: pending.time, p1: pending.price, t2: time, p2: price });
         }
         saveDraw();
@@ -660,13 +873,15 @@
         trendLines.request?.();
         tip(null);
       });
-      el.shot.addEventListener('click', () => chart.takeScreenshot().toBlob((blob) => {
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = `nifty-${tf}-${new Date(Date.now() + 19800_000).toISOString().slice(0, 16).replace(/[:T]/g, '-')}.png`;
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-      }));
+      el.shot.addEventListener('click', () =>
+        chart.takeScreenshot().toBlob((blob) => {
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = `nifty-${tf}-${new Date(Date.now() + 19800_000).toISOString().slice(0, 16).replace(/[:T]/g, '-')}.png`;
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+        }),
+      );
       el.fs.addEventListener('click', () => (document.fullscreenElement ? document.exitFullscreen() : root.requestFullscreen()));
       applyLog();
     }
@@ -679,21 +894,32 @@
       const inPrice = p.point && (p.paneIndex ?? 0) === 0;
       cursor = inPrice ? { x: p.point.x, y: p.point.y } : null;
       if (pending) trendLines.request?.();
-      if (!inPrice || mode) { overDraw = null; return tip(null); }
+      if (!inPrice || mode) {
+        overDraw = null;
+        return tip(null);
+      }
       overDraw = drawingAt(p.point.x, p.point.y);
       const b = last();
       const lv = overDraw ? null : levelAt(p.point.y);
       if (overDraw) {
-        tip(`<b>${overDraw.kind === 'h' ? 'Horizontal line ' + num(draw.h[overDraw.i]) : 'Trend line'}</b><div class="muted">right-click to remove</div>`, p.point);
+        tip(
+          `<b>${overDraw.kind === 'h' ? 'Horizontal line ' + num(draw.h[overDraw.i]) : 'Trend line'}</b><div class="muted">right-click to remove</div>`,
+          p.point,
+        );
       } else if (lv && b) {
         const res = lv.price > b.close;
         const d = lv.price - b.close;
-        tip(`<b class="${res ? 'neg' : 'pos'}">${lv.cls === 'major' ? 'Major' : 'Minor'} ${res ? 'resistance' : 'support'} ${num(lv.price)}</b>
+        tip(
+          `<b class="${res ? 'neg' : 'pos'}">${lv.cls === 'major' ? 'Major' : 'Minor'} ${res ? 'resistance' : 'support'} ${num(lv.price)}</b>
           <div>${Math.abs(d).toFixed(0)} pts ${res ? 'above' : 'below'} Nifty (${((d / b.close) * 100).toFixed(2)}%)</div>
-          <div class="muted">${esc(lv.src)}</div>`, p.point);
+          <div class="muted">${esc(lv.src)}</div>`,
+          p.point,
+        );
       } else tip(null);
     });
-    chart.timeScale().subscribeVisibleLogicalRangeChange((r) => { if (r && r.from < 30) loadOlder(); });
+    chart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
+      if (r && r.from < 30) loadOlder();
+    });
     new MutationObserver(applyTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
     window.addEventListener('viewchange', () => setTimeout(tick, 0));
     document.addEventListener('visibilitychange', tick);

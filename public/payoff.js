@@ -11,9 +11,9 @@
   const intrinsic = (l, x) => Math.max(0, l.type === 'CE' ? x - l.strike : l.strike - x);
 
   function greeks(Sx, K, T, v, call) {
-    if (!v || T <= 1e-6) return { delta: call ? (Sx > K ? 1 : 0) : (Sx < K ? -1 : 0), gamma: 0, theta: 0, vega: 0 };
+    if (!v || T <= 1e-6) return { delta: call ? (Sx > K ? 1 : 0) : Sx < K ? -1 : 0, gamma: 0, theta: 0, vega: 0 };
     const x = (Math.log(Sx / K) + (RATE + (v * v) / 2) * T) / (v * Math.sqrt(T));
-    const pdf = Math.exp(-x * x / 2) / Math.sqrt(2 * Math.PI);
+    const pdf = Math.exp((-x * x) / 2) / Math.sqrt(2 * Math.PI);
     const p0 = bs(Sx, K, T, v, call);
     return {
       delta: call ? ncdf(x) : ncdf(x) - 1,
@@ -35,7 +35,10 @@
       let worst = 0;
       for (let k = 0.6; k <= 1.4001; k += 0.01) {
         const x = spot * k;
-        worst = Math.min(worst, ls.reduce((a, l) => a + dirOf(l) * q(l) * (intrinsic(l, x) - l.entryPx), 0));
+        worst = Math.min(
+          worst,
+          ls.reduce((a, l) => a + dirOf(l) * q(l) * (intrinsic(l, x) - l.entryPx), 0),
+        );
       }
       return Math.min(0.09 * spot * shortQty, -worst);
     };
@@ -56,14 +59,19 @@
     const dv = (opts.ivShift || 0) / 100;
     const ivx = (l) => Math.max(0.01, l.iv + dv);
     const iv0 = opts.atmIv || (legs.length ? legs.reduce((s, l) => s + l.iv, 0) / legs.length : 0.12);
-    const Th = !legs.length ? 1 / 365 // horizon: the nearest expiry among the legs, or the chosen date
-      : opts.horizon != null ? Math.min(opts.horizon, Math.max(...legs.map((l) => l.T))) : Math.min(...legs.map((l) => l.T));
+    const Th = !legs.length
+      ? 1 / 365 // horizon: the nearest expiry among the legs, or the chosen date
+      : opts.horizon != null
+        ? Math.min(opts.horizon, Math.max(...legs.map((l) => l.T)))
+        : Math.min(...legs.map((l) => l.T));
     const daysToNear = Th * 365;
     const daysAhead = Math.max(0, Math.min(opts.daysAhead || 0, Math.floor(daysToNear)));
-    const valueAt = (x, dt) => realised + legs.reduce((s, l) => {
-      const t = l.T - dt;
-      return s + qty(l) * ((t <= 1e-6 ? intrinsic(l, x) : bs(x, l.strike, t, ivx(l), l.type === 'CE')) - l.entryPx);
-    }, 0);
+    const valueAt = (x, dt) =>
+      realised +
+      legs.reduce((s, l) => {
+        const t = l.T - dt;
+        return s + qty(l) * ((t <= 1e-6 ? intrinsic(l, x) : bs(x, l.strike, t, ivx(l), l.type === 'CE')) - l.entryPx);
+      }, 0);
     const atH = (x) => valueAt(x, Th);
     const sd = spot * iv0 * Math.sqrt(Math.max(Th, 0.5 / 365));
     const lo = spot - Math.max(4 * sd, spot * 0.03);
@@ -83,7 +91,7 @@
     const unlimP = legs.length > 0 && ((wv[n] === maxP && edge(wv[n], wv[n - 1])) || (wv[0] === maxP && edge(wv[0], wv[1])));
     const unlimL = legs.length > 0 && ((wv[n] === maxL && edge(wv[n], wv[n - 1])) || (wv[0] === maxL && edge(wv[0], wv[1])));
     const be = [];
-    for (let i = 1; i < N; i++) if ((exp[i - 1] < 0) !== (exp[i] < 0)) be.push(xs[i - 1] + ((xs[i] - xs[i - 1]) * -exp[i - 1]) / (exp[i] - exp[i - 1]));
+    for (let i = 1; i < N; i++) if (exp[i - 1] < 0 !== exp[i] < 0) be.push(xs[i - 1] + ((xs[i] - xs[i - 1]) * -exp[i - 1]) / (exp[i] - exp[i - 1]));
     // Chance of finishing in profit at the horizon (lognormal at ATM IV).
     const T = Math.max(Th, 0.3 / 365);
     const cdf = (x) => ncdf(Math.log(x / spot) / (iv0 * Math.sqrt(T)) + (iv0 * Math.sqrt(T)) / 2);
@@ -93,25 +101,55 @@
     const withG = legs.map((l) => {
       const lg = greeks(spot, l.strike, l.T, ivx(l), l.type === 'CE');
       const q = qty(l);
-      g.delta += q * lg.delta; g.gamma += q * lg.gamma; g.theta += q * lg.theta; g.vega += q * lg.vega;
+      g.delta += q * lg.delta;
+      g.gamma += q * lg.gamma;
+      g.theta += q * lg.theta;
+      g.vega += q * lg.vega;
       return { ...l, g: lg };
     });
     const credit = -legs.reduce((s, l) => s + qty(l) * l.entryPx, 0);
     const pnlNow = legs.reduce((s, l) => s + qty(l) * ((l.px ?? l.entryPx) - l.entryPx), 0);
     const rr = !unlimP && !unlimL && maxL < 0 && maxP > 0 ? maxP / -maxL : null;
     return {
-      legs: withG, spot, xs, exp, t0, tN, daysAhead, daysToNear, ivShift: opts.ivShift || 0, maxP, maxL, unlimP, unlimL, be, pop, sd, iv0, g,
-      credit, pnlNow, rr, capLot: capital(legs, spot, true), capSel: capital(legs, spot, false),
+      legs: withG,
+      spot,
+      xs,
+      exp,
+      t0,
+      tN,
+      daysAhead,
+      daysToNear,
+      ivShift: opts.ivShift || 0,
+      maxP,
+      maxL,
+      unlimP,
+      unlimL,
+      be,
+      pop,
+      sd,
+      iv0,
+      g,
+      credit,
+      pnlNow,
+      rr,
+      capLot: capital(legs, spot, true),
+      capSel: capital(legs, spot, false),
     };
   }
 
   // KPI tiles (the .dep-kpis grid). opts.pnl overrides "P&L now" (the Builder adds realised P&L).
   function kpis(A, opts = {}) {
     if (!A.legs.length) return '';
-    const lotsTxt = (() => { const s = [...new Set(A.legs.map((l) => l.lots))]; return s.length === 1 ? `${s[0]} lot${s[0] > 1 ? 's' : ''}` : 'your lots'; })();
+    const lotsTxt = (() => {
+      const s = [...new Set(A.legs.map((l) => l.lots))];
+      return s.length === 1 ? `${s[0]} lot${s[0] > 1 ? 's' : ''}` : 'your lots';
+    })();
     const pnl = opts.pnl ?? A.pnlNow;
     // Each rupee figure also as a share of the capital at the position's lots (Capital · N lots).
-    const pc = (v, signed = true) => (A.capSel.total > 0 && isFinite(v) ? `<em class="kpi-pct" title="Share of the capital (${inr(A.capSel.total)})">${signed && v > 0 ? '+' : ''}${((v / A.capSel.total) * 100).toFixed(Math.abs(v / A.capSel.total) < 0.1 ? 2 : 1).replace('-', '−')}% of capital</em>` : '');
+    const pc = (v, signed = true) =>
+      A.capSel.total > 0 && isFinite(v)
+        ? `<em class="kpi-pct" title="Share of the capital (${inr(A.capSel.total)})">${signed && v > 0 ? '+' : ''}${((v / A.capSel.total) * 100).toFixed(Math.abs(v / A.capSel.total) < 0.1 ? 2 : 1).replace('-', '−')}% of capital</em>`
+        : '';
     return `
       <div><span>${A.credit >= 0 ? 'Net credit' : 'Net debit'}</span><b class="${cls(A.credit)}">${inr(Math.abs(A.credit))}</b>${pc(Math.abs(A.credit), false)}</div>
       <div title="Margin blocked for the short legs + premium paid for the long legs, with each leg at 1 lot. Rough estimate (about 9% of notional per naked short, less when covered): check with your broker.&#10;Margin ${inr(A.capLot.margin)} + premium paid ${inr(A.capLot.premium)}"><span>Capital / lot</span><b>${kinr(A.capLot.total)}</b>${pc(A.capLot.total, false)}</div>
@@ -125,8 +163,12 @@
       <div><span>Theta / day</span><b class="${cls(A.g.theta)}">${inrS(A.g.theta)}</b>${pc(A.g.theta)}</div>
       <div><span>Vega / vol pt</span><b class="${cls(A.g.vega)}">${inrS(A.g.vega)}</b>${pc(A.g.vega)}</div>
       <div><span>Gamma</span><b>${num(A.g.gamma, 3)}</b></div>
-      <div><span>P&amp;L now</span><b class="${cls(pnl)}">${inrS(pnl)}</b>${pc(pnl)}</div>${A.ivShift ? `
-      <div title="Curves and Greeks use every leg's IV shifted by this much"><span>IV what-if</span><b>${A.ivShift > 0 ? '+' : ''}${A.ivShift} vol</b></div>` : ''}`;
+      <div><span>P&amp;L now</span><b class="${cls(pnl)}">${inrS(pnl)}</b>${pc(pnl)}</div>${
+        A.ivShift
+          ? `
+      <div title="Curves and Greeks use every leg's IV shifted by this much"><span>IV what-if</span><b>${A.ivShift > 0 ? '+' : ''}${A.ivShift} vol</b></div>`
+          : ''
+      }`;
   }
 
   // What-if controls (days ahead, IV shift). Drawn once and then only updated, so a slider keeps working while dragged
@@ -145,7 +187,14 @@
         label();
         onChange(st);
       });
-      el.addEventListener('click', (e) => { if (e.target.dataset.pc === 'reset') { st.daysAhead = 0; st.ivShift = 0; sync(); onChange(st); } });
+      el.addEventListener('click', (e) => {
+        if (e.target.dataset.pc === 'reset') {
+          st.daysAhead = 0;
+          st.ivShift = 0;
+          sync();
+          onChange(st);
+        }
+      });
     }
     const days = el.querySelector('[data-pc="days"]');
     const iv = el.querySelector('[data-pc="iv"]');
@@ -170,9 +219,17 @@
       for (const m of o.marks || []) {
         const x = scales.x.getPixelForValue(m.x);
         if (x < ca.left || x > ca.right) continue;
-        ctx.save(); ctx.strokeStyle = m.color; ctx.setLineDash(m.dash || []);
-        ctx.beginPath(); ctx.moveTo(x, ca.top); ctx.lineTo(x, ca.bottom); ctx.stroke();
-        ctx.fillStyle = m.color; ctx.font = '10px system-ui'; ctx.fillText(m.label, x + 3, ca.top + 10 + (m.row || 0) * 11); ctx.restore();
+        ctx.save();
+        ctx.strokeStyle = m.color;
+        ctx.setLineDash(m.dash || []);
+        ctx.beginPath();
+        ctx.moveTo(x, ca.top);
+        ctx.lineTo(x, ca.bottom);
+        ctx.stroke();
+        ctx.fillStyle = m.color;
+        ctx.font = '10px system-ui';
+        ctx.fillText(m.label, x + 3, ca.top + 10 + (m.row || 0) * 11);
+        ctx.restore();
       }
     },
   };
@@ -181,14 +238,32 @@
   function draw(canvas, A, opts = {}) {
     const pts = (ys) => A.xs.map((x, i) => ({ x, y: ys[i] }));
     const has = A.legs.length;
-    const ds = has ? [
-      { label: opts.horizonLabel || `At expiry${opts.expiryLabel ? ` (${opts.expiryLabel})` : ''}`, data: pts(A.exp), borderColor: '#e6edf3', borderWidth: 1.8, pointRadius: 0, fill: { target: 'origin', above: 'rgba(63,182,139,.18)', below: 'rgba(240,113,107,.18)' } },
-      { label: `Now (T+0${opts.nowLabel ? `, ${opts.nowLabel}` : ''})${A.ivShift ? ` IV ${A.ivShift > 0 ? '+' : ''}${A.ivShift}` : ''}`, data: pts(A.t0), borderColor: '#58a6ff', borderWidth: 1.4, pointRadius: 0, borderDash: [4, 3] },
-    ] : [];
-    if (has && A.tN) ds.push({ label: `+${A.daysAhead} day${A.daysAhead > 1 ? 's' : ''}`, data: pts(A.tN), borderColor: '#d6af4c', borderWidth: 1.4, pointRadius: 0 });
+    const ds = has
+      ? [
+          {
+            label: opts.horizonLabel || `At expiry${opts.expiryLabel ? ` (${opts.expiryLabel})` : ''}`,
+            data: pts(A.exp),
+            borderColor: '#e6edf3',
+            borderWidth: 1.8,
+            pointRadius: 0,
+            fill: { target: 'origin', above: 'rgba(63,182,139,.18)', below: 'rgba(240,113,107,.18)' },
+          },
+          {
+            label: `Now (T+0${opts.nowLabel ? `, ${opts.nowLabel}` : ''})${A.ivShift ? ` IV ${A.ivShift > 0 ? '+' : ''}${A.ivShift}` : ''}`,
+            data: pts(A.t0),
+            borderColor: '#58a6ff',
+            borderWidth: 1.4,
+            pointRadius: 0,
+            borderDash: [4, 3],
+          },
+        ]
+      : [];
+    if (has && A.tN)
+      ds.push({ label: `+${A.daysAhead} day${A.daysAhead > 1 ? 's' : ''}`, data: pts(A.tN), borderColor: '#d6af4c', borderWidth: 1.4, pointRadius: 0 });
     const marks = [
       { x: A.spot, label: 'spot', color: '#d6af4c' },
-      { x: A.spot - A.sd, label: '−1σ', color: '#8b949e', dash: [2, 3] }, { x: A.spot + A.sd, label: '+1σ', color: '#8b949e', dash: [2, 3] },
+      { x: A.spot - A.sd, label: '−1σ', color: '#8b949e', dash: [2, 3] },
+      { x: A.spot + A.sd, label: '+1σ', color: '#8b949e', dash: [2, 3] },
       ...A.be.map((b) => ({ x: b, label: 'BE', color: '#b392f0', dash: [3, 3], row: 1 })),
     ];
     const lv = opts.levels;
@@ -203,10 +278,19 @@
         interaction: { mode: 'nearest', axis: 'x', intersect: false },
         plugins: {
           legend: { position: 'bottom' },
-          tooltip: { callbacks: { title: (c) => `Nifty ${Math.round(c[0].raw.x)} (${(((c[0].raw.x - A.spot) / A.spot) * 100).toFixed(1)}%)`, label: (c) => `${c.dataset.label}: ${inrS(c.raw.y)}${A.capSel.total > 0 ? ` (${c.raw.y > 0 ? '+' : ''}${((c.raw.y / A.capSel.total) * 100).toFixed(1).replace('-', '−')}% of capital)` : ''}` } },
+          tooltip: {
+            callbacks: {
+              title: (c) => `Nifty ${Math.round(c[0].raw.x)} (${(((c[0].raw.x - A.spot) / A.spot) * 100).toFixed(1)}%)`,
+              label: (c) =>
+                `${c.dataset.label}: ${inrS(c.raw.y)}${A.capSel.total > 0 ? ` (${c.raw.y > 0 ? '+' : ''}${((c.raw.y / A.capSel.total) * 100).toFixed(1).replace('-', '−')}% of capital)` : ''}`,
+            },
+          },
           payv: { marks },
         },
-        scales: { x: { type: 'linear', min: A.xs[0], max: A.xs[A.xs.length - 1], ticks: { callback: (v) => Math.round(v) } }, y: { ticks: { callback: (v) => kinr(v) } } },
+        scales: {
+          x: { type: 'linear', min: A.xs[0], max: A.xs[A.xs.length - 1], ticks: { callback: (v) => Math.round(v) } },
+          y: { ticks: { callback: (v) => kinr(v) } },
+        },
       },
     });
   }
@@ -215,7 +299,10 @@
   // Strike step of a chain (smallest gap between listed strikes).
   function strikeStep(ks) {
     let s = Infinity;
-    for (let i = 1; i < ks.length; i++) { const d = ks[i] - ks[i - 1]; if (d > 0 && d < s) s = d; }
+    for (let i = 1; i < ks.length; i++) {
+      const d = ks[i] - ks[i - 1];
+      if (d > 0 && d < s) s = d;
+    }
     return isFinite(s) ? s : 50;
   }
   // OTM offset (in strikes) of a strike from the ATM strike at that spot: calls count up, puts count down.

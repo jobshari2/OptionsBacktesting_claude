@@ -35,7 +35,15 @@
     const opts = (sel) => exp.map((e) => `<option value="${e}" ${e === sel ? 'selected' : ''}>${dayLabel(e)}${monthly.has(e) ? ' · M' : ''}</option>`).join('');
     const pick = {
       new: '<span class="muted">expiries since the last one downloaded (the latest 8 at most)</span>',
-      recent: `<select id="syMonths">${[[1, 'Last month'], [3, 'Last 3 months'], [6, 'Last 6 months'], [12, 'Last year'], [0, 'Everything Upstox has']].map(([m, t]) => `<option value="${m}" ${m === form.months ? 'selected' : ''}>${t}</option>`).join('')}</select>`,
+      recent: `<select id="syMonths">${[
+        [1, 'Last month'],
+        [3, 'Last 3 months'],
+        [6, 'Last 6 months'],
+        [12, 'Last year'],
+        [0, 'Everything Upstox has'],
+      ]
+        .map(([m, t]) => `<option value="${m}" ${m === form.months ? 'selected' : ''}>${t}</option>`)
+        .join('')}</select>`,
       dates: `<span class="muted">expiring from</span><input type="date" id="syFrom" value="${form.from}" min="${exp[0]}" max="${last}"><span class="muted">to</span><input type="date" id="syTo" value="${form.to}" min="${exp[0]}" max="${last}">`,
       expiries: `<select id="syExpFrom">${opts(form.expFrom)}</select><span class="muted">→</span><select id="syExpTo">${opts(form.expTo)}</select>`,
     };
@@ -45,9 +53,22 @@
         <h3>Download data <span class="muted small">option candles the cache does not have yet</span></h3>
         <div class="set-row">
           <span class="lbl">Expiries</span>
-          <div class="seg sm">${[['new', 'New'], ['recent', 'Recent'], ['dates', 'Date range'], ['expiries', 'Pick expiries']].map(([k, t]) => `<button data-scope="${k}" class="${k === form.scope ? 'on' : ''}">${t}</button>`).join('')}</div>
+          <div class="seg sm">${[
+            ['new', 'New'],
+            ['recent', 'Recent'],
+            ['dates', 'Date range'],
+            ['expiries', 'Pick expiries'],
+          ]
+            .map(([k, t]) => `<button data-scope="${k}" class="${k === form.scope ? 'on' : ''}">${t}</button>`)
+            .join('')}</div>
           ${pick[form.scope] || pick.new}
-          <select id="syKind">${[['all', 'Weekly + monthly'], ['monthly', 'Monthly only'], ['weekly', 'Weekly only']].map(([k, t]) => `<option value="${k}" ${k === form.kind ? 'selected' : ''}>${t}</option>`).join('')}</select>
+          <select id="syKind">${[
+            ['all', 'Weekly + monthly'],
+            ['monthly', 'Monthly only'],
+            ['weekly', 'Weekly only'],
+          ]
+            .map(([k, t]) => `<option value="${k}" ${k === form.kind ? 'selected' : ''}>${t}</option>`)
+            .join('')}</select>
         </div>
         <div class="set-row">
           <span class="lbl">Strikes</span><span class="muted">±</span><input id="syBand" class="num xs" type="number" value="${s.band}" min="2" max="80"><span class="muted">around the Nifty range of the last</span>
@@ -70,7 +91,9 @@
   async function render() {
     const id = ++drawn;
     let cache = null;
-    try { cache = await BT.api('/api/bt/cache'); } catch {}
+    try {
+      cache = await BT.api('/api/bt/cache');
+    } catch {}
     if (id !== drawn) return;
     const cal = BT.meta.calendar;
     const exp = cal?.expired || [];
@@ -82,33 +105,49 @@
     $('dataBody').innerHTML = `
       <section class="panel data-card">
         <h3>Historical data from Upstox</h3>
-        ${cal ? `<table class="kv">
+        ${
+          cal
+            ? `<table class="kv">
           <tr><th>Expired Nifty options</th><td><b>${exp.length} expiries</b>, ${dayLabel(exp[0])} → ${dayLabel(exp[exp.length - 1])} (${exp.filter((e) => monthly.has(e)).length} monthly, ${exp.filter((e) => !monthly.has(e)).length} weekly)</td></tr>
           <tr><th>Resolution</th><td>1-minute OHLC + open interest for every strike (call and put), via <code>/v2/expired-instruments</code></td></tr>
           <tr><th>Nifty 50 &amp; India VIX</th><td>1-minute candles since Jan 2022 via <code>/v3/historical-candle</code></td></tr>
           <tr><th>Live expiries</th><td>${(cal.live || []).slice(0, 6).map(dayShort).join(' · ')}${cal.live.length > 6 ? ' …' : ''} — usable for <b>Deploy live</b>; they become backtestable once expired</td></tr>
           <tr><th>Lot size</th><td>today ${cal.liveLot || '—'}; over this history it went 25 → 75 → 65 ("As traded" takes it from each expiry's contract data). Backtests use a fixed lot by default so years compare fairly.</td></tr>
           <tr><th>Rate limits</th><td>Upstox allows ~500 requests/min and 2,000 per 30 min. One request downloads a contract's whole last month, so a 6-month ATM straddle test needs ~300 requests the first time and none after.</td></tr>
-        </table>` : `<div class="err">${esc(BT.meta.calError || 'Calendar not loaded — log in to Upstox.')}</div>`}
+        </table>`
+            : `<div class="err">${esc(BT.meta.calError || 'Calendar not loaded — log in to Upstox.')}</div>`
+        }
       </section>
       <section class="panel data-card">
         <h3>Local cache <span class="muted small">bt-cache/</span></h3>
-        ${cache ? `<table class="kv">
+        ${
+          cache
+            ? `<table class="kv">
           <tr><th>Option candles</th><td><b>${cache.options.files.toLocaleString('en-IN')}</b> contracts across ${cache.expiries.length} expiries · ${mb(cache.options.bytes)}</td></tr>
           <tr><th>Index candles</th><td>${cache.index.files} month files · ${mb(cache.index.bytes)}</td></tr>
           <tr><th>In memory</th><td>${cache.memContracts} contracts (fastest re-runs)</td></tr>
           <tr><th>This session</th><td>${cache.api.requests} Upstox requests · ${cache.api.lastMinute} in the last minute</td></tr>
         </table>
-        <div class="data-actions"><button class="btn-sm ghost danger" data-clear="options">Clear option cache</button> <button class="btn-sm ghost danger" data-clear="index">Clear index cache</button></div>` : '<div class="muted">—</div>'}
+        <div class="data-actions"><button class="btn-sm ghost danger" data-clear="options">Clear option cache</button> <button class="btn-sm ghost danger" data-clear="index">Clear index cache</button></div>`
+            : '<div class="muted">—</div>'
+        }
       </section>
       ${downloadPanel(exp, monthly)}
       <section class="panel data-card wide">
         <h3>Coverage by expiry <span class="muted small">bar = contracts cached · M = monthly · outlined = in the selection above, red = something of it is missing · click an expiry to pick it (Shift-click for a range)</span></h3>
-        <div class="cov">${Object.entries(byYear).reverse().map(([y, es]) => `<div class="cov-year"><span class="muted">${y}</span><div class="cov-row">${es.map((e) => {
-          const c = cached.get(e) || 0;
-          const tip = `${dayLabel(e)}${monthly.has(e) ? ' (monthly)' : ''}: ${c} contracts cached`;
-          return `<div class="cov-cell${monthly.has(e) ? ' m' : ''}" data-e="${e}" data-tip="${tip}" title="${tip}"><div class="cov-fill" style="height:${((c / maxC) * 100).toFixed(0)}%"></div><span>${dayShort(e).split(' ')[0]}</span></div>`;
-        }).join('')}</div></div>`).join('')}</div>
+        <div class="cov">${Object.entries(byYear)
+          .reverse()
+          .map(
+            ([y, es]) =>
+              `<div class="cov-year"><span class="muted">${y}</span><div class="cov-row">${es
+                .map((e) => {
+                  const c = cached.get(e) || 0;
+                  const tip = `${dayLabel(e)}${monthly.has(e) ? ' (monthly)' : ''}: ${c} contracts cached`;
+                  return `<div class="cov-cell${monthly.has(e) ? ' m' : ''}" data-e="${e}" data-tip="${tip}" title="${tip}"><div class="cov-fill" style="height:${((c / maxC) * 100).toFixed(0)}%"></div><span>${dayShort(e).split(' ')[0]}</span></div>`;
+                })
+                .join('')}</div></div>`,
+          )
+          .join('')}</div>
       </section>`;
     paintSync();
     check();
@@ -135,7 +174,11 @@
     paintPlan();
     if (req.error) return;
     let p;
-    try { p = await BT.api('/api/bt/sync/plan', req); } catch (e) { p = { error: e.message }; }
+    try {
+      p = await BT.api('/api/bt/sync/plan', req);
+    } catch (e) {
+      p = { error: e.message };
+    }
     if (id !== planSeq) return;
     plan = p;
     paintPlan();
@@ -171,7 +214,15 @@
         const r = rows.get(c.dataset.e);
         c.classList.toggle('sel', Boolean(r));
         c.classList.toggle('miss', Boolean(r && (r.missing || r.error)));
-        c.title = c.dataset.tip + (!r ? '' : r.error ? ` · not checked: ${r.error}` : r.missing ? ` · ${r.missing} of the ${r.contracts} wanted are missing` : ` · all ${r.contracts} wanted are downloaded`);
+        c.title =
+          c.dataset.tip +
+          (!r
+            ? ''
+            : r.error
+              ? ` · not checked: ${r.error}`
+              : r.missing
+                ? ` · ${r.missing} of the ${r.contracts} wanted are missing`
+                : ` · all ${r.contracts} wanted are downloaded`);
       }
     }
     el.className = 'sy-sum ' + cls;
@@ -185,8 +236,13 @@
     const j = sync?.job;
     const running = j?.status === 'running';
     const a = sync?.auto;
-    const set = (id, v) => { if (document.activeElement !== $(id)) $(id).value = v; };
-    if (sync) { set('syBand', sync.settings.band); set('syDays', sync.settings.daysBefore); }
+    const set = (id, v) => {
+      if (document.activeElement !== $(id)) $(id).value = v;
+    };
+    if (sync) {
+      set('syBand', sync.settings.band);
+      set('syDays', sync.settings.daysBefore);
+    }
     $('syRun').disabled = running || a?.state === 'demo' || !plan?.missing;
     $('syRun').title = a?.state === 'demo' ? 'Not available in demo mode' : '';
     $('syStop').classList.toggle('hidden', !running);
@@ -196,7 +252,8 @@
       const p = j.progress;
       prog.querySelector('.fill').style.width = (p.total ? (p.done / p.total) * 100 : 0).toFixed(1) + '%';
       const wait = p.api?.waitingSec ? ` · waiting ${p.api.waitingSec}s for the Upstox rate limit` : '';
-      prog.querySelector('.ptext').textContent = `${j.auto ? 'Automatic update · ' : ''}${p.phase} ${p.total ? p.done + '/' + p.total : ''}${p.failed ? ' · ' + p.failed + ' failed' : ''}${wait}`;
+      prog.querySelector('.ptext').textContent =
+        `${j.auto ? 'Automatic update · ' : ''}${p.phase} ${p.total ? p.done + '/' + p.total : ''}${p.failed ? ' · ' + p.failed + ' failed' : ''}${wait}`;
     }
     let msg = note || '';
     let err = Boolean(note);
@@ -206,8 +263,11 @@
       if (!r) msg = 'Download failed: ' + j.error;
       else if (!r.wanted) msg = 'Nothing was missing.';
       else {
-        msg = `Downloaded ${some(r.contracts, 'contract', 'contracts')} of ${some(r.downloaded.length, 'expiry', 'expiries')}`
-          + (r.failed ? `, ${r.failed} failed (see logs/errors.log)` : '') + (r.stopped ? `; stopped with ${n(r.wanted - r.contracts - r.failed)} left` : '') + ` · ${clock(j.endedAt)}`;
+        msg =
+          `Downloaded ${some(r.contracts, 'contract', 'contracts')} of ${some(r.downloaded.length, 'expiry', 'expiries')}` +
+          (r.failed ? `, ${r.failed} failed (see logs/errors.log)` : '') +
+          (r.stopped ? `; stopped with ${n(r.wanted - r.contracts - r.failed)} left` : '') +
+          ` · ${clock(j.endedAt)}`;
       }
     }
     $('syMsg').textContent = running ? '' : msg;
@@ -220,7 +280,10 @@
     else if (a?.state === 'off') text = 'Off: new expiries are downloaded only with the button above (backtests still fetch what they need).';
     else if (a?.state === 'login') text = 'Waiting for the Upstox login.';
     else if (a && running && j.auto) text = 'Checking now.';
-    else if (a) text = (a.at ? `Last check ${clock(a.at)}: ${a.text}.` : 'First check within half a minute.') + (a.at && a.nextAt > Date.now() ? ` Next check ${clock(a.nextAt)}.` : '');
+    else if (a)
+      text =
+        (a.at ? `Last check ${clock(a.at)}: ${a.text}.` : 'First check within half a minute.') +
+        (a.at && a.nextAt > Date.now() ? ` Next check ${clock(a.nextAt)}.` : '');
     $('syAutoMsg').textContent = text;
     $('syAutoMsg').className = 'small ' + (a?.state === 'on' && a.ok === false && !(running && j.auto) ? 'err' : 'muted');
   }
@@ -233,18 +296,25 @@
     // A download ended (one seen running, or one that ran between two polls and fetched something): the cache changed.
     const ended = seen !== null && key !== seen && j && j.status !== 'running' && (was?.status === 'running' || j.result?.contracts > 0);
     seen = key;
-    if (ended) render(); else paintSync();
+    if (ended) render();
+    else paintSync();
   }
 
   // Follows the download while the screen is open: closely while one runs, else often enough to see one start.
   async function poll() {
     clearTimeout(timer);
     if (window.app.state.view !== 'data') return;
-    if (!document.hidden || !sync) { try { apply(await BT.api('/api/bt/sync')); } catch {} }
+    if (!document.hidden || !sync) {
+      try {
+        apply(await BT.api('/api/bt/sync'));
+      } catch {}
+    }
     clearTimeout(timer);
     timer = setTimeout(poll, sync?.job?.status === 'running' ? 500 : 5000);
   }
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) poll();
+  });
 
   async function send(path, body) {
     try {
@@ -272,7 +342,10 @@
 
   $('dataBody').addEventListener('click', async (e) => {
     const t = e.target;
-    if (t.dataset.scope) { form.scope = t.dataset.scope; return picked(true); }
+    if (t.dataset.scope) {
+      form.scope = t.dataset.scope;
+      return picked(true);
+    }
     const cell = t.closest('.cov-cell');
     if (cell && $('syCard')) {
       const from = e.shiftKey && form.scope === 'expiries' ? form.expFrom : cell.dataset.e;
@@ -280,7 +353,10 @@
       form.scope = 'expiries';
       return picked(true);
     }
-    if (t.id === 'syRun') { const req = request(); if (!req.error) send('/api/bt/sync/start', req); }
+    if (t.id === 'syRun') {
+      const req = request();
+      if (!req.error) send('/api/bt/sync/start', req);
+    }
     if (t.id === 'syStop') send('/api/bt/sync/stop', {});
     const what = t.dataset.clear;
     if (what && confirm(`Delete the cached ${what} data? It will be downloaded again when needed.`)) {
@@ -292,17 +368,25 @@
   $('dataBody').addEventListener('change', async (e) => {
     const t = e.target;
     const field = { syMonths: 'months', syKind: 'kind', syFrom: 'from', syTo: 'to', syExpFrom: 'expFrom', syExpTo: 'expTo' }[t.id];
-    if (field) { form[field] = field === 'months' ? Number(t.value) : t.value; return picked(false); }
+    if (field) {
+      form[field] = field === 'months' ? Number(t.value) : t.value;
+      return picked(false);
+    }
     if (t.id === 'syAuto') send('/api/bt/sync/settings', { auto: t.checked });
     // The depth is saved on the server: the automatic update downloads with it too.
-    if ((t.id === 'syBand' || t.id === 'syDays') && await send('/api/bt/sync/settings', { band: $('syBand').value, daysBefore: $('syDays').value })) check();
+    if ((t.id === 'syBand' || t.id === 'syDays') && (await send('/api/bt/sync/settings', { band: $('syBand').value, daysBefore: $('syDays').value }))) check();
   });
 
   function init() {
-    if (!inited) { inited = true; BT.on('meta', render); }
+    if (!inited) {
+      inited = true;
+      BT.on('meta', render);
+    }
     render();
     poll();
   }
-  window.addEventListener('viewchange', (e) => { if (e.detail === 'data') init(); });
+  window.addEventListener('viewchange', (e) => {
+    if (e.detail === 'data') init();
+  });
   if (window.app.state.view === 'data') init();
 })();

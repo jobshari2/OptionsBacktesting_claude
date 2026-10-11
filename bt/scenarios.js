@@ -18,7 +18,10 @@ const EXIT_TIMES = ['11:00', '12:30', '14:00', '15:15'];
 function exitsOf(s) {
   const em = MIN_OF(s.entry.time);
   if (s.mode === 'intraday') {
-    return [...new Set([...EXIT_TIMES, s.exit.time])].filter((t) => MIN_OF(t) > em).sort().map((time) => ({ time }));
+    return [...new Set([...EXIT_TIMES, s.exit.time])]
+      .filter((t) => MIN_OF(t) > em)
+      .sort()
+      .map((time) => ({ time }));
   }
   const ok = (d) => Boolean(s.entry.after) || d < s.entry.dteDays || (d === s.entry.dteDays && MIN_OF(s.exit.time) > em);
   // A leg in an earlier expiry that is not rolled (e.g. a near-week hedge) is gone after its expiry: holding the
@@ -27,7 +30,10 @@ function exitsOf(s) {
   const codes = new Set(s.legs.map((l) => l.expiry));
   const first = ['cur', 'mcur', 'next', 'mnext'].find((c) => codes.has(c));
   const hedgeEnds = codes.size > 1 && s.legs.some((l) => l.expiry === first && !l.roll);
-  return [...new Set(hedgeEnds ? [s.exit.dteDays, s.exit.dteDays + 1] : [...EXIT_DTE, s.exit.dteDays])].filter(ok).sort((a, b) => a - b).map((dteDays) => ({ dteDays, time: s.exit.time }));
+  return [...new Set(hedgeEnds ? [s.exit.dteDays, s.exit.dteDays + 1] : [...EXIT_DTE, s.exit.dteDays])]
+    .filter(ok)
+    .sort((a, b) => a - b)
+    .map((dteDays) => ({ dteDays, time: s.exit.time }));
 }
 
 // debit: the position pays premium at entry (decides which % steps make sense).
@@ -45,7 +51,15 @@ function buildScenarios(strategy, debit = false) {
       }
     }
   }
-  if (!out.some((x) => x.base)) out.unshift({ key: 'base', base: true, own: true, tgt: null, sl: null, exit: s.mode === 'intraday' ? { time: s.exit.time } : { dteDays: s.exit.dteDays, time: s.exit.time } });
+  if (!out.some((x) => x.base))
+    out.unshift({
+      key: 'base',
+      base: true,
+      own: true,
+      tgt: null,
+      sl: null,
+      exit: s.mode === 'intraday' ? { time: s.exit.time } : { dteDays: s.exit.dteDays, time: s.exit.time },
+    });
   return out;
 }
 

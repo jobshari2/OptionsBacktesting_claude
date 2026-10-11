@@ -1,0 +1,129 @@
+# Azure Pipelines: the same checks as .github/workflows/ci.yml. Both call the npm scripts in package.json,
+# so what a check does is changed in one place.
+
+trigger:
+  branches:
+    include:
+      - main
+
+# Pull requests to main. This block is read when the code is on GitHub. For a repository in Azure Repos it is
+# ignored: add this pipeline as a "Build validation" branch policy on main instead.
+pr:
+  branches:
+    include:
+      - main
+
+schedules:
+  # Mondays 08:00 IST: a dependency can get a security advisory, and an agent image can change, without a commit
+  - cron: '30 2 * * 1'
+    displayName: Weekly run
+    branches:
+      include:
+        - main
+    always: true
+
+variables:
+  CI: 'true' # GitHub Actions sets this by itself; playwright.config.js reads it
+  npm_config_cache: $(Pipeline.Workspace)/.npm
+
+jobs:
+  - job: lint
+    displayName: Lint and format
+    pool:
+      vmImage: ubuntu-24.04
+    timeoutInMinutes: 10
+    steps:
+      - template: ci/azure-setup.yml
+      - script: npm run lint
+        displayName: ESLint
+      - script: npm run format:check
+        displayName: Prettier
+
+  - job: test
+    displayName: Unit tests
+    strategy:
+      matrix:
+        linux_node22: # the oldest version package.json allows
+          image: ubuntu-24.04
+          node: '22.x'
+          coverage: 'true'
+        linux_node24:
+          image: ubuntu-24.04
+          node: '24.x'
+        windows_node22:
+          image: windows-2025
+          node: '22.x'
+    pool:
+      vmImage: $(image)
+    timeoutInMinutes: 15
+    steps:
+      - template: ci/azure-setup.yml
+        parameters:
+          node: $(node)
+      - script: npm run test:ci
+        displayName: Unit tests with coverage
+      - script: node ci/junit-suite.js reports/junit.xml
+        displayName: Prepare the test results
+        condition: succeededOrFailed()
+      - task: PublishTestResults@2
+        displayName: Publish the test results
+        condition: succeededOrFailed()
+        inputs:
+          testResultsFormat: JUnit
+          testResultsFiles: reports/junit.xml
+          testRunTitle: Unit tests ($(Agent.OS), Node $(node))
+      # Coverage is reported, never enforced, so a problem publishing it does not fail the run.
+      - task: PublishCodeCoverageResults@2
+        displayName: Publish the coverage
+        condition: and(succeededOrFailed(), eq(variables['coverage'], 'true'))
+        continueOnError: true
+        inputs:
+          summaryFileLocation: reports/coverage.lcov
+          pathToSources: $(System.DefaultWorkingDirectory)
+      - bash: |
+          node ci/coverage-summary.js reports/coverage.lcov > reports/coverage.md
+          echo "##vso[task.uploadsummary]$(System.DefaultWorkingDirectory)/reports/coverage.md"
+        displayName: Coverage on the run's summary page
+        condition: and(succeededOrFailed(), eq(variables['coverage'], 'true'))
+        continueOnError: true
+
+  - job: e2e
+    displayName: End-to-end tests
+    pool:
+      vmImage: ubuntu-24.04
+    timeoutInMinutes: 15
+    steps:
+      - template: ci/azure-setup.yml
+      - script: npx playwright install --with-deps --only-shell chromium
+        displayName: Install Chromium for Playwright
+      - script: npm run test:e2e
+        displayName: End-to-end tests (the app in demo mode)
+      - task: PublishTestResults@2
+        displayName: Publish the test results
+        condition: succeededOrFailed()
+        inputs:
+          testResultsFormat: JUnit
+          testResultsFiles: reports/e2e-junit.xml
+          testRunTitle: End-to-end tests
+      - task: PublishPipelineArtifact@1
+        displayName: Keep the Playwright report
+        condition: succeededOrFailed()
+        inputs:
+          targetPath: playwright-report
+          artifact: playwright-report-$(System.JobAttempt)
+
+  - job: security
+    displayName: Security checks
+    pool:
+      vmImage: ubuntu-24.04
+    timeoutInMinutes: 10
+    steps:
+      - checkout: self
+        fetchDepth: 0 # the secret scan reads the whole history
+      - template: ci/azure-setup.yml
+      - script: npm audit --omit=dev --audit-level=high
+        displayName: Known vulnerabilities in the packages the app runs on
+      - script: npm audit signatures
+        displayName: Registry signatures of the installed packages
+      - script: bash ci/gitleaks.sh
+        displayName: Secrets in the git history

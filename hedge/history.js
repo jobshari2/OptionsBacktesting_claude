@@ -15,7 +15,11 @@ const ymd = (t) => new Date(t).toISOString().slice(0, 10);
 function createHistory({ upstoxGet, cacheDir, logError }) {
   const file = path.join(cacheDir, 'history.json');
   let cache = { at: 0, nifty: {}, vix: {} };
-  try { cache = { ...cache, ...JSON.parse(fs.readFileSync(file, 'utf8')) }; } catch { /* first run */ }
+  try {
+    cache = { ...cache, ...JSON.parse(fs.readFileSync(file, 'utf8')) };
+  } catch {
+    /* first run */
+  }
   let job = null;
 
   // { 'YYYY-MM-DD': close } for one instrument between two dates, in chunks.
@@ -60,7 +64,10 @@ function createHistory({ upstoxGet, cacheDir, logError }) {
   // Sorted [{ date, spot, vix }] (vix carried forward over gaps; null before it starts).
   async function load() {
     if (!Object.keys(cache.nifty).length || Date.now() - cache.at > REFRESH_MS) {
-      if (!job) job = refresh().finally(() => { job = null; });
+      if (!job)
+        job = refresh().finally(() => {
+          job = null;
+        });
       await job;
     }
     const dates = Object.keys(cache.nifty).sort();

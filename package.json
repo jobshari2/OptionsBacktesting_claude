@@ -7,6 +7,12 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test",
+    "test:ci": "node -e \"require('fs').mkdirSync('reports',{recursive:true})\" && node --test --experimental-test-coverage \"--test-coverage-exclude=test/**\" --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit --test-reporter-destination=reports/junit.xml --test-reporter=lcov --test-reporter-destination=reports/coverage.lcov",
+    "test:e2e": "playwright test",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "npm run lint && npm run format:check && npm test",
     "demo": "node -e \"process.env.DEMO='1';require('./server.js')\""
   },
   "engines": {
@@ -17,5 +23,13 @@
     "chart.js": "^4.5.1",
     "lightweight-charts": "^5.2.1",
     "protobufjs": "^7.6.6"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.64.0",
+    "eslint": "^10.12.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.13.0",
+    "prettier": "^3.9.10"
   }
 }

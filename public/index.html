@@ -620,14 +620,15 @@
         <span class="an-bar-end">
           <span class="muted small">Strictness</span>
           <span class="seg sm" id="anPreset" title="Strict: bigger edge and more quantity on the book. Loose: smaller edges too."><button data-p="strict">Strict</button><button data-p="balanced">Balanced</button><button data-p="loose">Loose</button></span>
-          <button class="btn-sm ghost" id="anTuneBtn" title="Edit each type's thresholds">⚙ Tune</button>
+          <label class="mini" title="Live: show only opportunities that leave at least this much after costs, at the size the book fills. Empty = show everything, also what does not pay.">Net ≥ ₹ <input class="num" type="number" id="anMinNet" min="0" step="100" placeholder="any"></label>
+          <button class="btn-sm ghost" id="anTuneBtn" title="Edit each type's thresholds and the quality gates every leg must pass">⚙ Tune</button>
           <button class="btn-sm ghost" id="anAlertBtn" title="Sound and a desktop notification when a new opportunity that is profitable after costs appears">🔔 Alerts off</button>
         </span>
       </div>
       <div class="muted small"><span id="anModeHint"></span> <span id="anCfgMsg"></span></div>
     </div>
     <div class="panel an-tune hidden" id="anTune">
-      <div class="chart-head"><h3>Types and thresholds</h3><span class="muted small">ordered by how easy each is to trade · changes apply to the live scanner as you make them</span></div>
+      <div class="chart-head"><h3>Types and thresholds</h3><span class="muted small">quality gates first, then the types by how easy each is to trade · changes apply to the live scanner as you make them</span></div>
       <div id="anTypes" class="an-type-list"></div>
     </div>
     <section class="bt-main">
@@ -763,6 +764,7 @@
   <script src="hedge-view.js"></script>
   <script src="hedge-backtest.js"></script>
   <script src="/lib/pricing.js"></script>
+  <script src="/lib/costs.js"></script>
   <script src="bt-common.js"></script>
   <script src="arb.js"></script>
   <script src="chain-chart.js"></script>

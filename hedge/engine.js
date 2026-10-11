@@ -102,7 +102,9 @@ function structures(chain, ctx, p) {
     return { type, strike, action, ratio, price, bid: side.bid ?? null, ask: side.ask ?? null, ltp: side.ltp ?? null, oi: side.oi ?? null };
   };
   const out = [];
-  const add = (family, legs) => { if (legs.every(Boolean)) out.push({ family, legs }); };
+  const add = (family, legs) => {
+    if (legs.every(Boolean)) out.push({ family, legs });
+  };
   const strikes = rows.map((r) => r.strike);
   const putStrikes = strikes.filter((k) => k <= S * 1.005 && k >= S * 0.82);
   const tailStrikes = strikes.filter((k) => k <= S * 0.9 && k >= S * 0.72);
@@ -166,12 +168,19 @@ function search(chains, ctx, p) {
       let chosen = null;
       for (let lots = 1; lots <= maxLots; lots++) {
         const c = size(s, lots);
-        if (-pnl(c, -fall, ctx) <= maxLoss) { chosen = c; break; }
+        if (-pnl(c, -fall, ctx) <= maxLoss) {
+          chosen = c;
+          break;
+        }
       }
       if (!chosen) {
         // keep the closest attempt so every strategy type can still be shown
         const e = evaluate(size(s, maxLots), ctx, p);
-        if (!slot.best && (!slot.closest || e.loss.target > slot.closest.loss.target || (e.loss.target === slot.closest.loss.target && e.annualPct < slot.closest.annualPct))) slot.closest = e;
+        if (
+          !slot.best &&
+          (!slot.closest || e.loss.target > slot.closest.loss.target || (e.loss.target === slot.closest.loss.target && e.annualPct < slot.closest.annualPct))
+        )
+          slot.closest = e;
         continue;
       }
       const e = evaluate(chosen, ctx, p);
@@ -216,8 +225,12 @@ function search(chains, ctx, p) {
     feasible: feasible.length,
     fullLots,
     unhedged: {
-      m10: ctx.exposure * -0.1, m15: ctx.exposure * -0.15, m20: ctx.exposure * -0.2, m25: ctx.exposure * -0.25,
-      target: ctx.exposure * -fall, p10: ctx.exposure * 0.1,
+      m10: ctx.exposure * -0.1,
+      m15: ctx.exposure * -0.15,
+      m20: ctx.exposure * -0.2,
+      m25: ctx.exposure * -0.25,
+      target: ctx.exposure * -fall,
+      p10: ctx.exposure * 0.1,
     },
     shortlist,
     strategies,
@@ -233,9 +246,26 @@ function custom(legsIn, chain, ctx, p) {
     const side = byK.get(Number(l.strike))?.[type === 'PE' ? 'pe' : 'ce'];
     const price = l.price > 0 ? Number(l.price) : priceOf(side, action, p.pricing);
     if (!(price > 0)) throw new Error(`No price for ${l.strike} ${type} on ${chain.expiry}`);
-    return { type, action, strike: Number(l.strike), lots: Math.max(1, Math.round(Number(l.lots) || 1)), price, bid: side?.bid ?? null, ask: side?.ask ?? null, ltp: side?.ltp ?? null, oi: side?.oi ?? null };
+    return {
+      type,
+      action,
+      strike: Number(l.strike),
+      lots: Math.max(1, Math.round(Number(l.lots) || 1)),
+      price,
+      bid: side?.bid ?? null,
+      ask: side?.ask ?? null,
+      ltp: side?.ltp ?? null,
+      oi: side?.oi ?? null,
+    };
   });
-  const c = { family: 'custom', expiry: chain.expiry, days: chain.days, legs, lots: Math.max(...legs.map((l) => l.lots)), charges: legs.length * CHARGES_PER_LEG };
+  const c = {
+    family: 'custom',
+    expiry: chain.expiry,
+    days: chain.days,
+    legs,
+    lots: Math.max(...legs.map((l) => l.lots)),
+    charges: legs.length * CHARGES_PER_LEG,
+  };
   return evaluate(c, ctx, p);
 }
 

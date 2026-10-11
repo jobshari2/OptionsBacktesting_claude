@@ -9,7 +9,8 @@ const { computeStats } = require('./metrics');
 const { LIBRARY } = require('./library');
 const { createHistChain } = require('./histchain');
 const { createLevels, nearest: nearestLevels } = require('./levels');
-const { runScan } = require('./scan');
+const { runScan, trim: trimScan } = require('./scan');
+const { runTapeScan, tapeDays } = require('./tapescan');
 const { buildScenarios, applyScenario } = require('./scenarios');
 const { buildAdjustments } = require('./adjustments');
 const { evaluate } = require('./conditions');
@@ -20,8 +21,9 @@ const { createSync } = require('./sync');
 const { MPD } = require('./data');
 const { istDate: istToday } = require('../lib/time');
 
-// upstox: the app's Upstox client; getRestChain(expiry, maxAgeMs): the server's REST chain of a live expiry.
-function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile, logError }) {
+// upstox: the app's Upstox client; getRestChain(expiry, maxAgeMs): the server's REST chain of a live expiry;
+// tapeDir: where the live chain is recorded (tape.js), for the Arbitrage screen's quote scan.
+function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile, tapeDir = null, logError }) {
   const data = createData({ getToken, upstox, cacheDir, logError });
   const hist = createHistChain(data);
   const levels = createLevels();
@@ -50,7 +52,10 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
     const info = await data.contracts(expiry);
     let lo = Infinity;
     let hi = -Infinity;
-    for (let m = 0; m < MPD; m++) { lo = Math.min(lo, sp[m * 4 + 2]); hi = Math.max(hi, sp[m * 4 + 1]); }
+    for (let m = 0; m < MPD; m++) {
+      lo = Math.min(lo, sp[m * 4 + 2]);
+      hi = Math.max(hi, sp[m * 4 + 1]);
+    }
     const all = info.strikes;
     const near = (x) => all.reduce((b, k, j) => (Math.abs(k - x) < Math.abs(all[b] - x) ? j : b), 0);
     const ks = [...new Set([...all.slice(Math.max(0, near(lo) - width), near(hi) + width + 1), ...extra.filter((k) => all.includes(k))])].sort((a, b) => a - b);
@@ -61,14 +66,28 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
       if (a) for (let m = 0; m < MPD; m++) out[m] = a[m * 4 + 3] > 0 ? a[m * 4 + 3] / 100 : 0;
       return out;
     };
-    const tasks = ks.flatMap((k) => [[k, 'CE'], [k, 'PE']]);
+    const tasks = ks.flatMap((k) => [
+      [k, 'CE'],
+      [k, 'PE'],
+    ]);
     const res = new Map();
     let next = 0;
-    await Promise.all(Array.from({ length: 8 }, async () => { while (next < tasks.length) { const [k, t] = tasks[next++]; res.set(k + t, await series(k, t)); } }));
+    await Promise.all(
+      Array.from({ length: 8 }, async () => {
+        while (next < tasks.length) {
+          const [k, t] = tasks[next++];
+          res.set(k + t, await series(k, t));
+        }
+      }),
+    );
     return {
-      expiry, day, ks, lot: info.lot,
+      expiry,
+      day,
+      ks,
+      lot: info.lot,
       spot: Array.from({ length: MPD }, (_, m) => Math.round(sp[m * 4 + 3] * 100) / 100),
-      ce: ks.map((k) => res.get(k + 'CE')), pe: ks.map((k) => res.get(k + 'PE')),
+      ce: ks.map((k) => res.get(k + 'CE')),
+      pe: ks.map((k) => res.get(k + 'PE')),
     };
   }
 
@@ -77,7 +96,11 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
   // their entries and exits, log, P&L curve) so it can be loaded back, adjusted and saved again. bt-data/paper-trades.json.
   const tradesFile = path.join(path.dirname(storeFile), 'paper-trades.json');
   function readTrades() {
-    try { return JSON.parse(fs.readFileSync(tradesFile, 'utf8')); } catch { return []; }
+    try {
+      return JSON.parse(fs.readFileSync(tradesFile, 'utf8'));
+    } catch {
+      return [];
+    }
   }
   function writeTrades(list) {
     fs.mkdirSync(path.dirname(tradesFile), { recursive: true });
@@ -89,8 +112,12 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
     const list = readTrades();
     const old = list.find((x) => x.id === b.id);
     const t = {
-      id: old ? old.id : 'pt-' + Date.now().toString(36), name: String(b.name || old?.name || 'Paper trade').slice(0, 80),
-      createdAt: old?.createdAt || Date.now(), savedAt: Date.now(), summary: b.summary || {}, snap: b.snap,
+      id: old ? old.id : 'pt-' + Date.now().toString(36),
+      name: String(b.name || old?.name || 'Paper trade').slice(0, 80),
+      createdAt: old?.createdAt || Date.now(),
+      savedAt: Date.now(),
+      summary: b.summary || {},
+      snap: b.snap,
     };
     writeTrades(old ? list.map((x) => (x.id === t.id ? t : x)) : [...list, t]);
     return t;
@@ -100,7 +127,11 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
   // The store holds the user's own strategies ("my-…") and edited copies of built-in ones, saved under the
   // built-in's id ("lib-…"); an edited built-in replaces the original everywhere until it is reset.
   function readStore() {
-    try { return JSON.parse(fs.readFileSync(storeFile, 'utf8')); } catch { return []; }
+    try {
+      return JSON.parse(fs.readFileSync(storeFile, 'utf8'));
+    } catch {
+      return [];
+    }
   }
   function writeStore(list) {
     fs.mkdirSync(path.dirname(storeFile), { recursive: true });
@@ -116,7 +147,8 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
     else if (!strat.id || !strat.id.startsWith('my-')) strat.id = 'my-' + Date.now().toString(36);
     strat.updatedAt = Date.now();
     const i = list.findIndex((x) => x.id === strat.id);
-    if (i >= 0) list[i] = strat; else list.push(strat);
+    if (i >= 0) list[i] = strat;
+    else list.push(strat);
     writeStore(list);
     return strat;
   }
@@ -124,8 +156,16 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
     writeStore(readStore().filter((x) => x.id !== id));
   }
   function library() {
-    const edits = new Map(readStore().filter((x) => isLib(x.id)).map((x) => [x.id, x]));
-    return LIBRARY.map((l) => (edits.has(l.id) ? { ...normalizeStrategy(edits.get(l.id)), id: l.id, edited: true, updatedAt: edits.get(l.id).updatedAt } : { ...normalizeStrategy(l), id: l.id }));
+    const edits = new Map(
+      readStore()
+        .filter((x) => isLib(x.id))
+        .map((x) => [x.id, x]),
+    );
+    return LIBRARY.map((l) =>
+      edits.has(l.id)
+        ? { ...normalizeStrategy(edits.get(l.id)), id: l.id, edited: true, updatedAt: edits.get(l.id).updatedAt }
+        : { ...normalizeStrategy(l), id: l.id },
+    );
   }
   const saved = () => readStore().filter((x) => !isLib(x.id));
   const findStrategy = (id) => library().find((x) => x.id === id) || saved().find((x) => x.id === id);
@@ -169,7 +209,11 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
     const older = /^\d{4}-\d{2}-\d{2}$/.test(before || '') && before <= today ? before : null;
     let intra = [];
     if (!older) {
-      try { intra = (await data.niftyIntraday()).filter((c) => c[0].slice(0, 10) === today); } catch { /* demo / not logged in / holiday */ }
+      try {
+        intra = (await data.niftyIntraday()).filter((c) => c[0].slice(0, 10) === today);
+      } catch {
+        /* demo / not logged in / holiday */
+      }
     }
     const to = older ? addDays(older, -1) : today;
     let from = sessions ? addDays(to, -Math.ceil(sessions * 1.6) - 10) : start;
@@ -199,7 +243,12 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
     let cur = null;
     let curKey = null;
     const add = (key, t, o, h, l, c) => {
-      if (key !== curKey) { cur = [t, o, h, l, c]; candles.push(cur); curKey = key; return; }
+      if (key !== curKey) {
+        cur = [t, o, h, l, c];
+        candles.push(cur);
+        curKey = key;
+        return;
+      }
       if (h > cur[2]) cur[2] = h;
       if (l < cur[3]) cur[3] = l;
       cur[4] = c;
@@ -212,7 +261,10 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
         add(d + '|' + b, sec(d, b), o, h, l, c);
       };
       if (d === today && intra.length) {
-        for (const c of intra) { const m = minuteOf(c[0]); if (m >= 0 && m < MPD) bar(m, c[1], c[2], c[3], c[4]); }
+        for (const c of intra) {
+          const m = minuteOf(c[0]);
+          if (m >= 0 && m < MPD) bar(m, c[1], c[2], c[3], c[4]);
+        }
       } else {
         const a = data.spotDay(d);
         for (let m = 0; m < MPD; m++) bar(m, a[m * 4], a[m * 4 + 1], a[m * 4 + 2], a[m * 4 + 3]);
@@ -221,8 +273,13 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
     for (const c of candles) for (let i = 1; i < 5; i++) c[i] = r2(c[i]);
     const prev = days.length > 1 ? data.spotDay(days[days.length - 2]) : null;
     return {
-      tf: String(tf), candles, more, first: days[0] || null, day: days[days.length - 1] || null,
-      today: intra.length > 0, prevClose: !older && prev ? r2(prev[(MPD - 1) * 4 + 3]) : null,
+      tf: String(tf),
+      candles,
+      more,
+      first: days[0] || null,
+      day: days[days.length - 1] || null,
+      today: intra.length > 0,
+      prevClose: !older && prev ? r2(prev[(MPD - 1) * 4 + 3]) : null,
     };
   }
 
@@ -234,8 +291,16 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
     jobs.set(id, job);
     while (jobs.size > 12) jobs.delete(jobs.keys().next().value);
     job.promise = fn(job)
-      .then((r) => { job.result = r; job.status = 'done'; job.ms = Date.now() - job.startedAt; })
-      .catch((e) => { job.status = 'error'; job.error = e.message; logError('bt-' + kind, e); });
+      .then((r) => {
+        job.result = r;
+        job.status = 'done';
+        job.ms = Date.now() - job.startedAt;
+      })
+      .catch((e) => {
+        job.status = 'error';
+        job.error = e.message;
+        if (!e.cancelled) logError('bt-' + kind, e);
+      });
     return job;
   }
   // Cached runs finish in milliseconds: answer with the result directly instead of making the page poll.
@@ -244,13 +309,29 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
     return jobView(job);
   }
   const jobView = (job) => ({
-    id: job.id, kind: job.kind, status: job.status, error: job.error, ms: job.ms,
+    id: job.id,
+    kind: job.kind,
+    status: job.status,
+    error: job.error,
+    ms: job.ms,
     progress: { ...job.progress, api: data.apiStats() },
     result: job.status === 'done' ? job.result.view : undefined,
   });
 
+  // The shared caches plus the job's Stop button (job.stop, set by POST /api/bt/job/stop).
+  const extOf = (job) => ({ ...ext, stopped: () => Boolean(job.stop) });
+  const cancelled = () => Object.assign(new Error('Stopped'), { cancelled: true });
+
   async function runOne(job, strategy, opts, label = '') {
-    const r = await runBacktest(data, strategy, opts, (p) => { job.progress = { ...p, phase: label + p.phase }; }, ext);
+    const r = await runBacktest(
+      data,
+      strategy,
+      opts,
+      (p) => {
+        job.progress = { ...p, phase: label + p.phase };
+      },
+      extOf(job),
+    );
     const stats = computeStats(r.trades, r.opts.capital);
     return { ...r, stats };
   }
@@ -259,7 +340,18 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
     return startJob('run', async (job) => {
       const r = await runOne(job, strategy, opts);
       job.paths = r.paths;
-      return { view: { strategy: r.strategy, opts: r.opts, stats: r.stats, trades: r.trades, skipped: r.skipped.slice(0, 200), skippedCount: r.skipped.length, considered: r.considered, noSignal: r.noSignal } };
+      return {
+        view: {
+          strategy: r.strategy,
+          opts: r.opts,
+          stats: r.stats,
+          trades: r.trades,
+          skipped: r.skipped.slice(0, 200),
+          skippedCount: r.skipped.length,
+          considered: r.considered,
+          noSignal: r.noSignal,
+        },
+      };
     });
   }
 
@@ -273,7 +365,11 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
   let scanCache = null;
   function scans() {
     if (!scanCache) {
-      try { scanCache = new Map(Object.entries(JSON.parse(fs.readFileSync(scanFile, 'utf8')))); } catch { scanCache = new Map(); }
+      try {
+        scanCache = new Map(Object.entries(JSON.parse(fs.readFileSync(scanFile, 'utf8'))));
+      } catch {
+        scanCache = new Map();
+      }
     }
     return scanCache;
   }
@@ -283,10 +379,15 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
       fs.mkdirSync(path.dirname(scanFile), { recursive: true });
       fs.writeFileSync(scanFile + '.tmp', JSON.stringify(Object.fromEntries(scanCache)));
       fs.renameSync(scanFile + '.tmp', scanFile);
-    } catch (e) { logError('bt-scenario-cache', e); }
+    } catch (e) {
+      logError('bt-scenario-cache', e);
+    }
   }
-  const scanKey = (strategy, opts, cal) => crypto.createHash('sha1')
-    .update(JSON.stringify([SCAN_VERSION, normalizeStrategy(strategy), opts, cal.expired[cal.expired.length - 1]])).digest('hex');
+  const scanKey = (strategy, opts, cal) =>
+    crypto
+      .createHash('sha1')
+      .update(JSON.stringify([SCAN_VERSION, normalizeStrategy(strategy), opts, cal.expired[cal.expired.length - 1]]))
+      .digest('hex');
 
   // On cached data a backtest never waits for I/O, so a long series of them would keep the server from answering
   // anything else (the page's progress polls included): let the event loop run between two backtests.
@@ -297,8 +398,11 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
     const key = scanKey(strategy, opts, cal);
     const hit = scans().get(key);
     if (hit) return hit;
-    const say = (p) => { if (progress) job.progress = p; else job.progress = { ...job.progress, phase: label + p.phase + (p.total ? ` ${p.done}/${p.total}` : '') }; };
-    const base = await runBacktest(data, strategy, opts, (p) => say({ ...p, phase: 'As defined · ' + p.phase }), ext);
+    const say = (p) => {
+      if (progress) job.progress = p;
+      else job.progress = { ...job.progress, phase: label + p.phase + (p.total ? ` ${p.done}/${p.total}` : '') };
+    };
+    const base = await runBacktest(data, strategy, opts, (p) => say({ ...p, phase: 'As defined · ' + p.phase }), extOf(job));
     const lite = (r) => ({
       stats: Object.fromEntries(Object.entries(computeStats(r.trades, r.opts.capital)).filter(([, v]) => v == null || typeof v !== 'object')),
       skippedCount: r.skipped.length,
@@ -311,15 +415,26 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
     // No trades as defined: the entries are the same in every scenario, so there is nothing to compare.
     const todo = base.trades.length ? list.filter((x) => x !== own) : [];
     for (const [i, sc] of todo.entries()) {
+      if (job.stop) throw cancelled();
       say({ phase: 'Testing scenarios', done: i, total: todo.length });
       await breathe();
       try {
-        rows.push({ ...sc, ...lite(await runBacktest(data, applyScenario(base.strategy, sc), opts, () => {}, ext)) });
+        rows.push({ ...sc, ...lite(await runBacktest(data, applyScenario(base.strategy, sc), opts, () => {}, extOf(job))) });
       } catch (e) {
+        if (e.cancelled) throw e;
         logError('bt-scenario', e, sc.key);
       }
     }
-    const view = { strategy: base.strategy, opts: base.opts, debit, scenarios: rows, considered: base.considered, noSignal: base.noSignal, skipped: base.skipped.slice(0, 200), at: Date.now() };
+    const view = {
+      strategy: base.strategy,
+      opts: base.opts,
+      debit,
+      scenarios: rows,
+      considered: base.considered,
+      noSignal: base.noSignal,
+      skipped: base.skipped.slice(0, 200),
+      at: Date.now(),
+    };
     scans().set(key, view);
     if (persist) saveScans();
     return view;
@@ -331,7 +446,13 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
   const resultsFile = path.join(path.dirname(storeFile), 'backtests.json');
   let results = null;
   function savedResults() {
-    if (!results) { try { results = JSON.parse(fs.readFileSync(resultsFile, 'utf8')); } catch { results = {}; } }
+    if (!results) {
+      try {
+        results = JSON.parse(fs.readFileSync(resultsFile, 'utf8'));
+      } catch {
+        results = {};
+      }
+    }
     return results;
   }
   function writeResults() {
@@ -339,34 +460,64 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
       fs.mkdirSync(path.dirname(resultsFile), { recursive: true });
       fs.writeFileSync(resultsFile + '.tmp', JSON.stringify(results));
       fs.renameSync(resultsFile + '.tmp', resultsFile);
-    } catch (e) { logError('bt-results', e); }
+    } catch (e) {
+      logError('bt-results', e);
+    }
   }
   const resultKey = (s) => s.id || 'name:' + String(s.name || 'Untitled');
   const bestOf = (rows) => rows.reduce((b, x) => (x.stats.trades && x.stats.total > b.stats.total ? x : b), rows[0]);
-  const runView = (r) => ({ strategy: r.strategy, opts: r.opts, stats: r.stats, trades: r.trades, skipped: r.skipped.slice(0, 200), skippedCount: r.skipped.length, considered: r.considered, noSignal: r.noSignal });
+  const runView = (r) => ({
+    strategy: r.strategy,
+    opts: r.opts,
+    stats: r.stats,
+    trades: r.trades,
+    skipped: r.skipped.slice(0, 200),
+    skippedCount: r.skipped.length,
+    considered: r.considered,
+    noSignal: r.noSignal,
+  });
   async function saveResult(job, strategy, opts, view) {
     const best = bestOf(view.scenarios);
     const detail = runView(await runOne(job, applyScenario(view.strategy, best), opts, 'Saving · '));
     const key = resultKey(strategy);
     const lib = strategy.id && findStrategy(strategy.id);
     savedResults()[key] = {
-      key, id: strategy.id || null, name: view.strategy.name, category: strategy.id?.startsWith('my-') ? 'Mine' : lib?.category || view.strategy.category,
-      at: Date.now(), optsRaw: opts, scan: view, detail, detailKey: best.key, adj: null,
+      key,
+      id: strategy.id || null,
+      name: view.strategy.name,
+      category: strategy.id?.startsWith('my-') ? 'Mine' : lib?.category || view.strategy.category,
+      at: Date.now(),
+      optsRaw: opts,
+      scan: view,
+      detail,
+      detailKey: best.key,
+      adj: null,
     };
     writeResults();
   }
   // What the Summary tab lists: the headline numbers only.
   const resultSummary = (e) => ({
-    key: e.key, id: e.id, name: e.name, category: e.category, at: e.at, opts: e.scan.opts, strategy: e.scan.strategy, debit: e.scan.debit,
-    tested: e.scan.scenarios.length, own: e.scan.scenarios[0], best: bestOf(e.scan.scenarios), adjustments: e.adj ? e.adj.rows.length : 0,
+    key: e.key,
+    id: e.id,
+    name: e.name,
+    category: e.category,
+    at: e.at,
+    opts: e.scan.opts,
+    strategy: e.scan.strategy,
+    debit: e.scan.debit,
+    tested: e.scan.scenarios.length,
+    own: e.scan.scenarios[0],
+    best: bestOf(e.scan.scenarios),
+    adjustments: e.adj ? e.adj.rows.length : 0,
   });
 
   // save: this is a "Run backtest" (not a look at a variation): keep the result.
-  const startScenarios = (strategy, opts, save) => startJob('scenarios', async (job) => {
-    const view = await scanScenarios(job, strategy, opts);
-    if (save) await saveResult(job, strategy, opts, view);
-    return { view };
-  });
+  const startScenarios = (strategy, opts, save) =>
+    startJob('scenarios', async (job) => {
+      const view = await scanScenarios(job, strategy, opts);
+      if (save) await saveResult(job, strategy, opts, view);
+      return { view };
+    });
 
   // Adjustment variations of a strategy (adjustments.js), each run as defined: one row of headline numbers per
   // variation, with the complete strategy so the page can open any of them in detail. Cached like the scans.
@@ -374,9 +525,13 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
     return startJob('adjustments', async (job) => {
       const cal = await data.expiryCalendar();
       const key = 'adj-' + scanKey(strategy, opts, cal);
-      const keep = (view) => { // attach to the saved backtest of the same strategy and settings
+      const keep = (view) => {
+        // attach to the saved backtest of the same strategy and settings
         const e = save && savedResults()[resultKey(strategy)];
-        if (e && JSON.stringify(e.optsRaw) === JSON.stringify(opts)) { e.adj = view; writeResults(); }
+        if (e && JSON.stringify(e.optsRaw) === JSON.stringify(opts)) {
+          e.adj = view;
+          writeResults();
+        }
         return { view };
       };
       const hit = scans().get(key);
@@ -384,20 +539,30 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
       const list = buildAdjustments(strategy);
       const rows = [];
       for (const [i, v] of list.entries()) {
+        if (job.stop) throw cancelled();
         job.progress = { phase: 'Testing adjustments · ' + v.name, done: i, total: list.length };
         await breathe();
         try {
-          const r = await runBacktest(data, v.strategy, opts, () => {}, ext);
+          const r = await runBacktest(data, v.strategy, opts, () => {}, extOf(job));
           const st = computeStats(r.trades, r.opts.capital);
-          rows.push({ ...v, stats: Object.fromEntries(Object.entries(st).filter(([, x]) => x == null || typeof x !== 'object')), skippedCount: r.skipped.length });
+          rows.push({
+            ...v,
+            stats: Object.fromEntries(Object.entries(st).filter(([, x]) => x == null || typeof x !== 'object')),
+            skippedCount: r.skipped.length,
+          });
         } catch (e) {
+          if (e.cancelled) throw e;
           rows.push({ ...v, error: e.message });
           logError('bt-adjust', e, v.key);
         }
       }
       const view = { rows, at: Date.now() };
       // A run that failed for missing data (not logged in) is not kept: it should be retried.
-      if (!rows.some((x) => x.error)) { scans().set(key, view); saveScans(); return keep(view); }
+      if (!rows.some((x) => x.error)) {
+        scans().set(key, view);
+        saveScans();
+        return keep(view);
+      }
       return { view };
     });
   }
@@ -411,43 +576,73 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
     overviewJob = startJob('overview', async (job) => {
       const list = [...saved(), ...library()];
       const failed = [];
+      let stopped = false;
       for (const [i, s] of list.entries()) {
+        if (job.stop) {
+          stopped = true;
+          break;
+        }
         const label = `${i + 1}/${list.length} ${s.name} · `;
         job.progress = { phase: label + 'starting', done: i, total: list.length };
         try {
           const view = await scanScenarios(job, s, opts, { label, persist: false, progress: false });
           await saveResult({ progress: {} }, s, opts, view);
         } catch (e) {
+          if (e.cancelled) {
+            stopped = true; // the strategy in progress is dropped; the ones before it are already saved
+            break;
+          }
           failed.push({ name: s.name, error: e.message });
           logError('bt-overview', e, s.name);
         }
       }
       saveScans();
-      return { view: { done: list.length - failed.length, failed } };
+      return { view: { done: list.length - failed.length, failed, stopped } };
     });
     overviewJob.tag = tag;
     return overviewJob;
   }
 
-  // The last history scan of the Arbitrage screen is kept in bt-data/anomaly-scan.json, so the screen opens on it
-  // without scanning again.
-  const lastScanFile = path.join(path.dirname(storeFile), 'anomaly-scan.json');
-  let lastScan; // undefined = not read yet
-  function savedScan() {
-    if (lastScan === undefined) { try { lastScan = JSON.parse(fs.readFileSync(lastScanFile, 'utf8')); } catch { lastScan = null; } }
-    return lastScan;
+  // The last history scan of the Arbitrage screen is kept per source — the 1-minute candles (bt-data/
+  // anomaly-scan.json) and the recorded quotes (anomaly-scan-quotes.json) — so the screen opens on it without
+  // scanning again.
+  const anScanFile = (source) => path.join(path.dirname(storeFile), source === 'quotes' ? 'anomaly-scan-quotes.json' : 'anomaly-scan.json');
+  const lastScans = {}; // source -> scan, null when there is none (absent = not read yet)
+  const SCAN_FORMAT = 2; // bump when what a scan returns changes: an older saved scan is then not shown
+  function savedScan(source) {
+    if (lastScans[source] === undefined) {
+      try {
+        lastScans[source] = JSON.parse(fs.readFileSync(anScanFile(source), 'utf8'));
+      } catch {
+        lastScans[source] = null;
+      }
+    }
+    return lastScans[source]?.v === SCAN_FORMAT ? lastScans[source] : null;
   }
   function startScan(cfg) {
+    const source = cfg.source === 'quotes' ? 'quotes' : 'candles';
     return startJob('scan', async (job) => {
       const t0 = Date.now();
-      const r = await runScan(data, hist, cfg, (p) => { job.progress = p; }, () => Boolean(job.stop));
-      lastScan = { ...r, hits: r.hits.slice(-5000), hitsTotal: r.hits.length, savedAt: Date.now(), ms: Date.now() - t0 };
+      const progress = (p) => {
+        job.progress = p;
+      };
+      const stopped = () => Boolean(job.stop);
+      let r;
+      if (source === 'quotes') {
+        if (!tapeDir) throw new Error('No recordings folder is configured');
+        const lotSize = cfg.lotSize || (await data.expiryCalendar().catch(() => null))?.liveLot;
+        r = await runTapeScan(tapeDir, { ...cfg, lotSize }, progress, stopped);
+      } else r = await runScan(data, hist, cfg, progress, stopped);
+      const scan = { ...r, hits: trimScan(r.hits), hitsTotal: r.hits.length, savedAt: Date.now(), ms: Date.now() - t0, v: SCAN_FORMAT };
+      lastScans[source] = scan;
       try {
-        fs.mkdirSync(path.dirname(lastScanFile), { recursive: true });
-        fs.writeFileSync(lastScanFile + '.tmp', JSON.stringify(lastScan));
-        fs.renameSync(lastScanFile + '.tmp', lastScanFile);
-      } catch (e) { logError('anomaly-scan', e); }
-      return { view: lastScan };
+        fs.mkdirSync(path.dirname(anScanFile(source)), { recursive: true });
+        fs.writeFileSync(anScanFile(source) + '.tmp', JSON.stringify(scan));
+        fs.renameSync(anScanFile(source) + '.tmp', anScanFile(source));
+      } catch (e) {
+        logError('anomaly-scan', e);
+      }
+      return { view: scan };
     });
   }
 
@@ -490,7 +685,11 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
     const needLv = conds.some((c) => c.kind.startsWith('sr')) || strat.legs.some((l) => l.strike.by === 'sr' || l.sl.type === 'srb' || l.tgt.type === 'srb');
     let lv = null;
     if (needLv) {
-      try { lv = await levelsFor(); } catch (e) { warnings.push('Support/resistance unavailable: ' + e.message); }
+      try {
+        lv = await levelsFor();
+      } catch (e) {
+        warnings.push('Support/resistance unavailable: ' + e.message);
+      }
     }
     // Entry conditions evaluated on the live chain right now.
     let condState = null;
@@ -502,7 +701,10 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
       if (!hit && condState?.hit) hit = condState.hit;
       if (!hit) {
         const ac = conds.find((c) => c.kind === 'anomaly');
-        if (ac) hit = (liveScan?.active() || []).find((h) => h.type === ac.type && (ac.side === 'any' || h.side === ac.side) && (ac.dir === 'any' || h.dir === ac.dir)) || null;
+        if (ac)
+          hit =
+            (liveScan?.active() || []).find((h) => h.type === ac.type && (ac.side === 'any' || h.side === ac.side) && (ac.dir === 'any' || h.dir === ac.dir)) ||
+            null;
       }
     }
     if (strat.legs.some((l) => l.strike.by === 'signal') && !hit) warnings.push('No live anomaly for the "signal" strikes right now — they are shown at ATM.');
@@ -533,7 +735,8 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
       else if (def.strike.by === 'signal') {
         const b = def.strike.ref === 'ref' && hit?.ref != null ? hit.ref : hit?.strike;
         idx = b == null ? ai : near(b) + Math.round(v);
-      } else if (def.strike.by === 'leg') { // another leg's strike ± points
+      } else if (def.strike.by === 'leg') {
+        // another leg's strike ± points
         const b = legs[def.strike.ref]?.strikeValue;
         idx = b == null ? ai : near(b + v);
         if (b == null) warnings.push(`Leg ${legs.length + 1}: "from leg ${def.strike.ref + 1}" not resolved yet — shown at ATM`);
@@ -544,7 +747,10 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
       } else {
         const target = def.strike.by === 'delta' ? Math.abs(v > 1 ? v / 100 : v) : v;
         const val = (r) => (def.strike.by === 'delta' ? Math.abs(sideOf(r).delta ?? 0) : sideOf(r).ltp);
-        const order = rows.map((r, j) => j).filter((j) => (j - ai) * otm >= -4).sort((a, b) => (a - b) * otm);
+        const order = rows
+          .map((r, j) => j)
+          .filter((j) => (j - ai) * otm >= -4)
+          .sort((a, b) => (a - b) * otm);
         if (def.strike.match === 'gte') idx = order.filter((j) => val(rows[j]) >= target).pop() ?? order[0];
         else if (def.strike.match === 'lte') idx = order.find((j) => val(rows[j]) <= target) ?? order[order.length - 1];
         else idx = order.reduce((b, j) => (Math.abs(val(rows[j]) - target) < Math.abs(val(rows[b]) - target) ? j : b), order[0]);
@@ -554,7 +760,10 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
     }
     // Rules the deploy view does not automate: scheduled rolls, and the entry checks (evaluated at today's LTPs).
     strat.legs.forEach((d, i) => {
-      if (d.roll) warnings.push(`Leg ${i + 1} (${legs[i].strikeValue} ${d.type}, ${legs[i].expiryDate}) rolls into the next weekly expiry ${d.roll.dteDays} trading day${d.roll.dteDays === 1 ? '' : 's'} before it expires, at ${d.roll.time}: do it by hand (Builder: change its expiry).`);
+      if (d.roll)
+        warnings.push(
+          `Leg ${i + 1} (${legs[i].strikeValue} ${d.type}, ${legs[i].expiryDate}) rolls into the next weekly expiry ${d.roll.dteDays} trading day${d.roll.dteDays === 1 ? '' : 's'} before it expires, at ${d.roll.time}: do it by hand (Builder: change its expiry).`,
+        );
     });
     const F = strat.filters;
     if (F.minCredit != null || F.maxLossDown != null || F.maxLossUp != null) {
@@ -562,9 +771,12 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
       const unit = Math.min(...q.map((l) => l.n));
       const at = (S) => q.reduce((a, l) => a + l.dir * l.n * (Math.max(0, l.type === 'CE' ? S - l.k : l.k - S) - l.px), 0) / unit;
       const credit = -q.reduce((a, l) => a + l.dir * l.n * l.px, 0) / unit;
-      if (F.minCredit != null && credit < F.minCredit) warnings.push(`Entry check: net credit ${credit.toFixed(1)} pts is below ${F.minCredit} — the backtest would skip this week.`);
-      if (F.maxLossDown != null && at(spot * 0.5) < -F.maxLossDown) warnings.push(`Entry check: downside not covered (${at(spot * 0.5).toFixed(1)} pts far below; limit −${F.maxLossDown}).`);
-      if (F.maxLossUp != null && at(spot * 1.5) < -F.maxLossUp) warnings.push(`Entry check: upside not covered (${at(spot * 1.5).toFixed(1)} pts far above; limit −${F.maxLossUp}).`);
+      if (F.minCredit != null && credit < F.minCredit)
+        warnings.push(`Entry check: net credit ${credit.toFixed(1)} pts is below ${F.minCredit} — the backtest would skip this week.`);
+      if (F.maxLossDown != null && at(spot * 0.5) < -F.maxLossDown)
+        warnings.push(`Entry check: downside not covered (${at(spot * 0.5).toFixed(1)} pts far below; limit −${F.maxLossDown}).`);
+      if (F.maxLossUp != null && at(spot * 1.5) < -F.maxLossUp)
+        warnings.push(`Entry check: upside not covered (${at(spot * 1.5).toFixed(1)} pts far above; limit −${F.maxLossUp}).`);
     }
     return {
       strategy: strat,
@@ -599,7 +811,11 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
       if (p === '/api/bt/meta') {
         let cal = null;
         let calError = null;
-        try { cal = await data.expiryCalendar(); } catch (e) { calError = e.message; }
+        try {
+          cal = await data.expiryCalendar();
+        } catch (e) {
+          calError = e.message;
+        }
         return sendJson(res, 200, {
           library: library(),
           originals: Object.fromEntries(LIBRARY.map((l) => [l.id, { ...normalizeStrategy(l), id: l.id }])),
@@ -610,7 +826,10 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
         });
       }
       if (p === '/api/bt/strategies' && req.method === 'POST') return sendJson(res, 200, { ok: true, strategy: saveStrategy(await readJson(req)) });
-      if (p === '/api/bt/strategies/delete' && req.method === 'POST') { deleteStrategy((await readJson(req)).id); return sendJson(res, 200, { ok: true }); }
+      if (p === '/api/bt/strategies/delete' && req.method === 'POST') {
+        deleteStrategy((await readJson(req)).id);
+        return sendJson(res, 200, { ok: true });
+      }
       // Reset an edited built-in strategy to the original (removes the edited copy).
       if (p === '/api/bt/strategies/reset' && req.method === 'POST') {
         const id = (await readJson(req)).id;
@@ -618,16 +837,28 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
         deleteStrategy(id);
         return sendJson(res, 200, { ok: true, strategy: findStrategy(id) });
       }
-      if (p === '/api/bt/scan/last') return sendJson(res, 200, { scan: savedScan() });
+      if (p === '/api/bt/scan/last') return sendJson(res, 200, { scan: savedScan(url.searchParams.get('source') === 'quotes' ? 'quotes' : 'candles') });
+      if (p === '/api/bt/scan/tapes') return sendJson(res, 200, { days: tapeDir ? tapeDays(tapeDir) : [] }); // sessions with recorded quotes
       if (p === '/api/bt/scan' && req.method === 'POST') return sendJson(res, 200, await settle(startScan(await readJson(req)), 3000));
       if (p === '/api/sb/days') return sendJson(res, 200, await builderDays(url.searchParams.get('expiry'), url.searchParams.get('from')));
       if (p === '/api/sb/day') {
-        const extra = (url.searchParams.get('extra') || '').split(',').map(Number).filter((x) => x > 0);
-        return sendJson(res, 200, await builderDay(url.searchParams.get('expiry'), url.searchParams.get('day'), Math.min(30, Number(url.searchParams.get('width')) || 15), extra));
+        const extra = (url.searchParams.get('extra') || '')
+          .split(',')
+          .map(Number)
+          .filter((x) => x > 0);
+        return sendJson(
+          res,
+          200,
+          await builderDay(url.searchParams.get('expiry'), url.searchParams.get('day'), Math.min(30, Number(url.searchParams.get('width')) || 15), extra),
+        );
       }
       if (p === '/api/sb/trades' && req.method !== 'POST') return sendJson(res, 200, { trades: readTrades() });
       if (p === '/api/sb/trades' && req.method === 'POST') return sendJson(res, 200, { trade: saveTrade(await readJson(req, 3_000_000)) });
-      if (p === '/api/sb/trades/delete' && req.method === 'POST') { const id = (await readJson(req)).id; writeTrades(readTrades().filter((x) => x.id !== id)); return sendJson(res, 200, { ok: true }); }
+      if (p === '/api/sb/trades/delete' && req.method === 'POST') {
+        const id = (await readJson(req)).id;
+        writeTrades(readTrades().filter((x) => x.id !== id));
+        return sendJson(res, 200, { ok: true });
+      }
       if (p === '/api/sb/research' && req.method === 'POST') return sendJson(res, 200, await researcher.research((await readJson(req)).summary));
       if (p === '/api/bt/levels') {
         const lv = await levelsFor(url.searchParams.get('day'));
@@ -651,7 +882,11 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
         const e = savedResults()[url.searchParams.get('key')];
         return e ? sendJson(res, 200, e) : sendJson(res, 404, { error: 'No saved backtest for this strategy — run it' });
       }
-      if (p === '/api/bt/results/delete' && req.method === 'POST') { delete savedResults()[(await readJson(req)).key]; writeResults(); return sendJson(res, 200, { ok: true }); }
+      if (p === '/api/bt/results/delete' && req.method === 'POST') {
+        delete savedResults()[(await readJson(req)).key];
+        writeResults();
+        return sendJson(res, 200, { ok: true });
+      }
       if (p.startsWith('/api/bt/bw/')) return await bw.handle(req, res, p, sendJson, readJson);
       if (p === '/api/bt/overview' && req.method === 'POST') return sendJson(res, 200, await settle(startOverview((await readJson(req)).opts || {})));
       if (p === '/api/bt/compare' && req.method === 'POST') {
@@ -660,7 +895,8 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
         return sendJson(res, 200, await settle(startCompare(b.strategies.slice(0, 30), b.opts || {})));
       }
       if (p === '/api/bt/sync' || p.startsWith('/api/bt/sync/')) return await sync.handle(req, res, p, sendJson, readJson);
-      if (p === '/api/bt/job/stop' && req.method === 'POST') { // the job ends at its next checkpoint, with what it has so far
+      if (p === '/api/bt/job/stop' && req.method === 'POST') {
+        // the job ends at its next checkpoint, with what it has so far
         const job = jobs.get((await readJson(req)).id);
         if (job) job.stop = true;
         return sendJson(res, 200, { ok: Boolean(job) });
@@ -677,7 +913,10 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
         return sendJson(res, 200, { trade: job.result.view.trades[i], path: job.paths[i] });
       }
       if (p === '/api/bt/cache') return sendJson(res, 200, data.cacheStats());
-      if (p === '/api/bt/cache/clear' && req.method === 'POST') { data.clearCache((await readJson(req)).what || 'options'); return sendJson(res, 200, { ok: true }); }
+      if (p === '/api/bt/cache/clear' && req.method === 'POST') {
+        data.clearCache((await readJson(req)).what || 'options');
+        return sendJson(res, 200, { ok: true });
+      }
       if (p === '/api/bt/resolve' && req.method === 'POST') {
         const b = await readJson(req);
         return sendJson(res, 200, await resolveLive(b.strategy, Number(b.shift) || 0, b.hit || null));
@@ -693,7 +932,14 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
     }
   }
 
-  return { handle, data, levelsFor, attachLive: (l) => { liveScan = l; } };
+  return {
+    handle,
+    data,
+    levelsFor,
+    attachLive: (l) => {
+      liveScan = l;
+    },
+  };
 }
 
 module.exports = { createBacktester };

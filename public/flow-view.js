@@ -3,11 +3,17 @@
 (function () {
   const $ = (id) => document.getElementById(id);
   const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-  const { state, compact, istClock, esc } = window.app;
+  const { state, compact, istClock } = window.app;
 
   const C = {
-    ce: css('--ce-mark'), pe: css('--pe-mark'), up: css('--up'), down: css('--down'),
-    muted: css('--muted'), surface: css('--panel'), grid: 'rgba(139,148,158,.12)', zero: 'rgba(139,148,158,.45)',
+    ce: css('--ce-mark'),
+    pe: css('--pe-mark'),
+    up: css('--up'),
+    down: css('--down'),
+    muted: css('--muted'),
+    surface: css('--panel'),
+    grid: 'rgba(139,148,158,.12)',
+    zero: 'rgba(139,148,158,.45)',
     spot: css('--accent'),
   };
   const fmtTime = (ts) => new Date(ts + 5.5 * 3600_000).toISOString().slice(11, 16);
@@ -42,14 +48,17 @@
     $('fgFill').style.width = `${share}%`;
     $('fgRaw').textContent = `${MODE_HELP[l.mode]} Raw volume: CE +${compact(l.ce)} · PE +${compact(l.pe)}.`;
 
-    const lead = l.leader ? `${l.leader.side === 'up' ? 'Bullish' : 'Bearish'} flow leading since ${istClock(l.leader.since)} (${dur(secs(l.leader.since, Date.now()))})` : '';
+    const lead = l.leader
+      ? `${l.leader.side === 'up' ? 'Bullish' : 'Bearish'} flow leading since ${istClock(l.leader.since)} (${dur(secs(l.leader.since, Date.now()))})`
+      : '';
     let msg;
     if (l.quiet) msg = `<span class="big muted">Quiet</span> · under ${compact(r.minQty)} traded near ATM in the last minute`;
     else if (l.zone === 'neutral') msg = `<span class="big muted">Balanced</span> · neither side has ${r.sharePct.toFixed(0)}%`;
     else {
       const up = l.zone === 'up';
       const c = l.candidate;
-      const wait = c && !c.armed ? ' · already signalled this flow — waits for it to flip' : c && c.heldSec < r.holdSec ? ` · signal in ${r.holdSec - c.heldSec}s` : '';
+      const wait =
+        c && !c.armed ? ' · already signalled this flow — waits for it to flip' : c && c.heldSec < r.holdSec ? ` · signal in ${r.holdSec - c.heldSec}s` : '';
       msg = `<span class="big dir ${l.zone}">${up ? 'Bullish flow → UP bias ▲' : 'Bearish flow → DOWN bias ▼'}</span>${wait}`;
     }
     $('flowStatus').innerHTML = `${msg}<div class="muted small" style="margin-top:4px">${lead}</div>`;
@@ -90,18 +99,25 @@
   // ---------- table ----------
   function renderTable(f) {
     if (!f.predictions.length) {
-      $('flowBody').innerHTML = `<tr><td colspan="14" class="muted" style="text-align:left;padding:12px">No predictions yet today. A prediction is made when one side has ≥${f.rules.sharePct.toFixed(0)}% of the volume added near ATM in the last minute, for ${f.rules.holdSec}s in a row. It is a HIT if Nifty moves ${f.rules.reactPts} pts that way before ${f.rules.reactPts} pts the other way, and FLAT if neither happens within ${f.rules.horizonMin} min.</td></tr>`;
+      $('flowBody').innerHTML =
+        `<tr><td colspan="14" class="muted" style="text-align:left;padding:12px">No predictions yet today. A prediction is made when one side has ≥${f.rules.sharePct.toFixed(0)}% of the volume added near ATM in the last minute, for ${f.rules.holdSec}s in a row. It is a HIT if Nifty moves ${f.rules.reactPts} pts that way before ${f.rules.reactPts} pts the other way, and FLAT if neither happens within ${f.rules.horizonMin} min.</td></tr>`;
       return;
     }
-    const prem = (a, b) => (a == null ? '—' : b == null ? `${a.toFixed(2)}` : `${a.toFixed(2)} → ${b.toFixed(2)}<span class="sub ${b >= a ? 'pos' : 'neg'}">${b >= a ? '+' : ''}${(((b - a) / a) * 100).toFixed(1)}%</span>`);
+    const prem = (a, b) =>
+      a == null
+        ? '—'
+        : b == null
+          ? `${a.toFixed(2)}`
+          : `${a.toFixed(2)} → ${b.toFixed(2)}<span class="sub ${b >= a ? 'pos' : 'neg'}">${b >= a ? '+' : ''}${(((b - a) / a) * 100).toFixed(1)}%</span>`;
     const after = (v, p) => (v == null ? '—' : `${v.toFixed(1)}<span class="sub ${v - p.spot >= 0 ? 'pos' : 'neg'}">${pts(v - p.spot)}</span>`);
-    $('flowBody').innerHTML = f.predictions.map((p) => {
-      const build = secs(p.buildStartAt, p.at);
-      const react = p.reactionAt
-        ? `${istClock(p.reactionAt)}<span class="sub">${dur(secs(p.at, p.reactionAt))} · ${p.reactionDir === 'up' ? '▲' : '▼'}</span>`
-        : '<span class="muted">—</span>';
-      const res = `<span class="res ${p.result}">${p.result.toUpperCase()}</span>${p.resultAt && p.result !== 'flat' && p.result !== 'interrupted' ? `<span class="sub">in ${dur(secs(p.at, p.resultAt))}</span>` : ''}`;
-      return `<tr>
+    $('flowBody').innerHTML = f.predictions
+      .map((p) => {
+        const build = secs(p.buildStartAt, p.at);
+        const react = p.reactionAt
+          ? `${istClock(p.reactionAt)}<span class="sub">${dur(secs(p.at, p.reactionAt))} · ${p.reactionDir === 'up' ? '▲' : '▼'}</span>`
+          : '<span class="muted">—</span>';
+        const res = `<span class="res ${p.result}">${p.result.toUpperCase()}</span>${p.resultAt && p.result !== 'flat' && p.result !== 'interrupted' ? `<span class="sub">in ${dur(secs(p.at, p.resultAt))}</span>` : ''}`;
+        return `<tr>
         <td>${istClock(p.buildStartAt)}<span class="sub">${build ? dur(build) + ' before' : ''}</span></td>
         <td>${istClock(p.at)}</td>
         <td><span class="dir ${p.dir}">${p.dir === 'up' ? '▲ UP' : '▼ DOWN'}</span></td>
@@ -117,7 +133,8 @@
         <td>${prem(p.atmCe, p.atmCeAfter)}</td>
         <td>${prem(p.atmPe, p.atmPeAfter)}</td>
       </tr>`;
-    }).join('');
+      })
+      .join('');
   }
 
   // ---------- charts ----------
@@ -137,23 +154,27 @@
     const markerColor = (p) => (p.result === 'hit' ? (p.dir === 'up' ? C.up : C.down) : p.result === 'miss' ? 'transparent' : C.muted);
     const spot = make('cFlowSpot', {
       type: 'line',
-      data: { datasets: [
-        { label: 'Nifty', data: [], borderColor: C.spot, borderWidth: 2, pointRadius: 0, pointHoverRadius: 3, tension: 0.2 },
-        { label: 'Predictions', type: 'scatter', data: [], pointRadius: 8, pointHoverRadius: 10, borderWidth: 2 },
-      ] },
+      data: {
+        datasets: [
+          { label: 'Nifty', data: [], borderColor: C.spot, borderWidth: 2, pointRadius: 0, pointHoverRadius: 3, tension: 0.2 },
+          { label: 'Predictions', type: 'scatter', data: [], pointRadius: 8, pointHoverRadius: 10, borderWidth: 2 },
+        ],
+      },
       options: {
         interaction: { mode: 'nearest', intersect: false },
         scales: { x: timeAxis, y: { grid: { color: C.grid }, border: { display: false } } },
         plugins: {
           legend: { display: false },
-          tooltip: { callbacks: {
-            title: (items) => fmtTime(items[0].raw.x) + (items[0].raw.p ? ' · prediction' : ''),
-            label: (c) => {
-              const p = c.raw.p;
-              if (!p) return ` Nifty ${c.raw.y.toFixed(1)}`;
-              return ` ${p.dir.toUpperCase()} at ${p.spot.toFixed(1)} · CE ${p.share.toFixed(0)}% · ${p.result.toUpperCase()} · best ${pts(p.fav)} / worst ${pts(p.adv)}`;
+          tooltip: {
+            callbacks: {
+              title: (items) => fmtTime(items[0].raw.x) + (items[0].raw.p ? ' · prediction' : ''),
+              label: (c) => {
+                const p = c.raw.p;
+                if (!p) return ` Nifty ${c.raw.y.toFixed(1)}`;
+                return ` ${p.dir.toUpperCase()} at ${p.spot.toFixed(1)} · CE ${p.share.toFixed(0)}% · ${p.result.toUpperCase()} · best ${pts(p.fav)} / worst ${pts(p.adv)}`;
+              },
             },
-          } },
+          },
         },
       },
     });
@@ -170,30 +191,47 @@
     const lim = f.rules.imbalance * 100;
     const imb = make('cFlowImb', {
       type: 'bar',
-      data: { datasets: [
-        { label: 'CE − PE share of 1m volume', data: [], backgroundColor: [], barPercentage: 1, categoryPercentage: 1, borderRadius: 2 },
-        { label: 'UP threshold', type: 'line', data: [], borderColor: C.muted, borderDash: [4, 4], borderWidth: 1, pointRadius: 0 },
-        { label: 'DOWN threshold', type: 'line', data: [], borderColor: C.muted, borderDash: [4, 4], borderWidth: 1, pointRadius: 0 },
-      ] },
+      data: {
+        datasets: [
+          { label: 'CE − PE share of 1m volume', data: [], backgroundColor: [], barPercentage: 1, categoryPercentage: 1, borderRadius: 2 },
+          { label: 'UP threshold', type: 'line', data: [], borderColor: C.muted, borderDash: [4, 4], borderWidth: 1, pointRadius: 0 },
+          { label: 'DOWN threshold', type: 'line', data: [], borderColor: C.muted, borderDash: [4, 4], borderWidth: 1, pointRadius: 0 },
+        ],
+      },
       options: {
         scales: {
           x: timeAxis,
-          y: { suggestedMin: -50, suggestedMax: 50, grid: { color: (c) => (c.tick.value === 0 ? C.zero : C.grid) }, border: { display: false }, ticks: { maxTicksLimit: 5, callback: (v) => (v > 0 ? `CE +${v}` : v < 0 ? `PE +${-v}` : '0') } },
+          y: {
+            suggestedMin: -50,
+            suggestedMax: 50,
+            grid: { color: (c) => (c.tick.value === 0 ? C.zero : C.grid) },
+            border: { display: false },
+            ticks: { maxTicksLimit: 5, callback: (v) => (v > 0 ? `CE +${v}` : v < 0 ? `PE +${-v}` : '0') },
+          },
         },
         plugins: {
           legend: { display: false },
-          tooltip: { filter: (c) => c.datasetIndex === 0, callbacks: {
-            title: (items) => fmtTime(items[0].raw.x),
-            label: (c) => ` CE ${(50 + c.raw.y / 2).toFixed(0)}% · PE ${(50 - c.raw.y / 2).toFixed(0)}% of 1m volume`,
-          } },
+          tooltip: {
+            filter: (c) => c.datasetIndex === 0,
+            callbacks: {
+              title: (items) => fmtTime(items[0].raw.x),
+              label: (c) => ` CE ${(50 + c.raw.y / 2).toFixed(0)}% · PE ${(50 - c.raw.y / 2).toFixed(0)}% of 1m volume`,
+            },
+          },
         },
       },
     });
     const bars = s.filter((x) => x.imb != null);
     imb.data.datasets[0].data = bars.map((x) => ({ x: x.t, y: x.imb * 100 }));
     imb.data.datasets[0].backgroundColor = bars.map((x) => (x.imb >= 0 ? C.ce : C.pe));
-    imb.data.datasets[1].data = [{ x: minX, y: lim }, { x: maxX, y: lim }];
-    imb.data.datasets[2].data = [{ x: minX, y: -lim }, { x: maxX, y: -lim }];
+    imb.data.datasets[1].data = [
+      { x: minX, y: lim },
+      { x: maxX, y: lim },
+    ];
+    imb.data.datasets[2].data = [
+      { x: minX, y: -lim },
+      { x: maxX, y: -lim },
+    ];
     imb.options.scales.x = timeAxis;
     imb.update('none');
   }
@@ -221,7 +259,9 @@
     try {
       const days = await (await fetch('/api/flow-days', { cache: 'no-store' })).json();
       $('flowDay').innerHTML = '<option value="live">Live (today)</option>' + days.map((d) => `<option value="${d}">${d}</option>`).join('');
-    } catch { fs.daysLoaded = false; }
+    } catch {
+      fs.daysLoaded = false;
+    }
   }
 
   function fillInputs(r) {
@@ -270,7 +310,8 @@
     const live = r.recorded ? ` · live run recorded ${r.recorded.total} (${r.recorded.hit} hit, ${r.recorded.miss} miss)` : '';
     $('flowMode').innerHTML = `<span class="replay-tag">REPLAY ${r.day}</span> ${r.tape.snapshots} snapshots, ${t(r.tape.from)}–${t(r.tape.to)} IST${live}`;
     const f = { live: null, stats: r.stats, predictions: r.predictions, rules: r.rules };
-    $('flowStatus').innerHTML = `<span class="big">Replay of ${r.day}</span><div class="muted small" style="margin-top:4px">Same logic as live, run over the recorded tape with the settings above. Pick “Live (today)” to go back.</div>`;
+    $('flowStatus').innerHTML =
+      `<span class="big">Replay of ${r.day}</span><div class="muted small" style="margin-top:4px">Same logic as live, run over the recorded tape with the settings above. Pick “Live (today)” to go back.</div>`;
     $('fgCe').textContent = $('fgPe').textContent = '—';
     $('fgCeShare').textContent = $('fgPeShare').textContent = '';
     $('fgFill').style.width = '50%';

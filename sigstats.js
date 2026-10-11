@@ -17,7 +17,10 @@ const EPISODE_GAP_MIN = 3; // signals of one kind closer than this count as one 
 const MIN_CASES = 8; // below this a kind has no track record worth showing
 const HIGH = { p: 0.7, cases: 15, days: 2, edge: 0.15 }; // hit rate, cases, days it held on, margin over "any moment"
 const CACHE_VERSION = 1;
-const CE_BUY = 6, CE_SELL = 7, PE_BUY = 8, PE_SELL = 9;
+const CE_BUY = 6,
+  CE_SELL = 7,
+  PE_BUY = 8,
+  PE_SELL = 9;
 
 // Which kind a signal is. lead = its strongest leg ({ strike, side }), cur / m1 = snapshots now and 1 min ago.
 function signalKind(type, lead, cur, m1) {
@@ -61,7 +64,11 @@ function leadFromDetail(ev) {
 function analyseDay(dir, day) {
   let events;
   try {
-    events = fs.readFileSync(path.join(dir, day, 'events.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    events = fs
+      .readFileSync(path.join(dir, day, 'events.jsonl'), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l));
   } catch {
     return null;
   }
@@ -87,8 +94,20 @@ function sessionTape(dir, day) {
 // What Nifty did after any moment of a taped session, plus the day's base rate (asked every 30 s).
 function tapeOutcomes(E) {
   if (E.length < 2) return null;
-  const idxAt = (t) => { let lo = 0, hi = E.length - 1; while (lo < hi) { const m = (lo + hi) >> 1; if (E[m].t >= t) hi = m; else lo = m + 1; } return lo; };
-  const at = (t) => { const e = E[idxAt(t)]; return e.t >= t && e.t - t <= 5000 ? e : null; };
+  const idxAt = (t) => {
+    let lo = 0,
+      hi = E.length - 1;
+    while (lo < hi) {
+      const m = (lo + hi) >> 1;
+      if (E[m].t >= t) hi = m;
+      else lo = m + 1;
+    }
+    return lo;
+  };
+  const at = (t) => {
+    const e = E[idxAt(t)];
+    return e.t >= t && e.t - t <= 5000 ? e : null;
+  };
   // 1 = up first, -1 = down first, 0 = neither; null when the tape doesn't cover the whole horizon
   const outcome = (t) => {
     const e = at(t);
@@ -107,7 +126,8 @@ function tapeOutcomes(E) {
     const o = outcome(t);
     if (o == null) continue;
     base.n++;
-    if (o > 0) base.up++; else if (o < 0) base.down++;
+    if (o > 0) base.up++;
+    else if (o < 0) base.down++;
   }
   return { at, outcome, base };
 }
@@ -125,7 +145,11 @@ function summarise(days) {
       last[c.kind] = c.t;
       const k = (kinds[c.kind] ||= { kind: c.kind, n: 0, up: 0, down: 0, perDay: {} });
       const d = (k.perDay[day] ||= { day, n: 0, up: 0, down: 0, baseUp: base.up / base.n, baseDown: base.down / base.n });
-      for (const x of [k, d]) { x.n++; if (c.o > 0) x.up++; else if (c.o < 0) x.down++; }
+      for (const x of [k, d]) {
+        x.n++;
+        if (c.o > 0) x.up++;
+        else if (c.o < 0) x.down++;
+      }
     }
   }
   const out = [];
@@ -137,11 +161,21 @@ function summarise(days) {
     const p = hits / k.n;
     const base = perDay.reduce((s, d) => s + d.n * d.base, 0) / k.n; // "any moment" rate, weighted like the cases
     const solid = perDay.filter((d) => d.n >= 3);
-    const high = p >= HIGH.p && k.n >= HIGH.cases && p - base >= HIGH.edge
-      && solid.length >= HIGH.days && solid.every((d) => d.hits / d.n > d.base);
+    const high = p >= HIGH.p && k.n >= HIGH.cases && p - base >= HIGH.edge && solid.length >= HIGH.days && solid.every((d) => d.hits / d.n > d.base);
     out.push({
-      kind: k.kind, label: kindLabel(k.kind), dir: dir2, p, hits, n: k.n, against: k[dir2 === 'up' ? 'down' : 'up'],
-      base, days: perDay.length, high, pts: MOVE_PTS, min: HORIZON_MIN, perDay,
+      kind: k.kind,
+      label: kindLabel(k.kind),
+      dir: dir2,
+      p,
+      hits,
+      n: k.n,
+      against: k[dir2 === 'up' ? 'down' : 'up'],
+      base,
+      days: perDay.length,
+      high,
+      pts: MOVE_PTS,
+      min: HORIZON_MIN,
+      perDay,
     });
   }
   return out.sort((a, b) => b.high - a.high || b.p - a.p);
@@ -156,24 +190,38 @@ function buildStats(dir, { rebuild = false, logError = () => {} } = {}) {
     try {
       const c = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
       if (c.version === CACHE_VERSION && c.horizonMin === HORIZON_MIN && c.movePts === MOVE_PTS) cache = c;
-    } catch { /* no cache yet */ }
+    } catch {
+      /* no cache yet */
+    }
   }
   let dayNames = [];
   try {
-    dayNames = fs.readdirSync(dir).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d) && d < today).sort();
-  } catch { /* nothing recorded yet */ }
+    dayNames = fs
+      .readdirSync(dir)
+      .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d) && d < today)
+      .sort();
+  } catch {
+    /* nothing recorded yet */
+  }
   let changed = false;
   for (const day of dayNames) {
     if (cache.days[day]) continue;
     try {
       const res = analyseDay(dir, day);
-      if (res) { cache.days[day] = res; changed = true; }
+      if (res) {
+        cache.days[day] = res;
+        changed = true;
+      }
     } catch (e) {
       logError('signal-odds', e);
     }
   }
   if (changed) {
-    try { fs.writeFileSync(cacheFile, JSON.stringify(cache)); } catch (e) { logError('signal-odds', e); }
+    try {
+      fs.writeFileSync(cacheFile, JSON.stringify(cache));
+    } catch (e) {
+      logError('signal-odds', e);
+    }
   }
 
   const all = summarise(cache.days);
@@ -197,7 +245,10 @@ if (require.main === module) {
   const args = process.argv.slice(2);
   const dir = path.join(__dirname, args.includes('--demo') ? 'events-demo' : 'events');
   const stats = buildStats(dir, { rebuild: args.includes('--rebuild'), logError: (s, e) => console.error(s, e) });
-  if (!stats.all.length) { console.log(`No finished days with signals and a tape in ${dir}`); process.exit(1); }
+  if (!stats.all.length) {
+    console.log(`No finished days with signals and a tape in ${dir}`);
+    process.exit(1);
+  }
   const pc = (x) => `${Math.round(x * 100)}%`.padStart(4);
   console.log(`Days: ${stats.days.join(', ')}`);
   console.log(`Outcome: Nifty moves ${MOVE_PTS} pts one way before ${MOVE_PTS} pts the other, within ${HORIZON_MIN} min of the signal.`);
@@ -205,9 +256,21 @@ if (require.main === module) {
   console.log('Signal kind                                 then Nifty  hit rate  cases  against  any moment  by day');
   for (const o of stats.all) {
     const byDay = o.perDay.map((d) => `${d.day.slice(5)} ${d.hits}/${d.n}`).join(', ');
-    console.log(`${(o.high ? '★ ' : '  ') + o.label.padEnd(42)}${(o.dir === 'up' ? 'rises' : 'falls').padEnd(11)} ${pc(o.p)}   ${`${o.hits}/${o.n}`.padStart(7)}  ${String(o.against).padStart(5)}  ${pc(o.base).padStart(10)}   ${byDay}${o.n < MIN_CASES ? '  (too few to show live)' : ''}`);
+    console.log(
+      `${(o.high ? '★ ' : '  ') + o.label.padEnd(42)}${(o.dir === 'up' ? 'rises' : 'falls').padEnd(11)} ${pc(o.p)}   ${`${o.hits}/${o.n}`.padStart(7)}  ${String(o.against).padStart(5)}  ${pc(o.base).padStart(10)}   ${byDay}${o.n < MIN_CASES ? '  (too few to show live)' : ''}`,
+    );
   }
-  console.log(`\n★ high probability: hit rate ≥ ${HIGH.p * 100}%, ≥ ${HIGH.cases} cases, ≥ ${HIGH.edge * 100} percentage points above "any moment", and above it on each of ≥ ${HIGH.days} days.`);
+  console.log(
+    `\n★ high probability: hit rate ≥ ${HIGH.p * 100}%, ≥ ${HIGH.cases} cases, ≥ ${HIGH.edge * 100} percentage points above "any moment", and above it on each of ≥ ${HIGH.days} days.`,
+  );
 }
 
-module.exports = { buildStats, signalKind, kindLabel, sessionTape, tapeOutcomes, summarise, RULE: { pts: MOVE_PTS, min: HORIZON_MIN, gapMin: EPISODE_GAP_MIN, high: HIGH } };
+module.exports = {
+  buildStats,
+  signalKind,
+  kindLabel,
+  sessionTape,
+  tapeOutcomes,
+  summarise,
+  RULE: { pts: MOVE_PTS, min: HORIZON_MIN, gapMin: EPISODE_GAP_MIN, high: HIGH },
+};

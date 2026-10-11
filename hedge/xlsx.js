@@ -6,7 +6,10 @@ function unzip(buf) {
   // End of central directory: last occurrence of PK\x05\x06
   let eocd = -1;
   for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65_557); i--) {
-    if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+    if (buf.readUInt32LE(i) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
   }
   if (eocd < 0) throw new Error('Not an .xlsx file (zip directory not found)');
   const count = buf.readUInt16LE(eocd + 10);
@@ -31,9 +34,14 @@ function unzip(buf) {
   return files;
 }
 
-const decode = (s) => s
-  .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'")
-  .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d))).replace(/&amp;/g, '&');
+const decode = (s) =>
+  s
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(Number(d)))
+    .replace(/&amp;/g, '&');
 
 // "AB12" -> 0-based column index of "AB"
 function colIndex(ref) {

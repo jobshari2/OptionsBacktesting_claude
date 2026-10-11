@@ -54,10 +54,11 @@ function createResearch({ logError }) {
         messages.push({ role: 'assistant', content: response.content });
       }
     } catch (e) {
-      if (e instanceof Anthropic.AuthenticationError) throw new Error('Anthropic API key is invalid — check ANTHROPIC_API_KEY in .env');
-      if (e instanceof Anthropic.RateLimitError) throw new Error('Anthropic API rate limit reached — try again in a minute');
-      if (e instanceof Anthropic.APIError) throw new Error(`Anthropic API error ${e.status ?? ''}: ${e.message}`);
-      if (/api key|apiKey|authentication/i.test(e.message || '')) throw new Error('Online research needs an Anthropic API key: add ANTHROPIC_API_KEY=... to .env and restart the server');
+      if (e instanceof Anthropic.AuthenticationError) throw new Error('Anthropic API key is invalid — check ANTHROPIC_API_KEY in .env', { cause: e });
+      if (e instanceof Anthropic.RateLimitError) throw new Error('Anthropic API rate limit reached — try again in a minute', { cause: e });
+      if (e instanceof Anthropic.APIError) throw new Error(`Anthropic API error ${e.status ?? ''}: ${e.message}`, { cause: e });
+      if (/api key|apiKey|authentication/i.test(e.message || ''))
+        throw new Error('Online research needs an Anthropic API key: add ANTHROPIC_API_KEY=... to .env and restart the server', { cause: e });
       throw e;
     }
     if (response.stop_reason === 'refusal') throw new Error('The research request was declined');
@@ -78,7 +79,13 @@ function createResearch({ logError }) {
     return result;
   }
 
-  return { research: (s) => research(s).catch((e) => { logError('research', e); throw e; }) };
+  return {
+    research: (s) =>
+      research(s).catch((e) => {
+        logError('research', e);
+        throw e;
+      }),
+  };
 }
 
 module.exports = { createResearch };

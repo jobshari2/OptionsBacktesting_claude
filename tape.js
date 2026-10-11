@@ -46,7 +46,9 @@ function createTape({ dir, everyMs = 1000, strikesAround = 15, logError }) {
       try {
         const rows = snap.rows;
         let atm = 0;
-        rows.forEach((r, i) => { if (Math.abs(r.strike - snap.spot) < Math.abs(rows[atm].strike - snap.spot)) atm = i; });
+        rows.forEach((r, i) => {
+          if (Math.abs(r.strike - snap.spot) < Math.abs(rows[atm].strike - snap.spot)) atm = i;
+        });
         const d = {};
         for (const r of rows.slice(Math.max(0, atm - strikesAround), atm + strikesAround + 1)) d[r.strike] = entry.d[r.strike];
         open(entry.t).gz.write(JSON.stringify({ t: entry.t, spot: entry.spot, x: snap.expiry, d }) + '\n');
@@ -63,7 +65,10 @@ function readTape(dir, day) {
   const folder = path.join(dir, day);
   let parts = [];
   try {
-    parts = fs.readdirSync(folder).filter((f) => /^tape-\d{6}\.jsonl\.gz$/.test(f)).sort();
+    parts = fs
+      .readdirSync(folder)
+      .filter((f) => /^tape-\d{6}\.jsonl\.gz$/.test(f))
+      .sort();
   } catch {
     return [];
   }
@@ -78,7 +83,11 @@ function readTape(dir, day) {
     }
     for (const line of text.split('\n')) {
       if (!line) continue;
-      try { entries.push(JSON.parse(line)); } catch { /* partial last line */ }
+      try {
+        entries.push(JSON.parse(line));
+      } catch {
+        /* partial last line */
+      }
     }
   }
   return entries.sort((a, b) => a.t - b.t);
@@ -87,7 +96,8 @@ function readTape(dir, day) {
 // Days that have a tape, newest first.
 function tapeDays(dir) {
   try {
-    return fs.readdirSync(dir)
+    return fs
+      .readdirSync(dir)
       .filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d))
       .filter((d) => fs.readdirSync(path.join(dir, d)).some((f) => f.startsWith('tape-')))
       .sort()
@@ -103,10 +113,13 @@ function* replaySnapshots(entries, historyMs = 17 * 60_000) {
   for (const e of entries) {
     hist.push(e);
     while (hist.length && e.t - hist[0].t > historyMs) hist.shift();
-    const rows = Object.keys(e.d).map(Number).sort((a, b) => a - b).map((k) => {
-      const v = e.d[k] || [];
-      return { strike: k, ce: { ltp: v[0] }, pe: { ltp: v[3] } };
-    });
+    const rows = Object.keys(e.d)
+      .map(Number)
+      .sort((a, b) => a - b)
+      .map((k) => {
+        const v = e.d[k] || [];
+        return { strike: k, ce: { ltp: v[0] }, pe: { ltp: v[3] } };
+      });
     yield { hist, snap: { expiry: e.x, updatedAt: e.t, spot: e.spot, rows } };
   }
 }

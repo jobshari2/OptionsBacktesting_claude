@@ -24,9 +24,15 @@ function replayFlow(dir, day, cfg) {
   // What the live run recorded that day, for comparison.
   let recorded = null;
   try {
-    const live = fs.readFileSync(path.join(dir, day, 'predictions.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    const live = fs
+      .readFileSync(path.join(dir, day, 'predictions.jsonl'), 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l));
     recorded = { total: live.length, hit: live.filter((p) => p.result === 'hit').length, miss: live.filter((p) => p.result === 'miss').length };
-  } catch { /* no live predictions that day */ }
+  } catch {
+    /* no live predictions that day */
+  }
 
   return {
     day,
@@ -52,7 +58,10 @@ if (require.main === module) {
     process.exit(1);
   }
   const dir = path.join(__dirname, args.includes('--demo') ? 'events-demo' : 'events');
-  const opt = (k) => { const i = args.indexOf('--' + k); return i >= 0 ? Number(args[i + 1]) : undefined; };
+  const opt = (k) => {
+    const i = args.indexOf('--' + k);
+    return i >= 0 ? Number(args[i + 1]) : undefined;
+  };
   const keys = ['imbalance', 'holdSec', 'minQty', 'reactPts', 'horizonMin'];
   const base = Object.fromEntries(keys.map((k) => [k, opt(k)]));
   const mi = args.indexOf('--mode');
@@ -67,7 +76,9 @@ if (require.main === module) {
         for (const holdSec of [5, 10, 20]) {
           const r = replayFlow(dir, day, flowConfig(process.env, { ...base, mode, imbalance, holdSec }));
           const s = r.stats;
-          console.log(`${mode.padEnd(9)}  ${String(50 + imbalance * 50).padStart(4)}%  ${String(holdSec).padStart(4)}s  ${String(s.total).padStart(5)}  ${String(s.hit).padStart(3)}  ${String(s.miss).padStart(4)}  ${String(s.flat).padStart(4)}  ${pct(s.hitRate).padStart(8)}  ${pct(s.up.hitRate)}  ${pct(s.down.hitRate)}`);
+          console.log(
+            `${mode.padEnd(9)}  ${String(50 + imbalance * 50).padStart(4)}%  ${String(holdSec).padStart(4)}s  ${String(s.total).padStart(5)}  ${String(s.hit).padStart(3)}  ${String(s.miss).padStart(4)}  ${String(s.flat).padStart(4)}  ${pct(s.hitRate).padStart(8)}  ${pct(s.up.hitRate)}  ${pct(s.down.hitRate)}`,
+          );
         }
       }
     }
@@ -87,7 +98,9 @@ if (require.main === module) {
 
   const s = r.stats;
   console.log(`Replayed ${day}: ${r.tape.snapshots} snapshots, ${t(r.tape.from)}–${t(r.tape.to)} IST`);
-  console.log(`Settings: mode ${cfg.mode}, bull/bear share ≥ ${50 + cfg.imbalance * 50}% for ${cfg.holdSec}s, min ${cfg.minQty} in 1m, HIT/MISS at ${cfg.reactPts} pts, horizon ${cfg.horizonMin}m`);
+  console.log(
+    `Settings: mode ${cfg.mode}, bull/bear share ≥ ${50 + cfg.imbalance * 50}% for ${cfg.holdSec}s, min ${cfg.minQty} in 1m, HIT/MISS at ${cfg.reactPts} pts, horizon ${cfg.horizonMin}m`,
+  );
   console.log(`Predictions ${s.total}: ${s.hit} hit, ${s.miss} miss, ${s.flat} flat, ${s.pending} unfinished — hit rate ${pct(s.hitRate)}`);
   console.log(`UP ${s.up.hit}/${s.up.hit + s.up.miss} (${pct(s.up.hitRate)})   DOWN ${s.down.hit}/${s.down.hit + s.down.miss} (${pct(s.down.hitRate)})`);
   if (r.recorded) console.log(`Live run that day recorded ${r.recorded.total} predictions (${r.recorded.hit} hit, ${r.recorded.miss} miss)`);

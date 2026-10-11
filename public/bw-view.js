@@ -3,7 +3,11 @@
 // and the top 5), Details (KPIs, months, trades and equity curve of one variation) and Adjustments (all, ranked).
 (() => {
   const { $, esc, inr, inrS, kinr, pct, num, cls, dayLabel, dayShort, WD, MONTHS, REASON } = BT;
-  const FAMS = [['hedge', 'Bi-weekly Hedge'], ['rev', 'Bi-weekly Hedge Reverse'], ['combined', 'Combined']];
+  const FAMS = [
+    ['hedge', 'Bi-weekly Hedge'],
+    ['rev', 'Bi-weekly Hedge Reverse'],
+    ['combined', 'Combined'],
+  ];
   let settings = null;
   let st = null; // saved result of "Backtest all variations": { at, opts, optsRaw, strikes, overlap, families: [hedge, rev, combined] }
   let fam = BT.store.get('bw-fam', 'hedge');
@@ -25,13 +29,21 @@
   const rowOf = (id, key) => family(id).rows.find((r) => r.key === key);
   const curKey = (id) => (sel[id] && rowOf(id, sel[id]) ? sel[id] : family(id).best || family(id).rows[0].key);
   const when = (t) => new Date(t).toLocaleString('en-IN', { day: '2-digit', month: 'short', year: '2-digit', hour: '2-digit', minute: '2-digit' });
-  const tile = (label, value, sub = '', c = '') => `<div class="kpi"><span class="k-l">${label}</span><span class="k-v ${c}">${value}</span><span class="k-s">${sub}</span></div>`;
-  const riskPill = '<span class="cat-pill c-bearish" title="Some short options are not covered by a bought option for their whole life: one bad week can lose far more than this backtest shows. Never picked as the best.">unlimited risk</span>';
+  const tile = (label, value, sub = '', c = '') =>
+    `<div class="kpi"><span class="k-l">${label}</span><span class="k-v ${c}">${value}</span><span class="k-s">${sub}</span></div>`;
+  const riskPill =
+    '<span class="cat-pill c-bearish" title="Some short options are not covered by a bought option for their whole life: one bad week can lose far more than this backtest shows. Never picked as the best.">unlimited risk</span>';
 
   async function init() {
     if (settings) return;
     settings = true; // being set up
-    try { await BT.loadMeta(); } catch (e) { settings = null; $('bwResults').innerHTML = `<div class="panel empty err">${esc(e.message)}</div>`; return; }
+    try {
+      await BT.loadMeta();
+    } catch (e) {
+      settings = null;
+      $('bwResults').innerHTML = `<div class="panel empty err">${esc(e.message)}</div>`;
+      return;
+    }
     // First visit: the whole history, on ₹5 L (₹1 L per lot for the 5 lots of the strategies).
     const c = BT.meta.calendar;
     if (c?.expired?.length && !BT.store.get('bw-settings', null)) {
@@ -43,12 +55,20 @@
     render();
   }
   async function loadState() {
-    try { st = (await BT.api('/api/bt/bw/state')).state; } catch { /* keep what is shown */ }
+    try {
+      st = (await BT.api('/api/bt/bw/state')).state;
+    } catch {
+      /* keep what is shown */
+    }
   }
 
   async function runAll() {
     let opts;
-    try { opts = settings.get(); } catch (e) { return alert(e.message); }
+    try {
+      opts = settings.get();
+    } catch (e) {
+      return alert(e.message);
+    }
     settings.setBusy(true);
     try {
       st = (await BT.runJob('/api/bt/bw/run', { opts, strikes, overlap }, settings.progress)).result;
@@ -89,8 +109,11 @@
       return;
     }
     const f = family(fam);
-    const tabs = [['summary', 'Summary', 'The best variation and the top 5'], ['details', 'Details', 'KPIs, months, trades and equity curve of one variation'],
-      ['adjust', `Adjustments (${f.rows.length})`, 'Every variation, each with one adjustment changed, ranked']];
+    const tabs = [
+      ['summary', 'Summary', 'The best variation and the top 5'],
+      ['details', 'Details', 'KPIs, months, trades and equity curve of one variation'],
+      ['adjust', `Adjustments (${f.rows.length})`, 'Every variation, each with one adjustment changed, ranked'],
+    ];
     el.innerHTML = `<div class="panel top-bar"><div class="seg top-tabs" id="bwTop">${tabs.map(([t, l, tip]) => `<button data-top="${t}" class="${tab === t ? 'on' : ''}" title="${tip}">${l}</button>`).join('')}</div></div>
       ${note ? `<div class="panel empty err">${esc(note)}</div>` : ''}
       ${fam === 'combined' ? cfgHtml() : ''}
@@ -127,20 +150,38 @@
   ];
   const statVal = (s, k) => {
     if (!s?.trades) return null;
-    const v = /^y\d{4}$/.test(k) ? s.yearly?.[k.slice(1)] ?? 0 : s[k];
+    const v = /^y\d{4}$/.test(k) ? (s.yearly?.[k.slice(1)] ?? 0) : s[k];
     return v == null || !isFinite(v) ? null : v;
   };
-  const sorted = (rows, { k, dir }) => rows.slice().sort((a, b) => {
-    const x = statVal(a.stats, k);
-    const y = statVal(b.stats, k);
-    if (x == null || y == null) return (x == null) - (y == null); // no value: always last
-    return (x - y) * dir;
-  });
-  const headCells = (so) => cols().map(([c, l]) => `<th${so ? ` data-k="${c}" class="sortable${c === so.k ? ' sorted' : ''}"` : ''}>${l}${so && c === so.k ? (so.dir < 0 ? ' ▼' : ' ▲') : ''}</th>`).join('');
-  const statCells = (s) => cols().map(([c, , f, k]) => `<td class="${s?.trades ? k(s) : ''}">${s?.trades ? f(s) : c === 'trades' && s ? 'no trades' : '—'}</td>`).join('');
-  const nameCell = (f, r) => `<td class="l adj-name"><span class="cat-pill${r.key === 'own' ? ' c-mine' : ''}">${esc(r.group)}</span> <b>${esc(r.key === 'own' ? `As defined (${f.base})` : r.name)}</b>${r.key === f.best ? ' <span class="cat-pill c-bullish">best</span>' : ''}${r.risky ? ' ' + riskPill : ''}<div class="muted small">${esc(r.error ? 'Could not be tested: ' + r.error : r.note)}</div></td>`;
-  const varRows = (f, rows, cur) => rows.map((r, i) => `<tr data-var="${esc(r.key)}" class="${r.key === cur ? 'sel' : ''}"><td class="muted">${i + 1}</td>${nameCell(f, r)}${statCells(r.stats)}</tr>`).join('');
-  const footnote = (f) => `<div class="muted small pad">Investment = ${f.cfg ? (f.cfg.capital ? 'the Capital of the combined position' : 'the largest estimated margin of the trades') : st.opts.capital ? 'the Capital in the settings bar' : 'the largest estimated margin of the trades'}. % profit = net P&amp;L ÷ investment over the whole period; the year columns are the net P&amp;L of the trades closed in that year. The ranking is made on the same trades it is measured on: confirm a variation on another period before relying on it.</div>`;
+  const sorted = (rows, { k, dir }) =>
+    rows.slice().sort((a, b) => {
+      const x = statVal(a.stats, k);
+      const y = statVal(b.stats, k);
+      if (x == null || y == null) return (x == null) - (y == null); // no value: always last
+      return (x - y) * dir;
+    });
+  const headCells = (so) =>
+    cols()
+      .map(
+        ([c, l]) =>
+          `<th${so ? ` data-k="${c}" class="sortable${c === so.k ? ' sorted' : ''}"` : ''}>${l}${so && c === so.k ? (so.dir < 0 ? ' ▼' : ' ▲') : ''}</th>`,
+      )
+      .join('');
+  const statCells = (s) =>
+    cols()
+      .map(([c, , f, k]) => `<td class="${s?.trades ? k(s) : ''}">${s?.trades ? f(s) : c === 'trades' && s ? 'no trades' : '—'}</td>`)
+      .join('');
+  const nameCell = (f, r) =>
+    `<td class="l adj-name"><span class="cat-pill${r.key === 'own' ? ' c-mine' : ''}">${esc(r.group)}</span> <b>${esc(r.key === 'own' ? `As defined (${f.base})` : r.name)}</b>${r.key === f.best ? ' <span class="cat-pill c-bullish">best</span>' : ''}${r.risky ? ' ' + riskPill : ''}<div class="muted small">${esc(r.error ? 'Could not be tested: ' + r.error : r.note)}</div></td>`;
+  const varRows = (f, rows, cur) =>
+    rows
+      .map(
+        (r, i) =>
+          `<tr data-var="${esc(r.key)}" class="${r.key === cur ? 'sel' : ''}"><td class="muted">${i + 1}</td>${nameCell(f, r)}${statCells(r.stats)}</tr>`,
+      )
+      .join('');
+  const footnote = (f) =>
+    `<div class="muted small pad">Investment = ${f.cfg ? (f.cfg.capital ? 'the Capital of the combined position' : 'the largest estimated margin of the trades') : st.opts.capital ? 'the Capital in the settings bar' : 'the largest estimated margin of the trades'}. % profit = net P&amp;L ÷ investment over the whole period; the year columns are the net P&amp;L of the trades closed in that year. The ranking is made on the same trades it is measured on: confirm a variation on another period before relying on it.</div>`;
 
   function rulesText(s) {
     const r = s.risk;
@@ -151,7 +192,10 @@
     if (r.lockAt != null) out.push(`lock ${u(r.lockTo)} once up ${u(r.lockAt)}`);
     if (r.partialAt != null) out.push(`book ${r.partialPct}% of the lots at ${u(r.partialAt)}`);
     const ls = s.legs.find((l) => l.sl.type !== 'none');
-    if (ls) out.push(`leg stop ${ls.sl.value}${{ pct: '% of its premium', pts: ' pts', upct: '% Nifty move', upts: ' Nifty pts' }[ls.sl.type] || ''}${r.onLegSl === 'all' ? ' → exit all' : ''}${ls.re ? ', re-entry' : ''}`);
+    if (ls)
+      out.push(
+        `leg stop ${ls.sl.value}${{ pct: '% of its premium', pts: ' pts', upct: '% Nifty move', upts: ' Nifty pts' }[ls.sl.type] || ''}${r.onLegSl === 'all' ? ' → exit all' : ''}${ls.re ? ', re-entry' : ''}`,
+      );
     const roll = s.legs.find((l) => l.roll);
     out.push(roll ? `hedge rolled ${roll.roll.dteDays ? roll.roll.dteDays + 'd before' : 'on the day'} it expires` : 'no roll');
     const f = s.filters;
@@ -177,15 +221,28 @@
       ${tile('Sharpe', num(s.sharpe), `longest losing run ${s.streakLoss}`)}
     </div>`;
   }
-  const capNote = (f) => (f.cfg ? (f.cfg.capital ? 'Capital of the combined position' : 'est. margin (largest trade)') : st.opts.capital ? 'Capital (settings bar)' : 'est. margin (largest trade)');
-  const yearLine = (s) => Object.keys(s.yearly || {}).sort().map((y) => `${y}: <b class="${cls(s.yearly[y])}">${inrS(s.yearly[y])}</b>`).join(' · ');
+  const capNote = (f) =>
+    f.cfg
+      ? f.cfg.capital
+        ? 'Capital of the combined position'
+        : 'est. margin (largest trade)'
+      : st.opts.capital
+        ? 'Capital (settings bar)'
+        : 'est. margin (largest trade)';
+  const yearLine = (s) =>
+    Object.keys(s.yearly || {})
+      .sort()
+      .map((y) => `${y}: <b class="${cls(s.yearly[y])}">${inrS(s.yearly[y])}</b>`)
+      .join(' · ');
 
   // ---------- one strategy: summary and adjustments ----------
   function familySummary(f) {
     const best = f.best && rowOf(f.id, f.best);
     const tested = f.rows.filter((r) => r.stats?.trades);
     const riskyTop = tested.filter((r) => r.risky && best && r.stats.total > best.stats.total).sort((a, b) => b.stats.total - a.stats.total)[0];
-    const card = !best ? '<div class="panel empty"><h3>No variation with limited risk made a trade</h3></div>' : `<div class="panel res-head best-card">
+    const card = !best
+      ? '<div class="panel empty"><h3>No variation with limited risk made a trade</h3></div>'
+      : `<div class="panel res-head best-card">
         <div class="res-title scen-sel"><h3>Best variation: ${esc(best.key === 'own' ? `As defined (${f.base})` : best.name)}</h3><span class="cat-pill">${esc(best.group)}</span>
           <span class="spacer"></span><button class="btn-sm" data-var="${esc(best.key)}">Open details ▸</button></div>
         <span class="muted small">${esc(best.note)} · ${esc(rulesText(best.strategy))}</span>
@@ -202,7 +259,11 @@
     return `<div class="panel scen-panel" data-bwfam="${f.id}">
         <div class="chart-head"><h3>${esc(f.name)} — top 5 variations</h3><span class="muted small">limited risk only, highest net P&amp;L first · ${hint}</span></div>
         <div class="tbl-wrap"><table class="grid-tbl cmp-tbl scen-tbl"><thead><tr><th>#</th><th class="l">Variation</th>${headCells()}</tr></thead>
-          <tbody>${varRows(f, f.top.map((k) => rowOf(f.id, k)), null)}${own && !f.top.includes('own') ? `<tr data-var="own"><td class="muted">·</td>${nameCell(f, own)}${statCells(own.stats)}</tr>` : ''}</tbody></table></div>
+          <tbody>${varRows(
+            f,
+            f.top.map((k) => rowOf(f.id, k)),
+            null,
+          )}${own && !f.top.includes('own') ? `<tr data-var="own"><td class="muted">·</td>${nameCell(f, own)}${statCells(own.stats)}</tr>` : ''}</tbody></table></div>
         ${foot}
       </div>`;
   }
@@ -232,11 +293,17 @@
     const cfg = { capital: $('bwCap').value === '' ? null : Number($('bwCap').value), hedgeLots: Number($('bwHL').value), revLots: Number($('bwRL').value) };
     $('bwApply').disabled = true;
     try {
-      st = (await BT.runJob('/api/bt/bw/combine', { cfg }, (p) => { if ($('bwApply')) $('bwApply').textContent = p.total ? `${p.done}/${p.total}…` : '…'; })).result;
+      st = (
+        await BT.runJob('/api/bt/bw/combine', { cfg }, (p) => {
+          if ($('bwApply')) $('bwApply').textContent = p.total ? `${p.done}/${p.total}…` : '…';
+        })
+      ).result;
       if (runTag?.startsWith('combined')) run = runTag = null;
       sel.combined = null;
       note = '';
-    } catch (e) { note = 'Could not backtest the combined position: ' + e.message; }
+    } catch (e) {
+      note = 'Could not backtest the combined position: ' + e.message;
+    }
     render();
   }
 
@@ -300,8 +367,28 @@
       data: {
         labels,
         datasets: [
-          { type: 'line', label: 'Equity', data: s.equity.map((e) => e.eq), borderColor: '#58a6ff', backgroundColor: 'rgba(88,166,255,.10)', fill: 'origin', pointRadius: 0, borderWidth: 1.8, tension: 0.1, yAxisID: 'y' },
-          { type: 'bar', label: 'Trade P&L', data: pnl, backgroundColor: pnl.map((v) => (v >= 0 ? 'rgba(63,182,139,.28)' : 'rgba(240,113,107,.28)')), yAxisID: 'y2', barPercentage: 1, categoryPercentage: 0.9, order: 2 },
+          {
+            type: 'line',
+            label: 'Equity',
+            data: s.equity.map((e) => e.eq),
+            borderColor: '#58a6ff',
+            backgroundColor: 'rgba(88,166,255,.10)',
+            fill: 'origin',
+            pointRadius: 0,
+            borderWidth: 1.8,
+            tension: 0.1,
+            yAxisID: 'y',
+          },
+          {
+            type: 'bar',
+            label: 'Trade P&L',
+            data: pnl,
+            backgroundColor: pnl.map((v) => (v >= 0 ? 'rgba(63,182,139,.28)' : 'rgba(240,113,107,.28)')),
+            yAxisID: 'y2',
+            barPercentage: 1,
+            categoryPercentage: 0.9,
+            order: 2,
+          },
         ],
       },
       options: {
@@ -312,12 +399,27 @@
           y: { position: 'left', ticks: { callback: (v) => kinr(v) } },
           y2: { position: 'right', grid: { display: false }, ticks: { callback: (v) => kinr(v) } },
         },
-        onClick: (_, els) => { if (els[0]) openTrade(s.equity[els[0].index].i); },
+        onClick: (_, els) => {
+          if (els[0]) openTrade(s.equity[els[0].index].i);
+        },
       },
     });
     BT.chart($('bwDD'), {
       type: 'line',
-      data: { labels, datasets: [{ label: 'Drawdown', data: s.equity.map((e) => e.dd), borderColor: '#f0716b', backgroundColor: 'rgba(240,113,107,.18)', fill: 'origin', pointRadius: 0, borderWidth: 1.2 }] },
+      data: {
+        labels,
+        datasets: [
+          {
+            label: 'Drawdown',
+            data: s.equity.map((e) => e.dd),
+            borderColor: '#f0716b',
+            backgroundColor: 'rgba(240,113,107,.18)',
+            fill: 'origin',
+            pointRadius: 0,
+            borderWidth: 1.2,
+          },
+        ],
+      },
       options: {
         plugins: { legend: { display: false }, tooltip: { mode: 'index', intersect: false, callbacks: { label: (c) => `Drawdown ${inr(c.raw)}` } } },
         scales: { x: { display: false }, y: { ticks: { callback: (v) => kinr(v), maxTicksLimit: 3 } } },
@@ -326,11 +428,15 @@
   }
 
   function renderTab() {
-    $('bwTabs').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.t === rTab));
+    $('bwTabs')
+      .querySelectorAll('button')
+      .forEach((b) => b.classList.toggle('on', b.dataset.t === rTab));
     const el = $('bwTab');
     if (rTab === 'monthly') el.innerHTML = monthlyHtml();
-    else if (rTab === 'breakdown') { el.innerHTML = breakdownHtml(); drawHist(); }
-    else if (rTab === 'trades') el.innerHTML = tradesHtml();
+    else if (rTab === 'breakdown') {
+      el.innerHTML = breakdownHtml();
+      drawHist();
+    } else if (rTab === 'trades') el.innerHTML = tradesHtml();
     else el.innerHTML = skippedHtml();
   }
 
@@ -352,10 +458,17 @@
   }
 
   function bucketTable(title, obj, label) {
-    const keys = Object.keys(obj).map(Number).sort((a, b) => a - b);
+    const keys = Object.keys(obj)
+      .map(Number)
+      .sort((a, b) => a - b);
     const max = Math.max(1, ...keys.map((k) => Math.abs(obj[k].pnl)));
     return `<div class="bd-card"><h4>${title}</h4><table class="grid-tbl bd-tbl"><thead><tr><th></th><th>Trades</th><th>Win %</th><th>P&amp;L</th><th>% profit</th><th>Avg</th><th class="barcol"></th></tr></thead><tbody>
-      ${keys.map((k) => { const b = obj[k]; return `<tr><th>${label(k)}</th><td>${b.n}</td><td>${pct((b.wins / b.n) * 100, 0)}</td><td class="${cls(b.pnl)}">${inrS(b.pnl)}</td><td class="${cls(b.pnl)}">${ofCap(b.pnl)}</td><td class="${cls(b.pnl)}">${inrS(Math.round(b.pnl / b.n))}</td><td class="barcol"><div class="hbar ${b.pnl >= 0 ? 'p' : 'n'}" style="width:${((Math.abs(b.pnl) / max) * 100).toFixed(0)}%"></div></td></tr>`; }).join('')}
+      ${keys
+        .map((k) => {
+          const b = obj[k];
+          return `<tr><th>${label(k)}</th><td>${b.n}</td><td>${pct((b.wins / b.n) * 100, 0)}</td><td class="${cls(b.pnl)}">${inrS(b.pnl)}</td><td class="${cls(b.pnl)}">${ofCap(b.pnl)}</td><td class="${cls(b.pnl)}">${inrS(Math.round(b.pnl / b.n))}</td><td class="barcol"><div class="hbar ${b.pnl >= 0 ? 'p' : 'n'}" style="width:${((Math.abs(b.pnl) / max) * 100).toFixed(0)}%"></div></td></tr>`;
+        })
+        .join('')}
     </tbody></table></div>`;
   }
   function breakdownHtml() {
@@ -364,11 +477,21 @@
     const total = reasons.reduce((n, [, v]) => n + v, 0);
     // how each trade ended (the legs table counts every leg)
     const ends = {};
-    for (const t of run.trades) { const b = (ends[t.reason] ||= { n: 0, pnl: 0, wins: 0 }); b.n++; b.pnl += t.net; if (t.net > 0) b.wins++; }
+    for (const t of run.trades) {
+      const b = (ends[t.reason] ||= { n: 0, pnl: 0, wins: 0 });
+      b.n++;
+      b.pnl += t.net;
+      if (t.net > 0) b.wins++;
+    }
     const endKeys = Object.keys(ends).sort((a, b) => ends[b].n - ends[a].n);
     return `<div class="bd-grid">
       <div class="bd-card"><h4>How the trades ended</h4><table class="grid-tbl bd-tbl"><thead><tr><th></th><th>Trades</th><th>Win %</th><th>P&amp;L</th><th>Avg</th></tr></thead><tbody>
-        ${endKeys.map((k) => { const b = ends[k]; return `<tr><th>${REASON[k] || k}</th><td>${b.n}</td><td>${pct((b.wins / b.n) * 100, 0)}</td><td class="${cls(b.pnl)}">${inrS(Math.round(b.pnl))}</td><td class="${cls(b.pnl)}">${inrS(Math.round(b.pnl / b.n))}</td></tr>`; }).join('')}
+        ${endKeys
+          .map((k) => {
+            const b = ends[k];
+            return `<tr><th>${REASON[k] || k}</th><td>${b.n}</td><td>${pct((b.wins / b.n) * 100, 0)}</td><td class="${cls(b.pnl)}">${inrS(Math.round(b.pnl))}</td><td class="${cls(b.pnl)}">${inrS(Math.round(b.pnl / b.n))}</td></tr>`;
+          })
+          .join('')}
       </tbody></table></div>
       ${bucketTable('By weekday (entry)', s.weekday, (k) => WD[k])}
       <div class="bd-card"><h4>How legs exited</h4><table class="grid-tbl bd-tbl"><tbody>
@@ -387,8 +510,24 @@
     for (const v of net) bins[Math.min(n - 1, Math.floor((v - lo) / w))].c++;
     BT.chart($('bwHist'), {
       type: 'bar',
-      data: { labels: bins.map((b) => kinr(b.a + w / 2)), datasets: [{ data: bins.map((b) => b.c), backgroundColor: bins.map((b) => (b.a + w / 2 >= 0 ? 'rgba(63,182,139,.7)' : 'rgba(240,113,107,.7)')), barPercentage: 1, categoryPercentage: 0.95 }] },
-      options: { plugins: { legend: { display: false }, tooltip: { callbacks: { title: (c) => `${kinr(bins[c[0].dataIndex].a)} to ${kinr(bins[c[0].dataIndex].a + w)}`, label: (c) => `${c.raw} trades` } } }, scales: { x: { grid: { display: false } } } },
+      data: {
+        labels: bins.map((b) => kinr(b.a + w / 2)),
+        datasets: [
+          {
+            data: bins.map((b) => b.c),
+            backgroundColor: bins.map((b) => (b.a + w / 2 >= 0 ? 'rgba(63,182,139,.7)' : 'rgba(240,113,107,.7)')),
+            barPercentage: 1,
+            categoryPercentage: 0.95,
+          },
+        ],
+      },
+      options: {
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { title: (c) => `${kinr(bins[c[0].dataIndex].a)} to ${kinr(bins[c[0].dataIndex].a + w)}`, label: (c) => `${c.raw} trades` } },
+        },
+        scales: { x: { grid: { display: false } } },
+      },
     });
   }
 
@@ -407,18 +546,31 @@
     if (tradeSort === 'best') idx.sort((a, b) => T[b].net - T[a].net);
     if (tradeSort === 'worst') idx.sort((a, b) => T[a].net - T[b].net);
     if (tradeSort === 'recent') idx.reverse();
-    const legTxt = (x) => `<span class="lx ${x.action === 'B' ? 'buy' : 'sell'}" title="${esc(`${x.action === 'B' ? 'Buy' : 'Sell'} ${x.qty} × ${x.strike} ${x.type} (${x.expiry}) · ${x.entryDay} ${x.entryTime} @ ${x.entryPx} → ${x.exitDay} ${x.exitTime} @ ${x.exitPx} · ${REASON[x.reason] || x.reason} · ${inrS(x.pnl)}`)}">${x.action}${x.re ? '↻' : ''}${x.rolled ? '⟳' : ''} ${x.strike}${x.type} ${x.entryPx}→${x.exitPx}${x.reason === 'sl' ? ' <b class="neg">SL</b>' : x.reason === 'tgt' ? ' <b class="pos">TG</b>' : x.reason === 'roll' ? ' <b class="muted">⟳</b>' : ''}</span>`;
-    const filters = [['all', 'All'], ['wins', 'Winners'], ['losses', 'Losers']];
+    const legTxt = (x) =>
+      `<span class="lx ${x.action === 'B' ? 'buy' : 'sell'}" title="${esc(`${x.action === 'B' ? 'Buy' : 'Sell'} ${x.qty} × ${x.strike} ${x.type} (${x.expiry}) · ${x.entryDay} ${x.entryTime} @ ${x.entryPx} → ${x.exitDay} ${x.exitTime} @ ${x.exitPx} · ${REASON[x.reason] || x.reason} · ${inrS(x.pnl)}`)}">${x.action}${x.re ? '↻' : ''}${x.rolled ? '⟳' : ''} ${x.strike}${x.type} ${x.entryPx}→${x.exitPx}${x.reason === 'sl' ? ' <b class="neg">SL</b>' : x.reason === 'tgt' ? ' <b class="pos">TG</b>' : x.reason === 'roll' ? ' <b class="muted">⟳</b>' : ''}</span>`;
+    const filters = [
+      ['all', 'All'],
+      ['wins', 'Winners'],
+      ['losses', 'Losers'],
+    ];
     return `<div class="trade-tools">
         <div class="seg sm" id="bwFilter">${filters.map(([v, l]) => `<button data-f="${v}" class="${tradeFilter === v ? 'on' : ''}">${l}</button>`).join('')}</div>
-        <select id="bwSort">${[['date', 'Oldest first'], ['recent', 'Newest first'], ['best', 'Best first'], ['worst', 'Worst first']].map(([v, l]) => `<option value="${v}" ${tradeSort === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        <select id="bwSort">${[
+          ['date', 'Oldest first'],
+          ['recent', 'Newest first'],
+          ['best', 'Best first'],
+          ['worst', 'Worst first'],
+        ]
+          .map(([v, l]) => `<option value="${v}" ${tradeSort === v ? 'selected' : ''}>${l}</option>`)
+          .join('')}</select>
         <span class="muted small">Click a trade for its minute-by-minute P&amp;L; <b>▶ Replay</b> opens it in the Builder at its entry minute.</span>
       </div>
       <div class="tbl-wrap trades-wrap"><table class="grid-tbl trades-tbl">
         <thead><tr><th>#</th><th>Entry</th><th>Exit</th><th>Expiry</th><th>Nifty</th><th class="l">Legs (entry → exit)</th><th>Max profit</th><th>Max loss</th><th>Exit</th><th>Net P&amp;L</th><th title="Net P&amp;L as a share of the investment">% profit</th><th></th></tr></thead>
-        <tbody>${idx.map((i) => {
-          const t = T[i];
-          return `<tr data-i="${i}"><td class="muted">${i + 1}</td>
+        <tbody>${idx
+          .map((i) => {
+            const t = T[i];
+            return `<tr data-i="${i}"><td class="muted">${i + 1}</td>
             <td>${dayShort(t.entryDay)} <span class="muted">${WD[t.weekday]} ${t.entryTime}</span></td>
             <td>${t.exitDay !== t.entryDay ? dayShort(t.exitDay) + ' ' : ''}<span class="muted">${t.exitTime}</span></td><td>${dayShort(t.ref)}</td>
             <td>${Math.round(t.spotIn)} <span class="${cls(t.spotOut - t.spotIn)}">${t.spotOut != null ? (t.spotOut >= t.spotIn ? '+' : '') + Math.round(t.spotOut - t.spotIn) : ''}</span></td>
@@ -426,7 +578,8 @@
             <td class="pos">${inr(t.maxProfit)}</td><td class="neg">${inr(t.maxLoss)}</td><td class="muted">${REASON[t.reason] || t.reason}</td>
             <td class="${cls(t.net)} b">${inrS(t.net)}</td><td class="${cls(t.net)}">${ofCap(t.net)}</td>
             <td class="replay-cell"><button class="btn-sm ghost" data-replay="${i}" title="Replay this trade in the Builder: same expiry, day, entry minute, strikes and fill prices">▶ Replay</button></td></tr>`;
-        }).join('')}</tbody></table></div>`;
+          })
+          .join('')}</tbody></table></div>`;
   }
 
   const replay = (i) => BTView.replay(run.trades[i], run.strategy, run.opts, i);
@@ -435,18 +588,80 @@
     const get = () => BT.api(`/api/bt/trade?job=${r.jobId}&i=${i}`);
     let d;
     try {
-      d = await get().catch(async () => { // the server no longer has that run (restarted, or many runs since): run it again
+      d = await get().catch(async () => {
+        // the server no longer has that run (restarted, or many runs since): run it again
         r.jobId = (await BT.runJob('/api/bt/bw/detail', r.req)).id;
         return get();
       });
-    } catch (e) { alert(e.message); return; }
+    } catch (e) {
+      alert(e.message);
+      return;
+    }
     BTView.tradeModal(d.trade, d.path, i, r.stats.capital, () => replay(i));
   }
 
   function exportCsv() {
-    const rows = [['trade', 'strategy', 'entry_day', 'entry_time', 'exit_day', 'exit_time', 'expiry', 'spot_in', 'spot_out', 'leg', 'action', 'strike', 'type', 'leg_expiry', 'qty', 'leg_entry', 'entry_px', 'leg_exit', 'exit_px', 'exit_reason', 'leg_pnl', 'leg_costs', 'trade_net', 'investment', 'trade_pct_of_investment']];
+    const rows = [
+      [
+        'trade',
+        'strategy',
+        'entry_day',
+        'entry_time',
+        'exit_day',
+        'exit_time',
+        'expiry',
+        'spot_in',
+        'spot_out',
+        'leg',
+        'action',
+        'strike',
+        'type',
+        'leg_expiry',
+        'qty',
+        'leg_entry',
+        'entry_px',
+        'leg_exit',
+        'exit_px',
+        'exit_reason',
+        'leg_pnl',
+        'leg_costs',
+        'trade_net',
+        'investment',
+        'trade_pct_of_investment',
+      ],
+    ];
     const cap = run.stats.capital;
-    run.trades.forEach((t, i) => t.legs.forEach((x) => rows.push([i + 1, `"${run.strategy.name.replace(/"/g, "'")}"`, t.entryDay, t.entryTime, t.exitDay, t.exitTime, t.ref, t.spotIn, t.spotOut, x.leg + 1, x.action, x.strike, x.type, x.expiry, x.qty, `${x.entryDay} ${x.entryTime}`, x.entryPx, `${x.exitDay} ${x.exitTime}`, x.exitPx, x.reason, x.pnl, x.cost, t.net, cap, cap ? ((t.net / cap) * 100).toFixed(2) : ''])));
+    run.trades.forEach((t, i) =>
+      t.legs.forEach((x) =>
+        rows.push([
+          i + 1,
+          `"${run.strategy.name.replace(/"/g, "'")}"`,
+          t.entryDay,
+          t.entryTime,
+          t.exitDay,
+          t.exitTime,
+          t.ref,
+          t.spotIn,
+          t.spotOut,
+          x.leg + 1,
+          x.action,
+          x.strike,
+          x.type,
+          x.expiry,
+          x.qty,
+          `${x.entryDay} ${x.entryTime}`,
+          x.entryPx,
+          `${x.exitDay} ${x.exitTime}`,
+          x.exitPx,
+          x.reason,
+          x.pnl,
+          x.cost,
+          t.net,
+          cap,
+          cap ? ((t.net / cap) * 100).toFixed(2) : '',
+        ]),
+      ),
+    );
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([rows.map((r) => r.join(',')).join('\n')], { type: 'text/csv' }));
     a.download = `biweekly_${runTag.replace(/[^\w]+/g, '_')}_${run.stats.from}_${run.stats.to}.csv`;
@@ -465,12 +680,21 @@
   });
   $('bwResults').addEventListener('click', (e) => {
     const t = e.target;
-    if (t.dataset.top) { tab = t.dataset.top; return render(); }
+    if (t.dataset.top) {
+      tab = t.dataset.top;
+      return render();
+    }
     if (t.id === 'bwApply') return applyCfg();
     if (t.id === 'bwCsv') return exportCsv();
     if (t.id === 'bwEdit') return BT.emit('open-backtest', { strategy: BT.clone(run.strategy), run: false });
-    if (t.dataset.t) { rTab = t.dataset.t; return renderTab(); }
-    if (t.dataset.f) { tradeFilter = t.dataset.f; return renderTab(); }
+    if (t.dataset.t) {
+      rTab = t.dataset.t;
+      return renderTab();
+    }
+    if (t.dataset.f) {
+      tradeFilter = t.dataset.f;
+      return renderTab();
+    }
     if (t.dataset.replay != null) return replay(Number(t.dataset.replay));
     const tr = t.closest('tr[data-i]');
     if (tr) return openTrade(Number(tr.dataset.i));
@@ -481,18 +705,30 @@
       return render();
     }
     const v = t.closest('[data-var]');
-    if (v) { // a variation: open it in Details
+    if (v) {
+      // a variation: open it in Details
       sel[fam] = v.dataset.var;
       tab = 'details';
       return render();
     }
   });
-  $('bwStrikes').addEventListener('click', (e) => { if (e.target.dataset.sk) setStrikes(e.target.dataset.sk === 'pts' ? { by: 'pts', value: 100 } : null); });
+  $('bwStrikes').addEventListener('click', (e) => {
+    if (e.target.dataset.sk) setStrikes(e.target.dataset.sk === 'pts' ? { by: 'pts', value: 100 } : null);
+  });
   $('bwStrikes').addEventListener('change', (e) => {
     if (e.target.id === 'bwPts') setStrikes({ by: 'pts', value: Math.max(0, Number(e.target.value) || 0) });
-    if (e.target.id === 'bwOverlap') { overlap = e.target.checked; BT.store.set('bw-overlap', overlap); renderStrikes(); }
+    if (e.target.id === 'bwOverlap') {
+      overlap = e.target.checked;
+      BT.store.set('bw-overlap', overlap);
+      renderStrikes();
+    }
   });
-  $('bwResults').addEventListener('change', (e) => { if (e.target.id === 'bwSort') { tradeSort = e.target.value; renderTab(); } });
+  $('bwResults').addEventListener('change', (e) => {
+    if (e.target.id === 'bwSort') {
+      tradeSort = e.target.value;
+      renderTab();
+    }
+  });
 
   // For the Backtest screen's Summary: the same top 5 of the hedge and of its reverse, from the same saved result.
   window.BWView = {
@@ -500,9 +736,12 @@
     topHtml() {
       if (!st) return '';
       const foot = `<div class="muted small pad">Backtested on the Bi-weekly screen with its own settings, not those in the bar above: ${dayLabel(st.opts.from)} → ${dayLabel(st.opts.to)} · capital ${st.opts.capital ? inr(st.opts.capital) : 'est. margin'} · ${strikeTxt(st.strikes)} · ${overlapTxt(st.overlap)} · backtested ${when(st.at)}.</div>`;
-      return ['hedge', 'rev'].map((id) => topPanel(family(id), `${family(id).rows.length} variations backtested · click a row to open it on the Bi-weekly screen`, foot)).join('');
+      return ['hedge', 'rev']
+        .map((id) => topPanel(family(id), `${family(id).rows.length} variations backtested · click a row to open it on the Bi-weekly screen`, foot))
+        .join('');
     },
-    open(id, key) { // a variation in Details
+    open(id, key) {
+      // a variation in Details
       fam = id;
       BT.store.set('bw-fam', fam);
       sel[id] = key;
@@ -512,6 +751,8 @@
     },
   };
 
-  window.addEventListener('viewchange', (e) => { if (e.detail === 'bw') init(); });
+  window.addEventListener('viewchange', (e) => {
+    if (e.detail === 'bw') init();
+  });
   if (window.app.state.view === 'bw') init();
 })();

@@ -23,13 +23,31 @@ function normCondition(c) {
       // A type that has since been removed never fires (dropping it would turn the strategy into "enter every minute").
       if (!A.BY_ID.has(c.type)) return { kind, type: String(c.type), params: {}, side: 'any', dir: 'any' };
       const t = A.BY_ID.get(c.type);
-      return { kind, type: c.type, params: A.params(c.type, c.params), side: ['CE', 'PE'].includes(c.side) ? c.side : 'any', dir: t.dirs.includes(c.dir) ? c.dir : 'any' };
+      return {
+        kind,
+        type: c.type,
+        params: A.params(c.type, c.params),
+        side: ['CE', 'PE'].includes(c.side) ? c.side : 'any',
+        dir: t.dirs.includes(c.dir) ? c.dir : 'any',
+      };
     }
-    case 'sr-near': return { kind, cls, side: ['support', 'resistance'].includes(c.side) ? c.side : 'either', within: pos(c.within, 30) };
-    case 'sr-break': return { kind, cls, dir: ['up', 'down'].includes(c.dir) ? c.dir : 'either', buffer: pos(c.buffer, 5) };
-    case 'move': return { kind, from: c.from === 'prevClose' ? 'prevClose' : 'open', dir: ['up', 'down'].includes(c.dir) ? c.dir : 'abs', op: c.op === 'lte' ? 'lte' : 'gte', unit: c.unit === 'pct' ? 'pct' : 'pts', value: pos(c.value, 50) };
-    case 'range': return { kind, op: c.op === 'lte' ? 'lte' : 'gte', value: pos(c.value, 100) };
-    default: return null;
+    case 'sr-near':
+      return { kind, cls, side: ['support', 'resistance'].includes(c.side) ? c.side : 'either', within: pos(c.within, 30) };
+    case 'sr-break':
+      return { kind, cls, dir: ['up', 'down'].includes(c.dir) ? c.dir : 'either', buffer: pos(c.buffer, 5) };
+    case 'move':
+      return {
+        kind,
+        from: c.from === 'prevClose' ? 'prevClose' : 'open',
+        dir: ['up', 'down'].includes(c.dir) ? c.dir : 'abs',
+        op: c.op === 'lte' ? 'lte' : 'gte',
+        unit: c.unit === 'pct' ? 'pct' : 'pts',
+        value: pos(c.value, 50),
+      };
+    case 'range':
+      return { kind, op: c.op === 'lte' ? 'lte' : 'gte', value: pos(c.value, 100) };
+    default:
+      return null;
   }
 }
 
@@ -78,8 +96,10 @@ function one(c, env) {
       const p = env.prevSpot;
       if (p == null) return { ok: false, note: 'no previous minute' };
       for (const l of ofClass(env.levels, c.cls)) {
-        if ((c.dir === 'up' || c.dir === 'either') && p < l.price + c.buffer && S >= l.price + c.buffer) return { ok: true, level: { ...l, side: 'resistance' }, note: `broke above ${l.cls} ${l.price}` };
-        if ((c.dir === 'down' || c.dir === 'either') && p > l.price - c.buffer && S <= l.price - c.buffer) return { ok: true, level: { ...l, side: 'support' }, note: `broke below ${l.cls} ${l.price}` };
+        if ((c.dir === 'up' || c.dir === 'either') && p < l.price + c.buffer && S >= l.price + c.buffer)
+          return { ok: true, level: { ...l, side: 'resistance' }, note: `broke above ${l.cls} ${l.price}` };
+        if ((c.dir === 'down' || c.dir === 'either') && p > l.price - c.buffer && S <= l.price - c.buffer)
+          return { ok: true, level: { ...l, side: 'support' }, note: `broke below ${l.cls} ${l.price}` };
       }
       return { ok: false, note: 'no level broken this minute' };
     }
@@ -97,7 +117,8 @@ function one(c, env) {
       const rg = env.high - env.low;
       return { ok: c.op === 'gte' ? rg >= c.value : rg <= c.value, note: `range ${r1(rg)} pts` };
     }
-    default: return { ok: false, note: 'unknown condition' };
+    default:
+      return { ok: false, note: 'unknown condition' };
   }
 }
 

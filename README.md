@@ -30,7 +30,7 @@ Pick a group in the top bar; its screens are in the row below. A group reopens o
 | | **Pulse** | What the market is doing, in plain language |
 | | **Book** | Order book: bid / ask queues and how Nifty reacted |
 | | **Signal test** | Test the signals on recorded days: hit rate per kind of signal |
-| **Strategies** | **Arbitrage** | Option arbitrage and fair-value deviations: live scanner, history scan, one-click strategy |
+| **Strategies** | **Arbitrage** | Pricing bounds broken at the bid / ask and fair-value deviations: live scanner with rejected signals and data health, history scans on candles and on recorded quotes |
 | | **Strategies** | Ready-made and saved strategies as cards (**+ New strategy**, edit / reset built-ins); **Deploy live** on an upcoming expiry |
 | | **Backtest** | Build or load a strategy, run it over a period, study the results |
 | | **Bi-weekly** | The bi-weekly hedge, its reverse and the two combined: every variation backtested over the whole history |
@@ -224,7 +224,7 @@ Everything for a day is in `events/<date>/`:
 
 | File | Contents |
 | --- | --- |
-| `tape-HHMMSS.jsonl.gz` | **The market tape**: one compressed line per second for the nearest expiry, holding Nifty spot plus, for CE and PE at ATM ±15 strikes, LTP, volume and OI. With the tick feed it also holds buyer- and seller-initiated volume, best bid and ask, and the total buy and sell queue. Each server start begins a new part. About 15 MB per trading day. Everything below can be recomputed from it. |
+| `tape-HHMMSS.jsonl.gz` | **The market tape**: one compressed line per second for the nearest expiry, holding Nifty spot plus, for CE and PE at ATM ±15 strikes, LTP, volume and OI. With the tick feed it also holds buyer- and seller-initiated volume, best bid and ask with the quantity at each, and the total buy and sell queue. Each server start begins a new part. About 15 MB per trading day. Everything below can be recomputed from it. |
 | `pulse.jsonl` | Market Pulse summary once a minute (headline, bias, trend, OI activity totals, levels, straddle, IV, flow) |
 | `predictions.csv` / `.jsonl` | Each Volume Flow prediction with its outcome (written when it finishes) |
 | `events.csv` / `.jsonl` | Each spike signal with the before/after summary |
@@ -415,22 +415,104 @@ Each card shows a payoff sketch and three buttons:
 
 ## Arbitrage (anomaly scanner)
 
-The screen runs only **arbitrages that can actually be traded**: structures on Nifty's European, cash-settled options that cannot lose if held to expiry (before brokerage and taxes). They run on the nearest weekly expiry, live and in history, nearest the money first.
+A research screen. It looks for prices on the Nifty chain that break a pricing bound, checks whether they could really have been traded, and works out what is left after costs. **It never places an order.**
 
-| Anomaly | Fires when (defaults) | Suggested trade |
+Two kinds of signal are kept apart everywhere (live cards, log, history scan):
+
+- **Arbitrage:** a bound that follows from the payoff alone. On Nifty's European, cash-settled options the suggested trade cannot lose if every leg is filled at the quoted prices and held to expiry, before brokerage and taxes.
+- **Relative value:** a price out of line with the rest of the chain. A statistical edge, not a locked-in profit.
+
+| Type | Bound tested | Fires when (defaults) | Suggested trade |
+| --- | --- | --- | --- |
+| Box spread (arbitrage) | `C(K1) − C(K2) + P(K2) − P(K1) = (K2 − K1)·e^(−rT)`: put-call parity at two strikes | a box up to 6 strikes wide can be bought ≥ 2 pts below its discounted width, or sold ≥ 2 pts above its full width | buy / sell the box |
+| Butterfly (arbitrage) | `C(K − w) − 2·C(K) + C(K + w) ≥ 0`, same for puts: prices are convex in the strike | a 1 − 2 + 1 fly (equal wings, 1 strike by default) pays a credit ≥ 0.5 pts | buy the fly |
+| Broken-wing butterfly (arbitrage) | `(K3 − K2)·C(K1) − (K3 − K1)·C(K2) + (K2 − K1)·C(K3) ≥ 0`, same for puts: convexity with unequal spacing | the strike-weighted fly (1- and 2-strike wings by default: buy 2, sell 3, buy 1) pays a credit ≥ 0.5 pts | buy the weighted fly |
+| Vertical spread (arbitrage, from the Builder) | `0 ≤ C(K1) − C(K2) ≤ K2 − K1`, same for puts: monotonic in the strike, never worth more than the width | a further-OTM option costs more than a nearer one (**free-credit**), or two strikes are priced further apart than their gap (**over-width**), by ≥ 0.5 pts | the riskless vertical |
+| Calendar, calls (arbitrage) | `C(K, T2) ≥ C(K, T1)` for the same strike | the next expiry's call can be bought ≥ 0.5 pts below what this expiry's call sells for | sell this expiry, buy the next |
+| Fair value deviation (relative value) | fair = Black-76 on the chain's own forward at the volatility of the neighbouring strikes (a quadratic through up to 3 strikes either side, leaving the strike itself out) | an option can be sold above / bought below fair value by ≥ 2 pts and ≥ 5 % | rich: sell it, buy the next strike out; cheap: buy it, sell the next strike out; exit when it is back at fair value |
+
+Each type's formula, assumptions and what to watch for are listed in **⚙ Tune**; every card and every history row shows the numbers that went into the check.
+
+**Conventions, all on the cautious side.** Money received later is discounted (6.5 % a year over calendar days); money owed later is not, because a credit earns no interest in a trading account. So a sold box is tested against its full width and a vertical against its undiscounted width. Volatility runs on trading time (252 sessions of 375 minutes).
+
+**What is not scanned, and why**
+
+- *Conversions, reversals and synthetic-versus-futures:* they need a futures leg, the app has no futures feed, and only the monthly option expiry settles with the future. Parity is tested across strikes instead: that is the box, and the **Put-call parity by strike** panel shows the forward each strike's synthetic buys and sells at.
+- *Call and put implied volatility at one strike differing:* with both priced off one forward this is the same statement as a parity break at that strike, so the box covers it.
+- *Skew, implied versus realised volatility, term structure:* shown as context (Skew RR, IV / RV, forward and basis) but not as signals. They have no payoff bound; they belong in a backtested strategy.
+- *Iron condors and butterflies, ratio spreads, expected-value screens:* defined risk is not arbitrage. Build and test those in **Backtest** and the **Builder**.
+- *Order-book imbalance:* the **Book** screen.
+- *Other expiries:* the scanner works on the nearest weekly expiry (and the next one for the calendar).
+
+**Quality gates (one set for every type, under ⚙ Tune).** A mispricing counts only if it can be traded:
+
+| Gate | Default | Applies |
 | --- | --- | --- |
-| Vertical spread arbitrage (from the Builder) | a further-OTM option costs more than a nearer one (**free-credit**), or two strikes are priced further apart than their gap (**over-width**), by ≥ 0.5 pts | the riskless vertical |
-| Butterfly arbitrage | a long 1 − 2 + 1 fly (equal wings, 1 strike by default) pays a credit ≥ 0.5 pts | buy the fly |
-| Box spread arbitrage | a box between two strikes (up to 6 apart) can be bought for ≥ 2 pts less, or sold for ≥ 2 pts more, than its discounted width | buy / sell the box |
-| Calendar arbitrage (calls) | the next expiry's call can be bought for ≥ 0.5 pts less than the same strike's call on this expiry sells for | sell this expiry, buy the next |
-| Fair value deviation (a relative-value signal, **not** risk-free) | an option can be sold above / bought below its fair value by ≥ 2 pts and ≥ 5 %. Fair value = Black-76 on the chain's forward at the volatility of the neighbouring strikes | rich: sell it, buy the next strike out; cheap: buy it, sell the next strike out; exit when it is back at fair value |
+| Two-sided, uncrossed quote on every leg | always | live |
+| Fillable ≥ | 1 lot of the whole structure at the best bid / ask (a butterfly body needs twice that) | live |
+| Spread ≤ | 3 pts, or ≤ 1 % of the premium (either is enough) | live |
+| Volume ≥ / Open interest ≥ | 500 / 5,000 lots | live |
+| Quote age ≤ | 15 s since the quote was last refreshed | live |
+| Seen for ≥ | 5 s: the opportunity must still be there on the next scan | live scanner |
+| Traded within | 1 minute | history (candles) |
+| In the money ≤ | 300 pts: candles carry no quotes, and far in the money a last trade is often one lot well away from the quote | history (candles) |
+| Min premium | ₹0.05 | all |
 
-**Only what can be filled is reported.** Live, every leg is priced where it would really trade (sells at the bid, buys at the ask) and the book must hold at least *Fillable ≥ N lots* of the whole structure on that side (a butterfly body needs twice that); a leg with no bid, no ask or too little quantity drops the hit, and each hit shows how many lots the book can fill. History has no order book, so every leg must have traded within the last minute (*Traded within*) and is priced at its last trade. Put-call parity / conversions and options below intrinsic value are left out on purpose: locking those in needs a futures or index leg.
+The defaults come from a recorded session (8 Oct 2026): spreads were about 0.3 pts (0.25 % of premium) at the money, under 1 pt up to 300 points in the money, and 3 pts with a tail above 10 beyond 600. They are starting points; change them to suit the day.
 
-The bar on top holds the types as chips, numbered by how easy each is to trade without slippage (1 box spread, 2 fair value deviation, 3 butterfly, 4 vertical spread, 5 calendar): click a chip to switch a type on or off. **Strictness** (Strict / Balanced / Loose) scales the minimum edge and the quantity that must be on the book for every type; **⚙ Tune** opens every threshold and the cooldown (one log entry per anomaly/strike per N minutes). Changes apply to the live scanner as you make them (`bt-data/anomaly-config.json`).
+The bar on top holds the types as chips, numbered by how easy each is to trade without slippage (1 box, 2 fair value deviation, 3 butterfly, 4 broken-wing butterfly, 5 vertical, 6 calendar): click a chip to switch a type on or off. **Strictness** (Strict / Balanced / Loose) scales the minimum edge and the lots that must be on the book; **Net ≥ ₹** hides live opportunities that leave less than that after costs; **⚙ Tune** opens every threshold, the quality gates and each type's cooldown (one log entry per opportunity and strike per N minutes). Changes apply to the live scanner as you make them (`bt-data/anomaly-config.json`).
 
-- **Live:** the server scans every 5 s during market hours (also with the page closed), with summary metrics (forward, basis, ATM IV), one card per opportunity and today's log (`bt-data/anomaly-log/<date>.jsonl`). A card shows the legs as an order ticket (bid or ask and the lots waiting there), the edge before costs, and what is left **after costs** for 1 lot and for all the lots the book fills — the backtester's charges (₹20 an order, STT, exchange fees, GST, stamp duty; an arbitrage is held to expiry, so entry orders only plus the exercise STT on long legs that are in the money; a fair-value trade pays entry and exit). Its badge says *Profitable after costs*, *Profitable from N lots* (the fixed brokerage needs size), *Costs exceed the edge* or *Not executable at bid / ask*; cards that pay come first. **🔔 Alerts** beeps and sends a desktop notification when a new opportunity that pays after costs appears. **Deploy ▸** resolves the suggested trade on the live chain; **Backtest ▸** opens it as a signal strategy.
-- **History scan:** pick a period/expiries in the shared bar and press **Scan history**. **■ Stop** ends a running scan at any point and keeps what it has found so far. The last scan is saved (`bt-data/anomaly-scan.json`) and shown again when the screen is opened, until you run a new one. You get hits per type, days, directions, time-of-day histogram, and the suggested trade's average points and win rate after 5 / 15 / 30 / 60 minutes and to the end of the window (entered at the next minute's open, before costs, no stops), plus every occurrence with its P&L in ₹ per lot to the end of the window, before and after costs (entry and exit), and a **▶ Replay** button that opens it in the Builder at its entry minute with the same strikes and prices. **Backtest as strategy** turns a type into a full signal strategy with stops, costs and re-entries.
+**Costs** come from one dated schedule (`lib/costs.js`), used by the live cards and both history scans: ₹20 an order, STT on option sales, exchange and SEBI fees, 18 % GST on those, stamp duty on buys, and STT on bought options that settle in the money.
+
+| From | STT on sales | STT on exercise | NSE transaction charge |
+| --- | --- | --- | --- |
+| 1 Apr 2023 | 0.0625 % | 0.125 % | 0.05 % |
+| 1 Oct 2024 | 0.10 % | 0.125 % | 0.03503 % |
+| 1 Apr 2026 | 0.15 % | 0.15 % | 0.03503 % |
+
+Check them against NSE's charges page and your contract note after every budget. The Backtest screens still use their own fixed rates.
+
+### Live
+
+The server scans every 5 s during market hours, also with the page closed.
+
+- **Arbitrage candidates** and **Relative value** are separate lists. A card shows the legs as an order ticket (bid or ask, lots waiting there, spread, age of the quote), the edge, and what is left **after costs** for 1 lot and for all the lots the book fills. For an arbitrage it also shows what is left if Nifty settles 3 % away, because the exercise STT grows as the bought legs go deeper in the money.
+- Badges: *Confirming* (seen, but not yet for the "Seen for" time), *Profitable after costs*, *Profitable from N lots* (the fixed brokerage needs size), *Costs exceed the edge*, *Not executable at bid / ask*. Only confirmed opportunities are logged and alerted.
+- **Scanner health:** age of the chain, tick feed up or down, how many contracts carry a two-sided quote, crossed and stale quotes, the spread near the money, the age of the next expiry's chain, how long the scan took.
+- **Rejected signals:** structures that looked like an arbitrage at quote mids or last-traded prices but failed a check, with the reason (not there at the bid / ask, no quote, crossed, spread, stale, depth, volume, open interest).
+- **Put-call parity by strike:** see above.
+- **Today's log** (`bt-data/anomaly-log/<date>.jsonl`), **🔔 Alerts** (a beep and a desktop notification when a new opportunity that pays appears), **Deploy ▸** (resolves the trade on the live chain as a paper position) and **Backtest ▸** (opens it as a signal strategy).
+
+### History scan
+
+Pick the prices to scan on, press **Scan history**; **■ Stop** ends a scan and keeps what it has found. The last scan of each kind is saved (`bt-data/anomaly-scan.json`, `anomaly-scan-quotes.json`) and shown again when the screen opens. Costs are worked out for the **Size** you set (10 lots by default).
+
+**1-minute candles** (about two years, from the Data screen). These are last-traded prices: no bid / ask, no depth, no volume. The closes of two contracts are trades a few seconds apart, so most "violations" between them are timing or the two sides of a spread. Each arbitrage signal is therefore taken through checks of rising strength:
+
+| Check | Means |
+| --- | --- |
+| Signal | the bound is broken at the minute's closing prices |
+| Robust | and at the worst prices traded in that minute: buys at each leg's high, sells at its low |
+| Fillable | and again at the worst prices of the next minute |
+| Pays | and what it locks in there exceeds the costs |
+
+A minute with a single traded price does not say which side traded, so the other side is taken a full permitted spread away. Fillable signals are also settled at the expiry (the average of Nifty's last 30 one-minute closes stands in for the exchange's settlement price). What a signal that is not fillable made at expiry is market direction, so it is not reported. The table also shows the average edge at the next minute's open, and the same counts for the latest 30 % of the sessions and for expiry days.
+
+**Recorded quotes.** The app records the nearest expiry's best bid and ask every second while it runs during market hours (the tape under `events/`, see *Recordings*); from this version on also the quantity at each. The same detectors run on those recordings, every leg at the side it would trade on:
+
+| Check | Means |
+| --- | --- |
+| Signal | the bound is broken at the bid / ask with every quality gate passed |
+| Fillable | and stays broken on every snapshot for the **Act after** seconds (3 by default), priced at the quotes at the end of them |
+| Pays | and what it locks in there exceeds the costs |
+
+plus how long each one lasted. A snapshot joins quotes that arrived a few hundred milliseconds apart, so a violation gone on the next snapshot was usually the quotes being out of step. This is the strongest evidence the app has, but it covers only the days it was running, and older recordings carry no quantities.
+
+Fair value deviations are measured as a trade: entered at the next minute's open (candles) or at the bid / ask after the delay (quotes), then marked after 5 / 15 / 30 / 60 minutes and at the end, with entry and exit costs.
+
+Every occurrence has a **▶ Replay** button (expired expiries) that opens it in the Builder at its entry minute with the same strikes and prices. **Backtest as strategy** turns a type into a full signal strategy with stops, costs and re-entries.
+
+**Read the results with these limits in mind:** candles cannot prove a trade was possible; recordings cannot say how fast your own orders would fill; no scan knows the margin a sold structure blocks; and exchange holidays are not known to the app.
 
 ## Strategy Builder (Builder screen)
 
@@ -516,6 +598,32 @@ This is a different test from the **Backtest** screen under Strategies: that one
 
 Server errors (Upstox failures, crashes, file-writing problems) and errors from the browser page are appended to `logs/errors.log`, one line each with IST time. Repeats of the same error are written at most once a minute. If the page says the server is running older code, restart it with Ctrl+C and then `npm start`.
 
+## Checks and CI pipelines
+
+| Command | What it does |
+| --- | --- |
+| `npm run lint` | ESLint: undefined names, unused code, unreachable branches (`eslint.config.js`) |
+| `npm run format` | Prettier rewrites the JavaScript in the project's layout (`.prettierrc.json`; `.prettierignore` lists what it leaves alone). `npm run format:check` only reports the files that differ |
+| `npm test` | Unit tests (`test/`) |
+| `npm run test:ci` | The unit tests with coverage; writes `reports/junit.xml` and `reports/coverage.lcov` |
+| `npm run test:e2e` | End-to-end tests (`e2e/`): starts the app in demo mode on port 3210 and drives it in a browser with Playwright |
+| `npm run check` | Lint, format check and unit tests in one go, before a commit |
+
+The end-to-end tests need a browser. `npx playwright install chromium` downloads Playwright's own once; or set the environment variable `PW_CHANNEL` to `chrome` or `msedge` to use the one already installed. They only look and navigate: they never run a backtest, a scan or a download, and the demo server's recordings go to a temp folder. `E2E_PORT` changes the port.
+
+The same checks run in **GitHub Actions** (`.github/workflows/ci.yml`) and in **Azure Pipelines** (`azure-pipelines.yml`) on every push to `main`, on every pull request and once a week. Both call the npm scripts above, so a check is changed in one place.
+
+| Job | Runs |
+| --- | --- |
+| Lint and format | ESLint and the Prettier check |
+| Unit tests | Linux on Node 22 and 24, Windows on Node 22. Test results and coverage are published; coverage is reported, not enforced |
+| End-to-end tests | Playwright on Chromium against the demo server; the HTML report is kept with the run |
+| Security checks | `npm audit` (high and critical advisories in the packages the app runs on), `npm audit signatures`, and gitleaks over the whole git history (`ci/gitleaks.sh`) |
+
+- **GitHub:** the workflow runs once the file is pushed; nothing to configure. To stop a pull request with a failed run from being merged, require the **CI passed** check in the branch protection rule for `main`.
+- **Azure DevOps:** Pipelines → New pipeline → pick where the code is (GitHub or Azure Repos) → *Existing Azure Pipelines YAML file* → `/azure-pipelines.yml`. It uses Microsoft-hosted agents (a new organisation has to enable the free tier of parallel jobs first); for your own agent, change `pool` in the file. With the code in Azure Repos, pull requests are checked by adding the pipeline as a *Build validation* policy on `main`.
+- A secret reported by gitleaks that is not one: add the fingerprint printed with the finding to a `.gitleaksignore` file.
+
 ## Files
 
 | Path | What |
@@ -523,6 +631,7 @@ Server errors (Upstox failures, crashes, file-writing problems) and errors from 
 | `server.js` | HTTP server, Upstox login, live chain, the contract list and REST chains everything else prices from |
 | `lib/upstox.js` | The one Upstox REST client and rate limiter (live calls and historical downloads share the limits); option-chain parser |
 | `lib/pricing.js` | Normal CDF, Black-Scholes-Merton, Black-76: used by the server and, as `/lib/pricing.js`, by the page |
+| `lib/costs.js` | Brokerage and taxes on option trades by date: used by the Arbitrage screen's history scans and, as `/lib/costs.js`, by its page |
 | `lib/time.js`, `lib/env.js` | IST dates and market hours; `.env` loader |
 | `feed.js`, `tape.js` | Tick feed (WebSocket); the all-day market tape |
 | `signals.js`, `sigstats.js`, `signal-backtest.js` | Spike signals and recordings; their track record; the signal backtest (also a command) |
@@ -536,13 +645,14 @@ Server errors (Upstox failures, crashes, file-writing problems) and errors from 
 | `bt/library.js` | Ready-made strategies |
 | `bt/index.js` | Backtest API: jobs, compare, scans, saved/edited strategies, live deploy, levels, Builder data |
 | `bt/levels.js` | Major / minor support and resistance |
-| `bt/anomalies.js` | The anomaly detectors, trading-time IV, suggested trades |
+| `bt/anomalies.js` | The scanners (no-arbitrage bounds and fair value), their quality gates and rejected signals, trading-time IV, suggested trades |
 | `bt/histchain.js` | Rebuilds a past chain at any minute from cached candles |
-| `bt/scan.js` | History scan with forward outcomes |
+| `bt/scan.js` | History scan on 1-minute candles: each signal checked against the worst prices of its minute and the next, settled at expiry |
+| `bt/tapescan.js` | History scan on the recorded bid and ask: each signal followed second by second |
 | `bt/conditions.js` | Signal entry conditions (anomaly, S/R, move, range) |
 | `bt/biweekly.js`, `public/bw-view.js` | The Bi-weekly screen: variations of the hedge, of its reverse, and of the two as one position |
 | `bt/research.js` | Online adjustment research (Claude + web search) |
-| `anomaly-live.js` | Live anomaly scanner and daily log |
+| `anomaly-live.js` | Live scanner: opportunities, rejected signals, scanner health, parity by strike, daily log |
 | `public/app.js` | The page: screens and groups, option chain, signals pane, volume surge, support / resistance |
 | `public/chain-chart.js` | Nifty candle chart (Chain, Pulse, and its own window `chart.html`) |
 | `public/charts.js`, `flow-view.js`, `pulse-view.js`, `book-view.js`, `signals-backtest.js` | The Surge, Flow, Pulse, Book and Signal test screens |
@@ -551,7 +661,10 @@ Server errors (Upstox failures, crashes, file-writing problems) and errors from 
 | `public/sb-view.js`, `public/sb-adjust.js` | Strategy Builder and its adjustment rule book |
 | `public/bt-*.js`, `cmp-view.js`, `lib-view.js`, `data-view.js`, `payoff.js` | The backtest screens |
 | `public/styles.css`, `live.css`, `hedge.css`, `bt.css`, `themes.css` | Styles: base and chain, live screens, hedge, strategy screens (and shared components), colour themes |
-| `test/` | Tests (`npm test`) |
+| `test/` | Unit tests (`npm test`) |
+| `e2e/`, `playwright.config.js` | End-to-end tests of the page in demo mode (`npm run test:e2e`) |
+| `.github/workflows/ci.yml`, `azure-pipelines.yml`, `ci/` | The CI pipelines for GitHub Actions and Azure Pipelines, and the scripts they share |
+| `eslint.config.js`, `.prettierrc.json`, `.prettierignore`, `.gitattributes` | Lint rules, code layout, and LF line endings on every platform |
 
 Recordings go to `events/` (`events-demo/` in demo mode), downloaded history to `bt-cache/`, saved strategies, results and trades to `bt-data/`, hedge betas, history and saved structures to `hedge-cache/`, replays to `replays/`.
 

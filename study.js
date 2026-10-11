@@ -13,15 +13,28 @@ const NEAR = 5; // strikes either side of ATM for book / flow readings
 function study(dir, day) {
   const E = readTape(dir, day);
   if (!E.length) return null;
-  const idxAt = (t) => { let lo = 0, hi = E.length - 1; while (lo < hi) { const m = (lo + hi) >> 1; if (E[m].t >= t) hi = m; else lo = m + 1; } return lo; };
+  const idxAt = (t) => {
+    let lo = 0,
+      hi = E.length - 1;
+    while (lo < hi) {
+      const m = (lo + hi) >> 1;
+      if (E[m].t >= t) hi = m;
+      else lo = m + 1;
+    }
+    return lo;
+  };
   const near = (e) => {
-    const ks = Object.keys(e.d).map(Number).sort((a, b) => a - b);
+    const ks = Object.keys(e.d)
+      .map(Number)
+      .sort((a, b) => a - b);
     const atm = ks.reduce((b, k) => (Math.abs(k - e.spot) < Math.abs(b - e.spot) ? k : b), ks[0]);
     const i = ks.indexOf(atm);
     return ks.slice(Math.max(0, i - NEAR), i + NEAR + 1);
   };
   const bookShare = (e) => {
-    let bull = 0, bear = 0, n = 0;
+    let bull = 0,
+      bear = 0,
+      n = 0;
     for (const k of near(e)) {
       const v = e.d[k];
       if (!v || v.length < 18) continue;
@@ -48,18 +61,26 @@ function study(dir, day) {
     const trend = Math.abs(tr) >= 10 ? Math.sign(tr) : 0;
 
     // aggressor flow and premium-direction flow over the last minute
-    let aBull = 0, aBear = 0, pBull = 0, pBear = 0, hasAggr = false;
+    let aBull = 0,
+      aBear = 0,
+      pBull = 0,
+      pBear = 0,
+      hasAggr = false;
     for (const k of near(e)) {
-      const a = m1.d[k], b = e.d[k];
+      const a = m1.d[k],
+        b = e.d[k];
       if (!a || !b) continue;
-      const dce = Math.max(0, b[1] - a[1]), dpe = Math.max(0, b[4] - a[4]);
+      const dce = Math.max(0, b[1] - a[1]),
+        dpe = Math.max(0, b[4] - a[4]);
       if (a.length >= 10 && b.length >= 10) {
         hasAggr = true;
         aBull += Math.max(0, b[6] - a[6]) + Math.max(0, b[9] - a[9]);
         aBear += Math.max(0, b[8] - a[8]) + Math.max(0, b[7] - a[7]);
       }
-      if (b[0] > a[0]) pBull += dce; else if (b[0] < a[0]) pBear += dce;
-      if (b[3] > a[3]) pBear += dpe; else if (b[3] < a[3]) pBull += dpe;
+      if (b[0] > a[0]) pBull += dce;
+      else if (b[0] < a[0]) pBear += dce;
+      if (b[3] > a[3]) pBear += dpe;
+      else if (b[3] < a[3]) pBull += dpe;
     }
     const ratio = (x, y) => (x + y ? (x - y) / (x + y) : 0);
     const aggr = hasAggr ? ratio(aBull, aBear) : null;
@@ -71,13 +92,18 @@ function study(dir, day) {
     let bAvg = null;
     if (bNow != null) {
       const hist = [];
-      for (let s = t - 30 * MIN; s < t - MIN; s += MIN) { const x = bookShare(E[idxAt(s)]); if (x != null) hist.push(x); }
+      for (let s = t - 30 * MIN; s < t - MIN; s += MIN) {
+        const x = bookShare(E[idxAt(s)]);
+        if (x != null) hist.push(x);
+      }
       if (hist.length >= 10) bAvg = hist.reduce((a, b) => a + b, 0) / hist.length;
     }
     const sgn = (v, th) => (v == null ? null : Math.abs(v) >= th ? Math.sign(v) : 0);
 
     rows.push({
-      t, out5, out15,
+      t,
+      out5,
+      out15,
       trend,
       aggr: sgn(aggr, 0.2),
       prem: sgn(prem, 0.2),
@@ -98,10 +124,16 @@ function score(rows, get, horizon) {
 if (require.main === module) {
   const args = process.argv.slice(2);
   const day = args.find((a) => /^\d{4}-\d{2}-\d{2}$/.test(a));
-  if (!day) { console.log('Usage: node study.js YYYY-MM-DD [--demo]'); process.exit(1); }
+  if (!day) {
+    console.log('Usage: node study.js YYYY-MM-DD [--demo]');
+    process.exit(1);
+  }
   const dir = path.join(__dirname, args.includes('--demo') ? 'events-demo' : 'events');
   const res = study(dir, day);
-  if (!res) { console.log(`No tape for ${day}`); process.exit(1); }
+  if (!res) {
+    console.log(`No tape for ${day}`);
+    process.exit(1);
+  }
   const { E, rows } = res;
   const T = (t) => istTime(t).slice(0, 5);
   const cover = (k) => rows.filter((x) => x[k] != null).length;
@@ -122,8 +154,12 @@ if (require.main === module) {
   ];
   console.log('Indicator                              calls  right 5m  avg pts | calls  right 15m  avg pts');
   for (const [name, get] of tests) {
-    const a = score(rows, get, 5), b = score(rows, get, 15);
-    const f = (s) => (s ? `${String(s.n).padStart(5)}  ${s.pct.toFixed(0).padStart(7)}%  ${(s.avg >= 0 ? '+' : '') + s.avg.toFixed(1)}`.padEnd(24) : '    —  (no data)'.padEnd(24));
+    const a = score(rows, get, 5),
+      b = score(rows, get, 15);
+    const f = (s) =>
+      s
+        ? `${String(s.n).padStart(5)}  ${s.pct.toFixed(0).padStart(7)}%  ${(s.avg >= 0 ? '+' : '') + s.avg.toFixed(1)}`.padEnd(24)
+        : '    —  (no data)'.padEnd(24);
     console.log(`${name.padEnd(38)} ${f(a)} | ${f(b)}`);
   }
   console.log('\n"right" = Nifty moved the indicated way; "avg pts" = average move in the indicated direction.');
