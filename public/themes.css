@@ -9,19 +9,19 @@
 
 :root { --on-accent: #0b1220; }
 
-/* ----- Day: mid-tone, high-contrast "paper": tinted (not white) surfaces, dark text, strong borders ----- */
+/* ----- Day: Kite-style light theme: white surfaces, soft grey headers/borders, dark-grey text,
+   green/red for up/down, orange-red accent (active tab / primary), blue for secondary actions ----- */
 :root[data-theme="day"] {
   color-scheme: light;
-  --bg: #c5cfdf; --panel: #e6ecf5; --panel-2: #d3dcea; --line: #8393ab;
-  --text: #0a111d; --muted: #2c3a50;
-  --ce: #b3261e; --ce-soft: rgba(179, 38, 30, 0.2);
-  --pe: #0f6b4b; --pe-soft: rgba(15, 107, 75, 0.2);
-  --itm: rgba(196, 140, 10, 0.25); --atm: #f5c542;
-  --up: #0f6b4b; --down: #b3261e; --accent: #0f4aa8; --on-accent: #ffffff;
-  --ce-mark: #b3261e; --pe-mark: #0f6b4b; --seq-hi: #0f4aa8;
+  --bg: #f4f4f4; --panel: #ffffff; --panel-2: #f9f9f9; --line: #e0e0e0;
+  --text: #424242; --muted: #757575;
+  --ce: #df514c; --ce-soft: rgba(223, 81, 76, 0.14);
+  --pe: #43a047; --pe-soft: rgba(67, 160, 71, 0.14);
+  --itm: rgba(0, 0, 0, 0.035); --atm: #e8890c;
+  --up: #43a047; --down: #df514c; --accent: #ff5722; --on-accent: #ffffff;
+  --ce-mark: #df514c; --pe-mark: #43a047; --seq-hi: #387ed1;
 }
-:root[data-theme="day"] body { font-weight: 500; }
-:root[data-theme="day"] .topbar, :root[data-theme="day"] .panel { box-shadow: 0 1px 3px rgba(10, 17, 29, .25); }
+:root[data-theme="day"] .topbar, :root[data-theme="day"] .panel { box-shadow: 0 1px 2px rgba(0, 0, 0, .08); }
 :root[data-theme="day"] .label, :root[data-theme="day"] .muted, :root[data-theme="day"] .dep-kpis span { color: var(--muted); }
 /* ----- Large: maximum legibility ----- */
 :root[data-theme="large"] {
@@ -51,6 +51,11 @@
 :root[data-theme="day"] .sb-bs button[data-add]:hover, :root[data-theme="large"] .sb-bs button[data-add]:hover { color: #fff; }
 :root[data-theme="day"] .chain tr.atm td.strike, :root[data-theme="large"] .chain tr.atm td.strike,
 :root[data-theme="day"] .col.atm .k, :root[data-theme="large"] .col.atm .k { color: #000; }
+/* Day: the at-the-money strike is a dark chip with white text, as in the reference option chain */
+:root[data-theme="day"] .chain tr.atm td.strike, :root[data-theme="day"] .col.atm .k,
+:root[data-theme="day"] .p-oi tr.atm td.k { background: #3b3b3b; color: #fff; }
+:root[data-theme="day"] .chain tr.atm td.strike .lv-tag { color: #fff; border-color: #fff; }
+:root[data-theme="day"] .chain tr.atm td { border-top-color: var(--line); border-bottom-color: var(--line); }
 :root[data-theme="day"] .leg-chip, :root[data-theme="large"] .leg-chip { color: var(--down); }
 :root[data-theme="day"] .leg-chip.buy, :root[data-theme="large"] .leg-chip.buy { color: var(--up); }
 :root[data-theme="day"] .pill.premium-spike, :root[data-theme="large"] .pill.premium-spike,
