@@ -1,0 +1,20 @@
+{
+  "appService.zipIgnorePattern": [
+    "node_modules{,/**}",
+    "events{,/**}",
+    "events-demo{,/**}",
+    "bt-cache{,/**}",
+    "hedge-cache{,/**}",
+    "logs{,/**}",
+    "replays{,/**}",
+    "reports{,/**}",
+    "test-results{,/**}",
+    "playwright-report{,/**}",
+    "bt-data{,/**}",
+    ".env",
+    ".token.json",
+    ".git{,/**}",
+    "holdings.xlsx",
+    ".vscode{,/**}"
+]
+}

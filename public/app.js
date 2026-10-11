@@ -65,7 +65,7 @@ function localSet(k, v) {
 }
 
 // ---------- data loop ----------
-const API_VERSION = 18; // must match API_VERSION in server.js
+const API_VERSION = 19; // must match API_VERSION in server.js
 
 async function refresh() {
   let json;
@@ -717,8 +717,104 @@ function setLevelsCollapsed(on) {
   $('lvCaret').textContent = on ? '▸' : '▾';
   localSet('lvCollapsed', on ? '1' : '');
 }
-$('lvHead').addEventListener('click', () => setLevelsCollapsed(!$('levelsPanel').classList.contains('collapsed')));
+$('lvHead').addEventListener('click', (e) => {
+  const tab = e.target.closest('#lvTabs button');
+  if (tab) {
+    setLevelsTab(tab.dataset.t);
+    setLevelsCollapsed(false);
+  } else setLevelsCollapsed(!$('levelsPanel').classList.contains('collapsed'));
+});
 setLevelsCollapsed(localGet('lvCollapsed') === '1');
+
+// ---------- order flow ----------
+// The panel under the chart has two tabs: the support / resistance ladder and a read of the order flow of the
+// Nifty options (server: orderflow.js). The chart draws the same flow in its own panes (chain-chart.js).
+function setLevelsTab(t) {
+  if (t !== 'flow') t = 'levels';
+  state.lvTab = t;
+  localSet('lvTab', t);
+  $('lvLevels').classList.toggle('hidden', t !== 'levels');
+  $('lvFlow').classList.toggle('hidden', t !== 'flow');
+  $('lvAsOf').classList.toggle('hidden', t !== 'levels');
+  $('lvTabs')
+    .querySelectorAll('button')
+    .forEach((b) => b.classList.toggle('on', b.dataset.t === t));
+  if (t === 'flow') loadFlowRead(true);
+}
+
+const TONE_WORD = { bull: 'bullish', bear: 'bearish', neutral: 'neutral' };
+let flowReadAt = 0;
+async function loadFlowRead(force) {
+  if (!force && (Date.now() - flowReadAt < 5000 || document.hidden || state.view !== 'chain')) return;
+  flowReadAt = Date.now();
+  try {
+    // `since` in the future: only the read itself, no minute rows
+    const res = await fetch('/api/orderflow?since=' + Date.now(), { cache: 'no-store' });
+    const j = await res.json();
+    if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+    state.flowRead = j;
+  } catch (e) {
+    state.flowRead = { error: e.message };
+  }
+  renderFlowRead();
+}
+
+function renderFlowRead() {
+  const j = state.flowRead;
+  const a = j?.analysis;
+  const dot = $('ofDot');
+  dot.classList.toggle('hidden', !a?.ready);
+  if (a?.ready) dot.className = 'of-dot ' + a.verdict.tone;
+  if (state.lvTab !== 'flow') return;
+  const lot = j?.lot || 65;
+  const lots = (x) =>
+    x == null
+      ? '—'
+      : (x > 0 ? '+' : x < 0 ? '−' : '') +
+        compact(Math.abs(x) / lot)
+          .replace(' K', 'k')
+          .replace(' L', 'L');
+  const qty = (x) =>
+    compact(x / lot)
+      .replace(' K', 'k')
+      .replace(' L', 'L');
+  if (!j) {
+    $('ofVerdict').innerHTML = '<div class="muted small pad">Loading order flow…</div>';
+    return;
+  }
+  if (j.error) {
+    $('ofVerdict').innerHTML = `<div class="err small pad">Order flow: ${esc(j.error)}</div>`;
+    $('ofReasons').innerHTML = $('ofTable').innerHTML = '';
+    return;
+  }
+  if (!a?.ready) {
+    $('ofVerdict').innerHTML =
+      `<div class="muted small pad">${esc(a?.note || 'No order flow recorded yet.')}${j.pending ? ' Reading earlier days…' : ''}</div>`;
+    $('ofReasons').innerHTML = $('ofTable').innerHTML = '';
+    return;
+  }
+  const old = a.day !== j.today;
+  const v = a.verdict;
+  const pos = 50 + v.score * 50; // −1…+1 across the meter
+  $('ofVerdict').innerHTML = `<div class="of-head"><span class="of-label ${v.tone}">${esc(v.label)}</span>
+      <span class="muted small">${old ? `last session ${esc(a.day)} · ` : ''}as of ${istClock(a.asOf)} · ${a.minutes} min of flow${a.book != null ? ` · book lean ${a.book.toFixed(0)}%` : ''}</span></div>
+    <div class="of-meter" title="Strength ${v.strength}%: left = selling, right = buying"><i class="mid"></i><b style="left:${pos.toFixed(1)}%" class="${v.tone}"></b></div>
+    <div class="of-meter-labels"><span>Sellers</span><span>Balanced</span><span>Buyers</span></div>`;
+  $('ofReasons').innerHTML = a.reasons
+    .map((r) => `<div class="of-reason ${r.tone}"><b>${esc(r.title)}</b> <span class="muted small">${TONE_WORD[r.tone]}</span><div>${esc(r.text)}</div></div>`)
+    .join('');
+  $('ofTable').innerHTML =
+    `<table class="of-tbl"><thead><tr><th></th><th title="Calls bought at the ask">Call buy</th><th title="Calls sold at the bid">Call sell</th><th title="Puts bought at the ask">Put buy</th><th title="Puts sold at the bid">Put sell</th><th title="Calls bought + puts sold − calls sold − puts bought">Delta</th><th title="Delta as a share of everything traded">Bias</th></tr></thead><tbody>${a.windows
+      .map(
+        (w) =>
+          `<tr><th>${esc(w.label)}</th><td>${qty(w.cb)}</td><td>${qty(w.cs)}</td><td>${qty(w.pb)}</td><td>${qty(w.ps)}</td><td class="${w.net >= 0 ? 'pos' : 'neg'}">${lots(w.net)}</td><td class="${w.bias >= 0 ? 'pos' : 'neg'}">${w.bias >= 0 ? '+' : '−'}${Math.abs(w.bias * 100).toFixed(1)}%</td></tr>`,
+      )
+      .join(
+        '',
+      )}</tbody></table><div class="muted small pad">Lots (1 lot = ${lot}). Cumulative delta for the session: <b class="${a.cvd >= 0 ? 'pos' : 'neg'}">${lots(a.cvd)}</b>${a.chg15 != null ? ` · Nifty ${a.chg15 >= 0 ? '+' : '−'}${Math.abs(a.chg15).toFixed(1)} pts in 15 min` : ''}</div>`;
+}
+setInterval(() => loadFlowRead(false), 1000);
+setLevelsTab(localGet('lvTab') || 'levels');
 
 // ---------- controls ----------
 $('expiry').addEventListener('change', (e) => {

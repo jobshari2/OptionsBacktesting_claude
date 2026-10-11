@@ -8,6 +8,7 @@
   const LC = window.LightweightCharts;
   const TFS = [
     ['1', '1m'],
+    ['3', '3m'],
     ['5', '5m'],
     ['10', '10m'],
     ['15', '15m'],
@@ -19,6 +20,7 @@
   ];
   const TF_TITLE = {
     1: '1-minute candles',
+    3: '3-minute candles',
     5: '5-minute candles',
     10: '10-minute candles',
     15: '15-minute candles',
@@ -39,8 +41,10 @@
   const RELOAD_LIVE_MS = 30_000;
   const RELOAD_IDLE_MS = 5 * 60_000;
   const LEVELS_MS = 10 * 60_000;
+  const FLOW_MS = 10_000; // how often the order flow is re-read while the market is open
   const OPEN_MIN = 555; // 09:15
   const MPD = 375;
+  const PRICE2 = { type: 'price', precision: 2, minMove: 0.01 }; // axis labels with two decimals
   const NEAR_PX = 5; // how close the mouse must be to a line to count as hovering it
   const PALETTE = ['#e0a030', '#58a6ff', '#b392f0', '#39c5cf', '#f778ba', '#8bc34a'];
 
@@ -207,7 +211,8 @@
   };
 
   // store: prefix of this chart's saved settings (each place remembers its own); tf0: the timeframe it first opens on.
-  function mount(root, { full = false, store = full ? 'ncw.' : 'nc.', tf0 = '5' } = {}) {
+  // flow0: whether the order flow panes start switched on (each place remembers its own choice).
+  function mount(root, { full = false, store = full ? 'ncw.' : 'nc.', tf0 = '5', flow0 = true } = {}) {
     const pre = store;
     const get = (k, d) => {
       try {
@@ -256,6 +261,8 @@
               : ''
           }
           <button class="btn-sm ghost" data-r="sr" title="Show / hide the support and resistance levels">S/R</button>
+          <button class="btn-sm ghost" data-r="fp" title="Footprint: beside each candle, the call (left) and put (right) volume traded at each Nifty level, with the candle's delta and total below">Order flow</button>
+          <button class="btn-sm ghost" data-r="of" title="Show / hide the Δ and CVD panes under the candles: net buying vs selling in the Nifty options per candle, and its running total">Δ / CVD</button>
           <button class="btn-sm ghost" data-r="now" title="Jump back to the latest candle">Latest ▸</button>
           ${
             full
@@ -270,7 +277,7 @@
         <div class="nc-ohlc small" data-r="ohlc"></div>
         <div class="nc-tip hidden" data-r="tip"></div>
       </div>
-      <div class="muted small nc-legend"><span><i class="nc-sw r"></i>Resistance</span><span><i class="nc-sw s"></i>Support</span><span>solid = major · dotted = minor · hover a level for details</span><span>drag to move · wheel to zoom · scroll back for older candles</span><span data-r="msg"></span></div>`;
+      <div class="muted small nc-legend"><span><i class="nc-sw r"></i>Resistance</span><span><i class="nc-sw s"></i>Support</span><span>solid = major · dotted = minor · hover a level for details</span><span>drag to move · wheel to zoom · scroll back for older candles</span><span data-r="fpKey"><b>Order flow</b> in lots, at the Nifty level it traded: calls left of the candle, puts right · green = bought / sold with the market going up, red = down (3:1 or more) · box = busiest level · <b>Delta</b> = calls bought + puts sold − calls sold − puts bought · recorded days only</span><span data-r="flowKey"><b>Δ</b> per candle, <b>CVD</b> running total for the day</span><span data-r="msg"></span></div>`;
     const el = {};
     root.querySelectorAll('[data-r]').forEach((n) => {
       el[n.dataset.r] = n;
@@ -280,6 +287,19 @@
     let type =
       TYPES.some(([v]) => v === get('type', 'candle')) && el.type.querySelector(`[value="${get('type', 'candle')}"]`) ? get('type', 'candle') : 'candle';
     let showLevels = get('sr', '1') === '1';
+    let showFp = get('fp', flow0 ? '1' : '0') === '1'; // footprint beside the candles
+    let showFlow = get('of', '0') === '1'; // Δ / CVD panes
+    // [time ms, callBuy, callSell, putBuy, putSell, bookLean, niftyClose, [level, callBuy, callSell, putBuy, putSell, ...]]
+    // per minute, oldest first
+    let flowRows = [];
+    let fpBars = new Map(); // candle time -> Map(Nifty level -> [callBuy, callSell, putBuy, putSell])
+    let flowLot = 65;
+    let flowPending = false; // the server is still reading earlier days: ask for everything again
+    let flowAt = 0;
+    let flowBusy = false;
+    let deltaSeries = null;
+    let cvdSeries = null;
+    let flowLast = null; // { delta, cvd } of the newest candle that has flow
     let logScale = full && get('log', '0') === '1';
     let bars = []; // { time, open, high, low, close }, oldest first
     let meta = null; // last /api/bt/candles response (without the candles)
@@ -312,7 +332,6 @@
       autoSize: true,
       crosshair: { mode: LC.CrosshairMode.Normal },
       timeScale: { timeVisible: true, secondsVisible: false, rightOffset: 6 },
-      localization: { priceFormatter: (p) => p.toFixed(2) },
     });
 
     const visible = () => !document.hidden && root.offsetParent !== null;
@@ -352,13 +371,41 @@
       }
       return out;
     }
+    // The footprint draws the candles itself (thin, between the cells), so the series is made invisible.
+    const fpActive = () => showFp && intraday() && (type === 'candle' || type === 'bar' || type === 'ha');
+    const CLEAR = 'rgba(0,0,0,0)';
     function seriesOptions() {
       const c = colours();
-      if (type === 'line') return { color: c.accent, lineWidth: 2, priceLineColor: c.accent };
+      if (fpActive())
+        return {
+          upColor: CLEAR,
+          downColor: CLEAR,
+          wickUpColor: CLEAR,
+          wickDownColor: CLEAR,
+          borderVisible: false,
+          priceLineColor: c.accent,
+          priceFormat: PRICE2,
+        };
+      if (type === 'line') return { color: c.accent, lineWidth: 2, priceLineColor: c.accent, priceFormat: PRICE2 };
       if (type === 'area')
-        return { lineColor: c.accent, lineWidth: 2, topColor: rgba(c.accent, 0.28), bottomColor: rgba(c.accent, 0.02), priceLineColor: c.accent };
-      if (type === 'bar') return { upColor: c.up, downColor: c.down, priceLineColor: c.accent };
-      return { upColor: c.up, downColor: c.down, wickUpColor: c.up, wickDownColor: c.down, borderVisible: false, priceLineColor: c.accent };
+        return {
+          lineColor: c.accent,
+          lineWidth: 2,
+          topColor: rgba(c.accent, 0.28),
+          bottomColor: rgba(c.accent, 0.02),
+          priceLineColor: c.accent,
+          priceFormat: PRICE2,
+        };
+      if (type === 'bar') return { upColor: c.up, downColor: c.down, priceLineColor: c.accent, priceFormat: PRICE2 };
+      return {
+        upColor: c.up,
+        downColor: c.down,
+        wickUpColor: c.up,
+        wickDownColor: c.down,
+        borderVisible: false,
+        priceLineColor: c.accent,
+        priceFormat: PRICE2,
+      };
     }
     // (Re)creates the price series for the chosen type. The new one is added before the old one goes, so the
     // price pane is never empty (an empty pane is dropped, which would move the indicator panes up).
@@ -368,6 +415,7 @@
       series = chart.addSeries(def, seriesOptions(), 0);
       series.setData(viewData());
       series.attachPrimitive(trendLines);
+      series.attachPrimitive(footprint);
       if (old) chart.removeSeries(old);
       lines = [];
       hLines = [];
@@ -377,6 +425,7 @@
     function render() {
       series.setData(viewData());
       refreshInds();
+      drawFlow();
     }
 
     function applyTheme() {
@@ -397,6 +446,8 @@
       drawLevels();
       drawHLines();
       refreshInds();
+      cvdSeries?.applyOptions({ color: css('--accent') });
+      drawFlow();
     }
 
     // ---------- support / resistance ----------
@@ -448,6 +499,287 @@
       return best;
     }
 
+    // ---------- order flow ----------
+    // Nifty is an index with no volume, so the flow is read from the options near the money (/api/orderflow, one row
+    // per minute): who started each trade. Per candle, delta = calls bought + puts sold - calls sold - puts bought,
+    // in lots, and CVD is its running total (restarting every day on intraday charts). Both sit in panes under the
+    // candles; only recorded days have flow, so older candles stay empty.
+    const lotsFmt = (v) => {
+      const a = Math.abs(v);
+      return (v < 0 ? '−' : '') + (a >= 1e5 ? (a / 1e5).toFixed(2) + 'L' : a >= 1e3 ? (a / 1e3).toFixed(1) + 'k' : a.toFixed(0));
+    };
+    const lotsFormat = { type: 'custom', formatter: lotsFmt, minMove: 0.01 };
+    function flowPoints() {
+      const out = { delta: [], cvd: [] };
+      if (!bars.length || !flowRows.length) return out;
+      const span = intraday() ? Number(tf) * 60 : tf === 'D' ? 86400 : tf === 'W' ? 7 * 86400 : 32 * 86400;
+      const sums = new Map(); // candle time -> net quantity
+      for (const r of flowRows) {
+        const t = Math.floor(r[0] / 1000) + 19800; // IST wall-clock seconds, like the candles
+        const i = barAt(t);
+        if (i < 0 || t - bars[i].time >= span) continue;
+        sums.set(bars[i].time, (sums.get(bars[i].time) || 0) + (r[1] - r[2]) - (r[3] - r[4]));
+      }
+      const c = colours();
+      let run = 0;
+      let day = null;
+      for (const b of bars) {
+        if (!sums.has(b.time)) continue;
+        const d = intraday() ? Math.floor(b.time / 86400) : 0;
+        if (d !== day) {
+          day = d;
+          run = 0;
+        }
+        const net = sums.get(b.time) / flowLot;
+        run += net;
+        out.delta.push({ time: b.time, value: net, color: rgba(net >= 0 ? c.up : c.down, 0.75) });
+        out.cvd.push({ time: b.time, value: run });
+      }
+      return out;
+    }
+    // Footprint data: each minute's volume by Nifty level, laid into the candle it belongs to.
+    function buildFp() {
+      fpBars = new Map();
+      if (!fpActive() || !bars.length) return;
+      const span = Number(tf) * 60;
+      for (const r of flowRows) {
+        const px = r[7];
+        if (!px?.length) continue;
+        const t = Math.floor(r[0] / 1000) + 19800;
+        const i = barAt(t);
+        if (i < 0 || t - bars[i].time >= span) continue;
+        let m = fpBars.get(bars[i].time);
+        if (!m) fpBars.set(bars[i].time, (m = new Map()));
+        for (let k = 0; k < px.length; k += 5) {
+          const c = m.get(px[k]);
+          if (c) for (let j = 0; j < 4; j++) c[j] += px[k + 1 + j];
+          else m.set(px[k], px.slice(k + 1, k + 5));
+        }
+      }
+    }
+    // A candle's levels merged into rows `step` points tall, lowest first.
+    function fpRows(time, step) {
+      const m = fpBars.get(time);
+      if (!m) return null;
+      const rows = new Map();
+      for (const [price, v] of m) {
+        const lo = Math.floor(price / step) * step;
+        const r = rows.get(lo);
+        if (r) for (let j = 0; j < 4; j++) r[j] += v[j];
+        else rows.set(lo, v.slice());
+      }
+      return [...rows].map(([lo, v]) => ({ lo, v })).sort((a, b) => a.lo - b.lo);
+    }
+    const fpTotals = (time) => {
+      const m = fpBars.get(time);
+      if (!m) return null;
+      const s = [0, 0, 0, 0];
+      for (const v of m.values()) for (let j = 0; j < 4; j++) s[j] += v[j];
+      return { delta: (s[0] - s[1] - (s[2] - s[3])) / flowLot, total: (s[0] + s[1] + s[2] + s[3]) / flowLot };
+    };
+    // Draws the candles (thin) and, either side of each, the volume at every level: calls left, puts right. A cell is
+    // tinted when one side of it is 3:1 or more (calls bought / puts sold = green, calls sold / puts bought = red);
+    // the busiest level of a candle is boxed; its delta and total are written underneath.
+    function paintFp(ctx) {
+      if (!fpActive() || !bars.length) return;
+      const ts = chart.timeScale();
+      const range = ts.getVisibleLogicalRange();
+      const xa = ts.logicalToCoordinate(0);
+      const xb = ts.logicalToCoordinate(1);
+      const ref = last().close;
+      const ya = series.priceToCoordinate(ref);
+      const yb = series.priceToCoordinate(ref + 1);
+      if (!range || xa == null || xb == null || ya == null || yb == null) return;
+      const S = xb - xa; // pixels per candle
+      const ppp = Math.abs(ya - yb) || 1; // pixels per Nifty point
+      const step = [1, 2, 5, 10, 20, 25, 50, 100, 200].find((s) => s * ppp >= 13) || 200;
+      const bw = Math.max(3, Math.min(9, S * 0.07));
+      const cw = Math.max(0, (S * 0.94 - bw) / 2);
+      const fs = Math.max(8, Math.min(11, cw / 4));
+      const c = colours();
+      const text = css('--text');
+      const muted = css('--muted');
+      const y = (p) => series.priceToCoordinate(p);
+      ctx.save();
+      ctx.font = `${fs}px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif`;
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'center';
+      const i0 = Math.max(0, Math.floor(range.from) - 1);
+      const i1 = Math.min(bars.length - 1, Math.ceil(range.to) + 1);
+      for (let i = i0; i <= i1; i++) {
+        const b = bars[i];
+        const x = ts.logicalToCoordinate(i);
+        if (x == null) continue;
+        const rows = fpRows(b.time, step);
+        let bottom = y(b.low);
+        if (rows?.length && cw >= 3) {
+          let max = 0;
+          let poc = null;
+          for (const r of rows) {
+            const t = r.v[0] + r.v[1] + r.v[2] + r.v[3];
+            if (t > max) {
+              max = t;
+              poc = r;
+            }
+          }
+          const cell = (r, side) => {
+            const bought = side === 'ce' ? r.v[0] : r.v[2];
+            const sold = side === 'ce' ? r.v[1] : r.v[3];
+            const tot = bought + sold;
+            const top = y(r.lo + step);
+            const bot = y(r.lo);
+            if (top == null || bot == null) return;
+            const x0 = side === 'ce' ? x - bw / 2 - cw : x + bw / 2;
+            // up when calls are bought or puts are sold, down the other way round
+            const up = side === 'ce' ? bought : sold;
+            const down = side === 'ce' ? sold : bought;
+            const strong = tot >= 0.05 * max;
+            const tint = strong && up >= 3 * down ? c.up : strong && down >= 3 * up ? c.down : null;
+            ctx.fillStyle = tint ? rgba(tint, 0.55) : rgba(muted, 0.16);
+            ctx.fillRect(x0, top + 0.5, cw, Math.max(1, bot - top - 1));
+            if (cw >= 28 && bot - top >= 10) {
+              ctx.fillStyle = text;
+              ctx.fillText(lotsFmt(tot / flowLot), x0 + cw / 2, (top + bot) / 2);
+            }
+          };
+          for (const r of rows) {
+            cell(r, 'ce');
+            cell(r, 'pe');
+          }
+          if (poc) {
+            const top = y(poc.lo + step);
+            const bot = y(poc.lo);
+            if (top != null && bot != null) {
+              ctx.strokeStyle = c.accent;
+              ctx.lineWidth = 1.5;
+              ctx.strokeRect(x - bw / 2 - cw, top + 0.5, cw * 2 + bw, Math.max(1, bot - top - 1));
+            }
+          }
+          const low = y(rows[0].lo);
+          if (low != null) bottom = Math.max(bottom ?? 0, low);
+        }
+        // the candle itself
+        const yh = y(b.high);
+        const yl = y(b.low);
+        const yo = y(b.open);
+        const yc = y(b.close);
+        if (yh != null && yl != null && yo != null && yc != null) {
+          const col = b.close >= b.open ? c.up : c.down;
+          ctx.strokeStyle = col;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          ctx.moveTo(x, yh);
+          ctx.lineTo(x, yl);
+          ctx.stroke();
+          ctx.fillStyle = col;
+          ctx.fillRect(x - bw / 2, Math.min(yo, yc), bw, Math.max(1.5, Math.abs(yo - yc)));
+        }
+        const tot = fpTotals(b.time);
+        if (tot && bottom != null && cw >= 16) {
+          const wide = cw >= 30;
+          const lines = wide
+            ? [
+                ['Delta', lotsFmt(tot.delta), tot.delta >= 0 ? c.up : c.down],
+                ['Total', lotsFmt(tot.total), text],
+              ]
+            : [['', lotsFmt(tot.delta), tot.delta >= 0 ? c.up : c.down]];
+          lines.forEach(([label, value, col], n) => {
+            const yy = bottom + 12 + n * (fs + 4);
+            ctx.fillStyle = rgba(css('--panel'), 0.85);
+            ctx.fillRect(x - cw, yy - fs / 2 - 1, cw * 2, fs + 2);
+            if (label) {
+              ctx.textAlign = 'left';
+              ctx.fillStyle = muted;
+              ctx.fillText(label, x - cw + 2, yy);
+              ctx.textAlign = 'right';
+              ctx.fillStyle = col;
+              ctx.fillText(value, x + cw - 2, yy);
+              ctx.textAlign = 'center';
+            } else {
+              ctx.fillStyle = col;
+              ctx.fillText(value, x, yy);
+            }
+          });
+        }
+      }
+      ctx.restore();
+    }
+    const footprint = {
+      attached(p) {
+        this.request = p.requestUpdate;
+      },
+      detached() {
+        this.request = null;
+      },
+      paneViews() {
+        return [
+          {
+            zOrder: () => 'top',
+            renderer: () => ({
+              draw: (target) => target.useMediaCoordinateSpace(({ context }) => paintFp(context)),
+            }),
+          },
+        ];
+      },
+    };
+    // Zooms to as many candles as fit across the chart with room for the numbers in their cells.
+    function fitFp() {
+      if (!fpActive() || !bars.length) return;
+      const n = Math.max(2, Math.floor((el.chart.clientWidth - 70) / 112));
+      chart.timeScale().setVisibleLogicalRange({ from: bars.length - n, to: bars.length + 0.5 });
+    }
+    function drawFlow() {
+      buildFp();
+      footprint.request?.();
+      if (!deltaSeries) return;
+      const p = flowPoints();
+      deltaSeries.setData(p.delta);
+      cvdSeries.setData(p.cvd);
+      flowLast = p.delta.length ? { delta: p.delta[p.delta.length - 1].value, cvd: p.cvd[p.cvd.length - 1].value } : null;
+    }
+    function setFlowSeries() {
+      if (showFlow && !deltaSeries) {
+        const pane = chart.panes().length;
+        deltaSeries = chart.addSeries(LC.HistogramSeries, { priceLineVisible: false, lastValueVisible: false, title: 'Δ lots', priceFormat: lotsFormat }, pane);
+        cvdSeries = chart.addSeries(
+          LC.LineSeries,
+          { color: css('--accent'), lineWidth: 2, priceLineVisible: false, lastValueVisible: true, title: 'CVD', priceFormat: lotsFormat },
+          pane + 1,
+        );
+        chart.panes().forEach((p, i) => p.setStretchFactor(i ? 1 : 3)); // the price pane stays the tall one
+        flowAt = 0;
+        drawFlow();
+        loadFlow();
+      } else if (!showFlow && deltaSeries) {
+        chart.removeSeries(deltaSeries);
+        chart.removeSeries(cvdSeries);
+        deltaSeries = cvdSeries = flowLast = null;
+        chart.panes().forEach((p, i) => p.setStretchFactor(i ? 1 : 3));
+      }
+      info();
+    }
+    // Today's rows are re-read often (the last few minutes only); the first read and every read while the server is
+    // still loading earlier days takes everything.
+    async function loadFlow() {
+      if (!(showFlow || showFp) || flowBusy || Date.now() < flowAt) return;
+      flowBusy = true;
+      try {
+        const all = !flowRows.length || flowPending;
+        const since = all ? 0 : flowRows[flowRows.length - 1][0] - 3 * 60_000;
+        const d = await api('/api/orderflow?since=' + since);
+        flowLot = d.lot || 65;
+        flowPending = Boolean(d.pending);
+        flowRows = all ? d.rows : flowRows.filter((r) => r[0] < since).concat(d.rows);
+        drawFlow();
+        info();
+        flowAt = Date.now() + (flowPending ? 4000 : live ? FLOW_MS : 60_000);
+      } catch {
+        flowAt = Date.now() + 15_000; // chart without order flow until the server answers
+      } finally {
+        flowBusy = false;
+      }
+    }
+
     // ---------- indicators ----------
     function addInd(kind, params, save = true) {
       const def = IND[kind];
@@ -455,7 +787,7 @@
       const id = ++indSeq;
       const color = PALETTE[(id - 1) % PALETTE.length];
       const pane = def.pane ? chart.panes().length : 0;
-      const base = { priceLineVisible: false, lastValueVisible: Boolean(def.pane), crosshairMarkerVisible: false };
+      const base = { priceLineVisible: false, lastValueVisible: Boolean(def.pane), crosshairMarkerVisible: false, priceFormat: PRICE2 };
       const ind = { id, kind, params, color, last: [] };
       ind.series = def.series.map((s) =>
         s === 'hist'
@@ -608,6 +940,14 @@
           ? ''
           : ` <span class="${s.close >= prev ? 'pos' : 'neg'}">${s.close >= prev ? '+' : ''}${num(s.close - prev)} (${(((s.close - prev) / prev) * 100).toFixed(2)}%)</span>`;
       let html = `<div><span class="muted">${when(s.time)}</span> O <b class="${c}">${num(s.open)}</b> H <b class="${c}">${num(s.high)}</b> L <b class="${c}">${num(s.low)}</b> C <b class="${c}">${num(s.close)}</b>${d}</div>`;
+      const ft = fpActive() ? fpTotals(s.time) : null;
+      if (ft)
+        html += `<div class="nc-ind"><i style="background:${css('--accent')}"></i>Order flow Delta <b class="${ft.delta >= 0 ? 'pos' : 'neg'}">${(ft.delta > 0 ? '+' : '') + lotsFmt(ft.delta)}</b> · Total <b>${lotsFmt(ft.total)}</b> lots</div>`;
+      if (deltaSeries) {
+        const dv = hover ? hoverData?.get(deltaSeries)?.value : flowLast?.delta;
+        const cv = hover ? hoverData?.get(cvdSeries)?.value : flowLast?.cvd;
+        html += `<div class="nc-ind"><i style="background:${css('--accent')}"></i>Order flow Δ <b class="${dv == null ? '' : dv >= 0 ? 'pos' : 'neg'}">${dv == null ? '—' : (dv > 0 ? '+' : '') + lotsFmt(dv)}</b> · CVD <b>${cv == null ? '—' : lotsFmt(cv)}</b> lots</div>`;
+      }
       for (const ind of inds) {
         const vals = ind.series.map((sr, j) => (hover ? hoverData?.get(sr)?.value : ind.last[j]));
         html += `<div class="nc-ind"><i style="background:${ind.color}"></i>${IND[ind.kind].name} ${Object.values(ind.params).join(', ')} <b>${vals.map((v) => (v == null ? '—' : num(v))).join(' · ')}</b><button data-rm="${ind.id}" title="Remove this indicator">✕</button></div>`;
@@ -659,7 +999,8 @@
         render();
         if (reset) {
           const show = Math.max(60, Math.round(el.chart.clientWidth / 8));
-          if (bars.length <= show) chart.timeScale().fitContent();
+          if (fpActive()) fitFp();
+          else if (bars.length <= show) chart.timeScale().fitContent();
           else chart.timeScale().setVisibleLogicalRange({ from: bars.length - show, to: bars.length + 5 });
         }
         drawLevels();
@@ -742,6 +1083,7 @@
       if (!visible()) return;
       if (Date.now() >= nextLoadAt) load(!bars.length);
       loadLevels();
+      loadFlow();
       if (ticking) return;
       ticking = true;
       try {
@@ -770,6 +1112,7 @@
     // ---------- controls ----------
     function setTf(v) {
       tf = v;
+      series.applyOptions(seriesOptions()); // the footprint is for intraday candles only
       set('tf', v);
       seq++;
       bars = [];
@@ -783,6 +1126,10 @@
       el.tf.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.tf === tf));
       el.type.value = type;
       el.sr.classList.toggle('on', showLevels);
+      el.of.classList.toggle('on', showFlow);
+      el.fp.classList.toggle('on', showFp);
+      el.fpKey.classList.toggle('hidden', !showFp);
+      el.flowKey.classList.toggle('hidden', !showFlow);
       el.log?.classList.toggle('on', logScale);
     }
     el.tf.addEventListener('click', (e) => {
@@ -798,6 +1145,22 @@
       set('sr', showLevels ? '1' : '0');
       buttons();
       drawLevels();
+    });
+    el.fp.addEventListener('click', () => {
+      showFp = !showFp;
+      set('fp', showFp ? '1' : '0');
+      buttons();
+      series.applyOptions(seriesOptions());
+      flowAt = 0;
+      drawFlow();
+      loadFlow();
+      if (showFp) fitFp();
+    });
+    el.of.addEventListener('click', () => {
+      showFlow = !showFlow;
+      set('of', showFlow ? '1' : '0');
+      buttons();
+      setFlowSeries();
     });
     el.now.addEventListener('click', () => chart.timeScale().scrollToRealTime());
     el.pop?.addEventListener('click', () => window.open('chart.html', 'niftyChart', 'popup,width=1400,height=820'));
@@ -926,6 +1289,8 @@
 
     applyTheme();
     buttons();
+    setFlowSeries();
+    loadFlow();
     if (full) for (const s of getJson('inds', [])) addInd(s.kind, { ...IND[s.kind]?.params, ...s.params }, false);
     setInterval(tick, TICK_MS);
     tick();
@@ -937,6 +1302,6 @@
   else if (panel) panel.innerHTML = MISSING;
   // Market Pulse: the same chart, opening on 1-minute candles.
   const pulsePanel = document.getElementById('pulseChart');
-  if (pulsePanel && LC) mount(pulsePanel, { store: 'ncp.', tf0: '1' });
+  if (pulsePanel && LC) mount(pulsePanel, { store: 'ncp.', tf0: '1', flow0: false });
   else if (pulsePanel) pulsePanel.innerHTML = MISSING;
 })();

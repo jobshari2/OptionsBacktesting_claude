@@ -358,6 +358,33 @@ body.nc-window { height: 100vh; padding: 8px; }
 .lv-c { font-size: 10px; text-transform: uppercase; color: var(--muted); }
 .lv-src { color: var(--muted); font-size: 11px; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .lv-d { text-align: right; color: var(--muted); }
+/* order flow tab beside support / resistance */
+#lvTabs { vertical-align: middle; }
+#lvTabs button { font-size: 12px; }
+.of-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-left: 6px; vertical-align: 1px; background: var(--muted); }
+.of-dot.bull { background: var(--up); }
+.of-dot.bear { background: var(--down); }
+.of-scroll { overflow: auto; flex: 1; min-height: 120px; display: flex; flex-direction: column; gap: 8px; padding: 10px 14px 6px; }
+.of-head { display: flex; align-items: baseline; justify-content: space-between; gap: 6px 12px; flex-wrap: wrap; }
+.of-label { font-size: 15px; font-weight: 700; }
+.of-label.bull { color: var(--up); }
+.of-label.bear { color: var(--down); }
+.of-meter { position: relative; height: 8px; margin-top: 8px; border-radius: 4px; background: linear-gradient(90deg, color-mix(in srgb, var(--down) 45%, var(--panel-2)), var(--panel-2) 50%, color-mix(in srgb, var(--up) 45%, var(--panel-2))); }
+.of-meter .mid { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--muted); }
+.of-meter b { position: absolute; top: -3px; width: 4px; height: 14px; margin-left: -2px; border-radius: 2px; background: var(--muted); }
+.of-meter b.bull { background: var(--up); }
+.of-meter b.bear { background: var(--down); }
+.of-meter-labels { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); margin-top: 2px; }
+.of-reasons { display: flex; flex-direction: column; gap: 6px; }
+.of-reason { background: var(--panel-2); border-radius: 6px; padding: 5px 9px; border-left: 3px solid var(--muted); font-size: 12px; }
+.of-reason.bull { border-left-color: var(--up); }
+.of-reason.bear { border-left-color: var(--down); }
+.of-reason div { margin-top: 2px; }
+.of-tbl { width: 100%; border-collapse: collapse; font-size: 11.5px; font-variant-numeric: tabular-nums; }
+.of-tbl th, .of-tbl td { padding: 2px 6px; text-align: right; white-space: nowrap; }
+.of-tbl thead th { color: var(--muted); font-weight: 600; font-size: 10.5px; }
+.of-tbl tbody th { text-align: left; font-weight: 600; color: var(--muted); }
+.of-tbl tbody tr:last-child { border-top: 1px solid var(--line); }
 .lv-spot { margin: 3px 0; padding: 3px 8px; border-radius: 4px; background: rgba(88,166,255,.18); color: var(--accent); font-weight: 700; font-size: 12px; }
 
 /* ---------- anomalies ---------- */

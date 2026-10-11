@@ -195,11 +195,11 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
 
   // Nifty candles for the chart on the Chain screen and its pop-out window. History comes from the cached 1-minute
   // files under bt-cache/index, the running session from the Upstox intraday endpoint (the page then moves the last
-  // candle with the live tick). tf = minutes per candle (1, 5, 10, 15, 60, 120) or 'D' / 'W' / 'M'.
+  // candle with the live tick). tf = minutes per candle (1, 3, 5, 10, 15, 60, 120) or 'D' / 'W' / 'M'.
   // Intraday candles come a block of sessions at a time, ending before the day `before`, so the page can load
   // further back as it is scrolled; D / W / M return everything in the cache folder.
   // Candle = [time, open, high, low, close]; time is IST wall-clock seconds (as if UTC), which the chart displays as is.
-  const TF_SESSIONS = { 1: 6, 5: 30, 10: 60, 15: 90, 60: 250, 120: 500 };
+  const TF_SESSIONS = { 1: 6, 3: 15, 5: 30, 10: 60, 15: 90, 60: 250, 120: 500 };
   async function niftyCandles(tf, before) {
     const step = Number(tf);
     const sessions = TF_SESSIONS[step];

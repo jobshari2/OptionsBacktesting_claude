@@ -10,7 +10,7 @@
 :root { --on-accent: #0b1220; }
 
 /* ----- Day: Kite-style light theme: white surfaces, soft grey headers/borders, dark-grey text,
-   green/red for up/down, orange-red accent (active tab / primary), blue for secondary actions ----- */
+   green/red for up/down, blue accent (buttons, active tab / primary) with white text on it ----- */
 :root[data-theme="day"] {
   color-scheme: light;
   --bg: #f4f4f4; --panel: #ffffff; --panel-2: #f9f9f9; --line: #e0e0e0;
@@ -18,8 +18,8 @@
   --ce: #df514c; --ce-soft: rgba(223, 81, 76, 0.14);
   --pe: #43a047; --pe-soft: rgba(67, 160, 71, 0.14);
   --itm: rgba(0, 0, 0, 0.035); --atm: #e8890c;
-  --up: #43a047; --down: #df514c; --accent: #ff5722; --on-accent: #ffffff;
-  --ce-mark: #df514c; --pe-mark: #43a047; --seq-hi: #387ed1;
+  --up: #43a047; --down: #df514c; --accent: #2f6fcf; --on-accent: #ffffff;
+  --ce-mark: #df514c; --pe-mark: #43a047; --seq-hi: #2f6fcf;
 }
 :root[data-theme="day"] .topbar, :root[data-theme="day"] .panel { box-shadow: 0 1px 2px rgba(0, 0, 0, .08); }
 :root[data-theme="day"] .label, :root[data-theme="day"] .muted, :root[data-theme="day"] .dep-kpis span { color: var(--muted); }

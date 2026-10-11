@@ -18,6 +18,8 @@ You need Node.js 22 or newer. Run `npm install` once (installs `protobufjs` for 
 
 `npm run demo` shows the live screens with synthetic data. Backtesting and the Hedge screen need real Upstox data. `npm test` runs the tests.
 
+To run it on Azure App Service (Node 22 LTS, Linux), see [docs/azure-deployment.md](docs/azure-deployment.md): the settings, the code changes still needed, and the VS Code steps.
+
 ## Screens
 
 Pick a group in the top bar; its screens are in the row below. A group reopens on the screen you last used in it.
@@ -56,11 +58,16 @@ The colour theme (Night, Day, Large) is picked at the top right.
   - Vol Δ shows volume added over the window picked in the chain header (1/3/5/15 min). LTP flashes when it ticks.
   - Strikes carrying a support (**S**, green) or resistance (**R**, red) level are tagged; filled tags are major levels. Hover for the source.
 - **Right half of the screen** shows one of two panes, picked with the switch above it: **Chart & levels** (below) or **Signals** (see *Signals*). New signals that arrive while the chart is showing are counted on the Signals button; the count turns red and blinks for a high-probability one.
-- **Nifty chart** (Chart & levels): candles of 1, 5, 10, 15 minutes, 1 hour, 2 hours, day, week or month, with the support / resistance levels drawn across. Drag to move, wheel to zoom, scroll back to load older candles; **Candles / Line**, **S/R** on/off, **Latest**. The hovered candle's open / high / low / close is shown at the top left; hovering a support / resistance line shows its details (major / minor, distance from Nifty, source).
+- **Nifty chart** (Chart & levels): candles of 1, 3, 5, 10, 15 minutes, 1 hour, 2 hours, day, week or month, with the support / resistance levels drawn across. Drag to move, wheel to zoom, scroll back to load older candles; **Candles / Line**, **S/R**, **Order flow** and **Δ / CVD** on/off, **Latest**. The hovered candle's open / high / low / close is shown at the top left; hovering a support / resistance line shows its details (major / minor, distance from Nifty, source).
   - **New window** opens the chart in its own window (`chart.html`) with the full tool set: **indicators** (SMA, EMA, Bollinger Bands, Supertrend on the price; RSI, MACD, ATR, Stochastic in their own panes; any parameters, several at once, ✕ in the legend removes one), chart types (candles, bars, Heikin Ashi, line, area), **drawings** (horizontal and trend lines; right-click one to remove it), log scale, PNG snapshot and full screen. Indicators and drawings are remembered.
   - History is read from the cached 1-minute Nifty files (`bt-cache/index`); today's candles come from the Upstox intraday endpoint (re-read every 30 s) and the last candle follows the live tick feed.
+  - **Order flow** (a footprint, on by default on 1 to 120-minute candles): the candles are drawn thin, with the volume traded at each Nifty level beside them, **calls on the left and puts on the right**, and the candle's **Delta** and **Total** (in lots) underneath. A cell turns green when one side of it is 3:1 or more bought-calls / sold-puts (the market going up) and red for sold-calls / bought-puts; the busiest level of a candle is boxed. Nifty is an index with no volume, so the flow comes from the Nifty options within ±10 strikes of the money: each trade is classed as started by the buyer or the seller (at the ask / at the bid) and placed at the Nifty level at that moment. Delta = calls bought + puts sold − calls sold − puts bought. The chart zooms to the few candles that fit with readable numbers; zoom out and the cells shrink to colour only. Only days this app recorded have flow, so older candles show just the candle. Earlier days are read from the tape in the background (`ORDERFLOW_DAYS`, 10 by default) and cached in `events/_orderflow-cache/`.
+  - **Δ / CVD** adds two panes under the candles instead: the net buying minus selling per candle, and its running total for the day (restarts each day).
 - **Under the chain** is one of two panes as well: **Arbitrage**, the live vertical-spread arbitrage of the expiry shown (click its header to fold it away), or **Volume surge** (see *Volume surge and Surge charts*).
-- **Support & resistance panel:** nearest major/minor resistance and support with distance from spot, and the full ladder around Nifty. Click its header to collapse it (the chart takes the space).
+- **Support & resistance / Order flow panel** under the chart, two tabs (a dot on the Order flow tab shows the current lean):
+  - **Support & resistance:** nearest major/minor resistance and support with distance from spot, and the full ladder around Nifty.
+  - **Order flow:** what the flow of the Nifty options says right now. A verdict (buyers or sellers in control, or balanced) with a strength meter, then the reasons behind it: net flow over 15 and 5 minutes and which side drives it (calls or puts), the order-book lean against its day average, a **divergence** (Nifty makes a new high or low in the last 15 minutes without the cumulative delta following), **absorption** (heavy flow in 5 minutes that does not move Nifty), and whether flow confirms or contradicts the last 15 minutes of price. A table gives the call and put buys and sells, delta and bias over 1, 5, 15 and 30 minutes and the session. Outside market hours it reads the last recorded session. It is a read of the tape, not a prediction.
+  - Click the panel header to collapse it (the chart takes the space).
 
 ## Support and resistance
 
@@ -637,6 +644,7 @@ The same checks run in **GitHub Actions** (`.github/workflows/ci.yml`) and in **
 | `signals.js`, `sigstats.js`, `signal-backtest.js` | Spike signals and recordings; their track record; the signal backtest (also a command) |
 | `flow.js`, `replay.js` | Volume-flow predictions; replay of a recorded day (also a command) |
 | `pulse.js`, `book.js`, `study.js` | Market Pulse; order book; the indicator scorecard (a command) |
+| `orderflow.js` | Order flow of the options as minute rows (today live, earlier days from the tape) and the read shown under the chart |
 | `hedge/` | Portfolio hedge: holdings (`holdings.js`, `xlsx.js`), betas, planner (`engine.js`), daily history and backtest |
 | `bt/data.js` | Historical data download, disk + memory cache |
 | `bt/sync.js` | What the cache lacks for a selection of expiries, the download job, the automatic update |

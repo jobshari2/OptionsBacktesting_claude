@@ -169,14 +169,22 @@
     <!-- Nifty candlestick chart: filled by chain-chart.js (also used by chart.html, its pop-out window) -->
     <section class="panel nifty-panel" id="niftyPanel"></section>
     <section class="panel levels-panel" id="levelsPanel">
-      <div class="panel-head" id="lvHead" title="Click the header to collapse / expand support and resistance">
-        <h3><span id="lvCaret">▾</span> Support &amp; resistance</h3>
+      <div class="panel-head" id="lvHead" title="Click the header to collapse / expand">
+        <h3><span id="lvCaret">▾</span> <span class="seg sm" id="lvTabs"><button type="button" data-t="levels" title="Nearest support and resistance levels">Support &amp; resistance</button><button type="button" data-t="flow" title="What the order flow of the Nifty options says right now">Order flow<i class="of-dot hidden" id="ofDot"></i></button></span></h3>
         <span class="muted small" id="lvAsOf"></span>
       </div>
-      <div class="lv-body">
+      <div class="lv-body" id="lvLevels">
         <div id="lvNearest" class="lv-nearest"></div>
         <div id="lvLadder" class="lv-ladder"></div>
         <div class="muted small pad">Major: clustered daily swing highs/lows (last ~120 sessions). Minor: 15-minute swings of the last 5 sessions, previous day's high/low/close and floor pivots. OI: strikes with the most open interest on this expiry. Levels below spot act as support, above as resistance.</div>
+      </div>
+      <div class="lv-body hidden" id="lvFlow">
+        <div class="of-scroll">
+          <div id="ofVerdict" class="of-verdict"></div>
+          <div id="ofReasons" class="of-reasons"></div>
+          <div id="ofTable" class="of-table"></div>
+          <div class="muted small pad">Nifty is an index with no volume, so the flow is read from the options within ±10 strikes of the money: each trade is classed as started by the buyer or the seller. <b>Delta</b> = calls bought + puts sold − calls sold − puts bought (in lots): positive leans up, negative down. <b>Book lean</b> is the share of the quantity waiting in the order book that is bullish (calls bid, puts offered). A <b>divergence</b> is price making a new high or low without the cumulative delta (CVD) following; <b>absorption</b> is heavy flow that does not move price. This is a read of the tape, not a prediction.</div>
+        </div>
       </div>
     </section>
     <section class="panel signals-panel hidden" id="signalsPanel">

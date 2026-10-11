@@ -9,6 +9,7 @@ const { createFlow, flowConfig } = require('./flow');
 const { createTape, tapeDays, readTape } = require('./tape');
 const { createPulse } = require('./pulse');
 const { createBook } = require('./book');
+const { createOrderflow } = require('./orderflow');
 const { createHedge } = require('./hedge');
 const { replayFlow } = require('./replay');
 const { buildStats } = require('./sigstats');
@@ -43,7 +44,7 @@ const WINDOWS_MIN = [1, 3, 5, 15]; // volume-change windows offered in the UI
 const HISTORY_MS = (Math.max(16, CFG.signals.beforeMin) + 1) * 60_000;
 // Bumped whenever the /api/chain response shape changes or the page needs routes an older server lacks, so an
 // old server + new page is detected.
-const API_VERSION = 18;
+const API_VERSION = 19;
 const FEED_STRIKES = num(env.FEED_STRIKES, 15); // strikes either side of ATM streamed over the WebSocket
 const TICK_SNAPSHOT_MS = 500; // how often ticks are folded into a snapshot (history, signals, UI)
 const REST_WITH_FEED_MS = 15_000; // REST refresh interval while the WebSocket feed is live
@@ -76,11 +77,21 @@ const pulse = createPulse({
   logError,
 });
 const book = createBook({ strikesAround: num(env.BOOK_STRIKES, 10), pressureStrikes: num(env.PULSE_STRIKES, 5) });
+// Order flow of the chart: minute rows of aggressor volume, today live and earlier days from the recorded tape.
+const orderflow = createOrderflow({
+  dir: CFG.signals.dir,
+  strikesAround: num(env.BOOK_STRIKES, 10),
+  pressureStrikes: num(env.PULSE_STRIKES, 5),
+  days: num(env.ORDERFLOW_DAYS, 10),
+  getLot: () => contracts.lot,
+  logError,
+});
 // Give the pulse and the order-book view today's context after a restart.
 try {
   const todayTape = readTape(CFG.signals.dir, istDate());
   pulse.seed(todayTape);
   book.seed(todayTape);
+  orderflow.seed(todayTape);
 } catch (e) {
   logError('tape-seed', e);
 }
@@ -216,6 +227,7 @@ function snapshotAll() {
       tape.record(built.hist[built.hist.length - 1], built.snap);
       pulse.update(built.hist[built.hist.length - 1], built.snap, flow.state().live, signals.state());
       book.update(built.hist[built.hist.length - 1]);
+      orderflow.update(built.hist[built.hist.length - 1]);
     }
   }
 }
@@ -626,6 +638,19 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, book.state(nearestExpiry ? snapshots.get(nearestExpiry) : null));
     } catch (e) {
       logError('book', e);
+      return sendJson(res, 500, { error: e.message });
+    }
+  }
+
+  // Order flow per minute (rows [t, callBuy, callSell, putBuy, putSell, bookLean, niftyClose]) from `since` on, and
+  // the read of the latest session. Earlier days are read from the tape in the background: `pending` while they are.
+  if (p === '/api/orderflow') {
+    lastClientAt = Date.now();
+    try {
+      const since = Number(url.searchParams.get('since'));
+      return sendJson(res, 200, orderflow.state(Number.isFinite(since) ? since : 0));
+    } catch (e) {
+      logError('orderflow', e);
       return sendJson(res, 500, { error: e.message });
     }
   }
