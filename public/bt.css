@@ -613,3 +613,17 @@ body.nc-window { height: 100vh; padding: 8px; }
 /* vertical spreads closest to an arbitrage, listed when none clears the minimum edge */
 .arb-row.near { border-left-color: var(--muted); opacity: .8; }
 .arb-pnl { flex-basis: 100%; }
+/* chart button beside each strike (shows that option in the chart) and the Nifty / option switch above the chart */
+.chain td.strike { white-space: nowrap; }
+.ch-btn { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; padding: 0; margin: 0 4px; vertical-align: -2px; background: none; border: 1px solid transparent; border-radius: 3px; cursor: pointer; opacity: .55; }
+.ch-btn.ce { color: var(--ce); }
+.ch-btn.pe { color: var(--pe); }
+.ch-btn:hover, .ch-btn.on { opacity: 1; border-color: currentColor; }
+.chain tr.atm td.strike .ch-btn { color: #111; }
+.nc-title { display: inline-flex; align-items: center; gap: 4px; }
+.nc-title .btn-sm { padding: 2px 10px; font-size: 13px; font-weight: 700; }
+.nc-title .btn-sm.on { border-color: var(--accent); color: var(--accent); }
+.nc-opt { display: inline-flex; align-items: center; gap: 4px; }
+.nc-opt .btn-sm.ce.on { border-color: var(--ce); color: var(--ce); }
+.nc-opt .btn-sm.pe.on { border-color: var(--pe); color: var(--pe); }
+.nc-opt-mode [data-nifty-only] { display: none !important; }

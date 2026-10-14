@@ -19,6 +19,9 @@ const { execFile } = require('child_process');
 const { istDate, isMarketOpen } = require('./lib/time');
 const { loadEnv, num } = require('./lib/env');
 const { createUpstox, parseChain } = require('./lib/upstox');
+const { createOptionCandles, respond, demoRows, OPT_TFS } = require('./lib/optcandles');
+const { createKiteSession, loginUrl: kiteLoginUrl, exchangeRequestToken, profile: kiteProfile } = require('./lib/kite');
+const { createFeedCompare } = require('./feedcmp');
 
 loadEnv(path.join(__dirname, '.env'));
 
@@ -44,7 +47,7 @@ const WINDOWS_MIN = [1, 3, 5, 15]; // volume-change windows offered in the UI
 const HISTORY_MS = (Math.max(16, CFG.signals.beforeMin) + 1) * 60_000;
 // Bumped whenever the /api/chain response shape changes or the page needs routes an older server lacks, so an
 // old server + new page is detected.
-const API_VERSION = 19;
+const API_VERSION = 20;
 const FEED_STRIKES = num(env.FEED_STRIKES, 15); // strikes either side of ATM streamed over the WebSocket
 const TICK_SNAPSHOT_MS = 500; // how often ticks are folded into a snapshot (history, signals, UI)
 const REST_WITH_FEED_MS = 15_000; // REST refresh interval while the WebSocket feed is live
@@ -67,7 +70,18 @@ try {
   logError('signal-odds', e);
 }
 const signals = createSignals(CFG.signals, logError, signalOdds);
-const feed = createFeed({ getToken: () => token, logError });
+const feed = createFeed({
+  getToken: () => token,
+  logError,
+  // every message, as it arrives, to the Feeds screen's Upstox-vs-Kite comparison (created further down)
+  onTick: (keys, at) => {
+    try {
+      feedCmp?.onUpstoxTicks(keys, at);
+    } catch (e) {
+      logError('feedcmp-tick', e);
+    }
+  },
+});
 const flow = createFlow({ ...flowConfig(env), dir: CFG.signals.dir }, logError);
 const tape = createTape({ dir: CFG.signals.dir, strikesAround: num(env.TAPE_STRIKES, 15), logError });
 const pulse = createPulse({
@@ -98,11 +112,13 @@ try {
 let lastError = null;
 let lastClientAt = 0;
 let polling = false;
+let feedCmp = null; // Upstox vs Kite tick comparison (Feeds screen), set up below
 
 // ---------- Upstox helpers ----------
 // One client for the whole app (lib/upstox.js): the live calls below and the historical downloads of the
 // backtester and the hedge planner count against the same rate limits.
 const upstoxClient = createUpstox({ getToken: () => token, onUnauthorized: clearToken });
+const optionCandles = createOptionCandles({ bulk: (pathname) => upstoxClient.bulk(pathname) });
 async function upstox(pathname, params = {}) {
   if (DEMO) return demoData(pathname);
   return upstoxClient.live(pathname, params);
@@ -234,7 +250,7 @@ function snapshotAll() {
 
 // Subscribe to the index plus FEED_STRIKES strikes either side of ATM (calls and puts) per tracked expiry.
 function updateSubscriptions() {
-  const keys = new Set([NIFTY_KEY]);
+  const keys = new Set([NIFTY_KEY, ...(feedCmp?.upstoxKeys() || [])]);
   for (const e of targetExpiries()) {
     const c = restChains.get(e);
     if (!c?.rows.length) continue;
@@ -491,6 +507,96 @@ const hedge = createHedge({
   logError,
 });
 
+// Zerodha Kite (Feeds screen): the login in use, and the comparison of its ticks with Upstox's on the same options.
+const kiteSession = createKiteSession({ file: path.join(__dirname, '.kite-token.json'), env, logError });
+feedCmp = createFeedCompare({
+  dir: CFG.signals.dir,
+  configFile: path.join(__dirname, 'bt-data', DEMO ? 'feedcmp-config-demo.json' : 'feedcmp-config.json'),
+  demo: DEMO,
+  isMarketOpen,
+  upstox: {
+    getExpiries,
+    // the chain screen keeps its expiries fresh; another expiry is re-read once a minute for its instrument keys
+    getChain: async (expiry) => (token ? (snapshots.get(expiry) ? restChains.get(expiry) : await restChain(expiry, 60_000)) : null),
+    tick: (key) => feed.tick(key),
+    status: () => feed.status(),
+    getSpot: () => feed.tick(NIFTY_KEY)?.ltp ?? (nearestExpiry ? snapshots.get(nearestExpiry)?.spot : null) ?? null,
+  },
+  kite: kiteSession,
+  getLot: () => contracts.lot, // the paper trades on big gaps are sized in lots
+  // live orders (Feeds screen): Kite Connect logins only unless KITE_ORDERS_ENCTOKEN=1; market protection optional
+  allowEnctokenOrders: env.KITE_ORDERS_ENCTOKEN === '1',
+  marketProtection: env.KITE_MARKET_PROTECTION || null,
+  logError,
+});
+
+async function handleKite(req, res, url, p) {
+  try {
+    if (p === '/kite/login') {
+      if (!kiteSession.apiKey) {
+        res.writeHead(400, { 'Content-Type': 'text/html' });
+        return res.end(
+          '<h3>Kite Connect is not set up</h3><p>Add KITE_API_KEY and KITE_API_SECRET (from developers.kite.trade) to .env and restart the server, or use the enctoken option on the Feeds screen.</p><a href="/">Back</a>',
+        );
+      }
+      res.writeHead(302, { Location: kiteLoginUrl(kiteSession.apiKey) });
+      return res.end();
+    }
+    if (p === '/kite/callback') {
+      const requestToken = url.searchParams.get('request_token');
+      if (!requestToken || url.searchParams.get('status') === 'error')
+        throw new Error(url.searchParams.get('message') || 'Kite did not return a request token');
+      const data = await exchangeRequestToken({ apiKey: kiteSession.apiKey, apiSecret: kiteSession.apiSecret, requestToken });
+      kiteSession.set({ mode: 'connect', apiKey: kiteSession.apiKey, accessToken: data.access_token }, data);
+      feedCmp.restartKite();
+      res.writeHead(302, { Location: '/?kite=ok' });
+      return res.end();
+    }
+    if (p === '/api/kite/status') return sendJson(res, 200, kiteSession.status());
+    // A pasted token, or the enctoken sent by the bookmarklet (kite-link.html): checked with Kite before it is kept.
+    if (p === '/api/kite/session' && req.method === 'POST') {
+      if (DEMO) throw new Error('Demo mode simulates the Kite feed; run the server without DEMO to log in to Kite.');
+      const b = JSON.parse((await readBody(req, 10_000)).toString('utf8') || '{}');
+      let auth;
+      if (b.mode === 'enctoken') {
+        const enctoken = String(b.enctoken || '').trim();
+        const userId = String(b.userId || '')
+          .trim()
+          .toUpperCase();
+        if (!enctoken || !userId) throw new Error('Both the enctoken and your Kite user ID are needed');
+        auth = { mode: 'enctoken', enctoken, userId };
+      } else {
+        const accessToken = String(b.accessToken || '').trim();
+        const apiKey = String(b.apiKey || '').trim() || kiteSession.apiKey;
+        if (!accessToken || !apiKey) throw new Error('An access token and the Kite Connect api_key (KITE_API_KEY in .env, or typed in) are needed');
+        auth = { mode: 'connect', apiKey, accessToken };
+      }
+      let user;
+      try {
+        user = await kiteProfile(auth);
+      } catch (e) {
+        throw new Error('Kite did not accept this token: ' + e.message, { cause: e });
+      }
+      kiteSession.set(auth, user);
+      feedCmp.restartKite();
+      return sendJson(res, 200, { ok: true, kite: kiteSession.status() });
+    }
+    if (p === '/api/kite/logout' && req.method === 'POST') {
+      kiteSession.clear();
+      feedCmp.restartKite();
+      return sendJson(res, 200, { ok: true, kite: kiteSession.status() });
+    }
+    return sendJson(res, 404, { error: 'Not found' });
+  } catch (e) {
+    logError('kite', e);
+    if (p.startsWith('/kite/')) {
+      res.writeHead(500, { 'Content-Type': 'text/html' });
+      return res.end(`<h3>Kite login failed</h3><p>${escapeHtml(e.message)}</p><a href="/">Back</a>`);
+    }
+    return sendJson(res, 400, { error: e.message });
+  }
+}
+
 function readBody(req, limit) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -635,6 +741,51 @@ const server = http.createServer(async (req, res) => {
 
   if (p.startsWith('/api/hedge/')) return handleHedge(req, res, p);
 
+  if (p === '/kite/login' || p === '/kite/callback' || p.startsWith('/api/kite/')) return handleKite(req, res, url, p);
+
+  // Feeds screen: Upstox vs Kite prices, the gaps between them and the day's episodes (filtered).
+  if (p === '/api/feedcmp/state') {
+    lastClientAt = Date.now(); // keeps the chain, and so the Upstox feed and the watch list, running
+    try {
+      return sendJson(res, 200, feedCmp.state(Object.fromEntries(url.searchParams)));
+    } catch (e) {
+      logError('feedcmp', e);
+      return sendJson(res, 500, { error: e.message });
+    }
+  }
+  if (p === '/api/feedcmp/days') return sendJson(res, 200, feedCmp.days());
+  // Live orders on Kite (feedlive.js): switch on / off (on needs confirm: true), the test order, square off.
+  if (
+    req.method === 'POST' &&
+    ['/api/feedcmp/live', '/api/feedcmp/live-test', '/api/feedcmp/squareoff', '/api/feedcmp/live-close', '/api/feedcmp/funds'].includes(p)
+  ) {
+    try {
+      const body = JSON.parse((await readBody(req, 5_000)).toString('utf8') || '{}');
+      if (p === '/api/feedcmp/live') {
+        if (body.on && body.confirm !== true) throw new Error('Switching live trading on needs confirmation');
+        feedCmp.setLive(Boolean(body.on));
+        return sendJson(res, 200, { ok: true });
+      }
+      if (p === '/api/feedcmp/live-test') return sendJson(res, 200, await feedCmp.testOrder(['CE', 'PE', 'check'].includes(body.kind) ? body.kind : 'CE'));
+      if (p === '/api/feedcmp/funds') return sendJson(res, 200, { ok: true, funds: await feedCmp.refreshFunds() });
+      if (p === '/api/feedcmp/live-close') {
+        if (!feedCmp.closeLive(String(body.id || ''))) throw new Error('That position is not open (it may already be closed)');
+        return sendJson(res, 200, { ok: true });
+      }
+      return sendJson(res, 200, { ok: true, closing: feedCmp.squareOff() });
+    } catch (e) {
+      return sendJson(res, 400, { error: e.message });
+    }
+  }
+  if (p === '/api/feedcmp/config' && req.method === 'POST') {
+    try {
+      const body = JSON.parse((await readBody(req, 20_000)).toString('utf8') || '{}');
+      return sendJson(res, 200, { ok: true, config: feedCmp.saveConfig(body) });
+    } catch (e) {
+      return sendJson(res, 400, { error: e.message });
+    }
+  }
+
   if (p === '/api/book') {
     lastClientAt = Date.now();
     try {
@@ -749,6 +900,31 @@ const server = http.createServer(async (req, res) => {
     const rest = nearestExpiry ? restChains.get(nearestExpiry) : null;
     const at = t?.at ?? rest?.fetchedAt ?? 0;
     return sendJson(res, 200, { ltp: t?.ltp ?? rest?.spot ?? null, at, live: !DEMO && isMarketOpen() && Date.now() - at < 60_000, loggedIn: Boolean(token) });
+  }
+
+  // The option chart of the Chain screen (the chart button beside each strike): candles and the latest price of one
+  // contract of a chain the server holds, named by expiry + strike + CE / PE.
+  if (p === '/api/option/candles' || p === '/api/option/ltp') {
+    lastClientAt = Date.now();
+    const q = url.searchParams;
+    const side = restChains.get(q.get('expiry'))?.rows.find((r) => r.strike === Number(q.get('strike')));
+    const o = side && (q.get('type') === 'PE' ? side.pe : q.get('type') === 'CE' ? side.ce : null);
+    if (!o) return sendJson(res, 404, { error: 'That option is not in the chain any more' });
+    const cur = overlay(o, restChains.get(q.get('expiry')).fetchedAt);
+    if (p === '/api/option/ltp') {
+      const fresh = Date.now() - cur.at < 5 * 60_000;
+      return sendJson(res, 200, { ltp: cur.ltp, at: cur.at, live: cur.ltp != null && (DEMO || (isMarketOpen() && fresh)) });
+    }
+    try {
+      const tf = q.get('tf') || '5';
+      if (!OPT_TFS.has(tf === 'D' ? 'D' : Number(tf))) throw new Error('Unknown chart timeframe ' + tf);
+      if (DEMO) return sendJson(res, 200, respond(demoRows(`${q.get('expiry')}${q.get('strike')}${q.get('type')}`, cur.ltp ?? 100), tf));
+      if (!o.key) throw new Error('No instrument key for this option');
+      return sendJson(res, 200, await optionCandles.candles(o.key, tf));
+    } catch (e) {
+      logError('option-chart', e);
+      return sendJson(res, 400, { error: e.message });
+    }
   }
 
   // TradingView Lightweight Charts (candlestick chart), served from node_modules like Chart.js below.

@@ -212,7 +212,8 @@
 
   // store: prefix of this chart's saved settings (each place remembers its own); tf0: the timeframe it first opens on.
   // flow0: whether the order flow panes start switched on (each place remembers its own choice).
-  function mount(root, { full = false, store = full ? 'ncw.' : 'nc.', tf0 = '5', flow0 = true } = {}) {
+  // options: the chart can switch to a single option of the chain (the Chain screen's chart button) and back to Nifty.
+  function mount(root, { full = false, store = full ? 'ncw.' : 'nc.', tf0 = '5', flow0 = true, options = false } = {}) {
     const pre = store;
     const get = (k, d) => {
       try {
@@ -246,7 +247,11 @@
       .join('');
     root.innerHTML = `
       <div class="panel-head nc-head">
-        <h3>Nifty 50 <span class="nc-last" data-r="last"></span></h3>
+        <h3>${
+          options
+            ? `<span class="nc-title"><button class="btn-sm ghost on" data-r="nifty" title="Show the Nifty 50 chart with its support / resistance levels and order flow">Nifty 50</button><span class="nc-opt hidden" data-r="optTab"><button class="btn-sm ghost on" data-r="optBtn"></button></span></span>`
+            : 'Nifty 50'
+        } <span class="nc-last" data-r="last"></span></h3>
         <div class="nc-tools">
           <span class="seg sm" data-r="tf">${TFS.map(([v, l]) => `<button data-tf="${v}" title="${TF_TITLE[v]}">${l}</button>`).join('')}</span>
           <select data-r="type" title="Chart type">${TYPES.filter(([v]) => full || v === 'candle' || v === 'line')
@@ -260,15 +265,15 @@
           <button class="btn-sm ghost" data-r="log" title="Logarithmic price scale">Log</button>`
               : ''
           }
-          <button class="btn-sm ghost" data-r="sr" title="Show / hide the support and resistance levels">S/R</button>
-          <button class="btn-sm ghost" data-r="fp" title="Footprint: beside each candle, the call (left) and put (right) volume traded at each Nifty level, with the candle's delta and total below">Order flow</button>
-          <button class="btn-sm ghost" data-r="of" title="Show / hide the Δ and CVD panes under the candles: net buying vs selling in the Nifty options per candle, and its running total">Δ / CVD</button>
+          <button class="btn-sm ghost" data-nifty-only data-r="sr" title="Show / hide the support and resistance levels">S/R</button>
+          <button class="btn-sm ghost" data-nifty-only data-r="fp" title="Footprint: beside each candle, the call (left) and put (right) volume traded at each Nifty level, with the candle's delta and total below">Order flow</button>
+          <button class="btn-sm ghost" data-nifty-only data-r="of" title="Show / hide the Δ and CVD panes under the candles: net buying vs selling in the Nifty options per candle, and its running total">Δ / CVD</button>
           <button class="btn-sm ghost" data-r="now" title="Jump back to the latest candle">Latest ▸</button>
           ${
             full
               ? `<button class="btn-sm ghost" data-r="shot" title="Save the chart as a PNG image">📷</button>
           <button class="btn-sm ghost" data-r="fs" title="Full screen">⛶</button>`
-              : '<button class="btn-sm ghost" data-r="pop" title="Open the chart in its own window, with indicators and drawing tools">⧉ New window</button>'
+              : '<button class="btn-sm ghost" data-nifty-only data-r="pop" title="Open the chart in its own window, with indicators and drawing tools">⧉ New window</button>'
           }
         </div>
       </div>
@@ -277,12 +282,13 @@
         <div class="nc-ohlc small" data-r="ohlc"></div>
         <div class="nc-tip hidden" data-r="tip"></div>
       </div>
-      <div class="muted small nc-legend"><span><i class="nc-sw r"></i>Resistance</span><span><i class="nc-sw s"></i>Support</span><span>solid = major · dotted = minor · hover a level for details</span><span>drag to move · wheel to zoom · scroll back for older candles</span><span data-r="fpKey"><b>Order flow</b> in lots, at the Nifty level it traded: calls left of the candle, puts right · green = bought / sold with the market going up, red = down (3:1 or more) · box = busiest level · <b>Delta</b> = calls bought + puts sold − calls sold − puts bought · recorded days only</span><span data-r="flowKey"><b>Δ</b> per candle, <b>CVD</b> running total for the day</span><span data-r="msg"></span></div>`;
+      <div class="muted small nc-legend"><span data-nifty-only><i class="nc-sw r"></i>Resistance</span><span data-nifty-only><i class="nc-sw s"></i>Support</span><span data-nifty-only>solid = major · dotted = minor · hover a level for details</span><span>drag to move · wheel to zoom · scroll back for older candles</span><span data-nifty-only data-r="fpKey"><b>Order flow</b> in lots, at the Nifty level it traded: calls left of the candle, puts right · green = bought / sold with the market going up, red = down (3:1 or more) · box = busiest level · <b>Delta</b> = calls bought + puts sold − calls sold − puts bought · recorded days only</span><span data-nifty-only data-r="flowKey"><b>Δ</b> per candle, <b>CVD</b> running total for the day</span><span data-r="msg"></span></div>`;
     const el = {};
     root.querySelectorAll('[data-r]').forEach((n) => {
       el[n.dataset.r] = n;
     });
 
+    let source = null; // null = Nifty; { expiry, strike, type } = one option of the chain
     let tf = TF_TITLE[get('tf', tf0)] ? get('tf', tf0) : tf0;
     let type =
       TYPES.some(([v]) => v === get('type', 'candle')) && el.type.querySelector(`[value="${get('type', 'candle')}"]`) ? get('type', 'candle') : 'candle';
@@ -372,7 +378,7 @@
       return out;
     }
     // The footprint draws the candles itself (thin, between the cells), so the series is made invisible.
-    const fpActive = () => showFp && intraday() && (type === 'candle' || type === 'bar' || type === 'ha');
+    const fpActive = () => showFp && !source && intraday() && (type === 'candle' || type === 'bar' || type === 'ha');
     const CLEAR = 'rgba(0,0,0,0)';
     function seriesOptions() {
       const c = colours();
@@ -456,7 +462,7 @@
       for (const l of lines) series.removePriceLine(l);
       lines = [];
       const b = last();
-      if (!showLevels || !b) return;
+      if (!showLevels || !b || source) return;
       for (const l of levels) {
         const major = l.cls === 'major';
         const res = l.price > b.close;
@@ -484,7 +490,7 @@
     }
     // The level under the mouse (y in pixels of the price pane), if any.
     function levelAt(y) {
-      if (!showLevels) return null;
+      if (!showLevels || source) return null;
       let best = null;
       let bestD = NEAR_PX + 1;
       for (const l of levels) {
@@ -738,7 +744,8 @@
       flowLast = p.delta.length ? { delta: p.delta[p.delta.length - 1].value, cvd: p.cvd[p.cvd.length - 1].value } : null;
     }
     function setFlowSeries() {
-      if (showFlow && !deltaSeries) {
+      const want = showFlow && !source; // the order flow is Nifty's
+      if (want && !deltaSeries) {
         const pane = chart.panes().length;
         deltaSeries = chart.addSeries(LC.HistogramSeries, { priceLineVisible: false, lastValueVisible: false, title: 'Δ lots', priceFormat: lotsFormat }, pane);
         cvdSeries = chart.addSeries(
@@ -750,7 +757,7 @@
         flowAt = 0;
         drawFlow();
         loadFlow();
-      } else if (!showFlow && deltaSeries) {
+      } else if (!want && deltaSeries) {
         chart.removeSeries(deltaSeries);
         chart.removeSeries(cvdSeries);
         deltaSeries = cvdSeries = flowLast = null;
@@ -761,7 +768,7 @@
     // Today's rows are re-read often (the last few minutes only); the first read and every read while the server is
     // still loading earlier days takes everything.
     async function loadFlow() {
-      if (!(showFlow || showFp) || flowBusy || Date.now() < flowAt) return;
+      if (source || !(showFlow || showFp) || flowBusy || Date.now() < flowAt) return;
       flowBusy = true;
       try {
         const all = !flowRows.length || flowPending;
@@ -977,13 +984,16 @@
     }
 
     // ---------- data ----------
+    // Where the candles and the live price come from: Nifty (the cached files) or the option shown (the server's chain).
+    const optQuery = () => `expiry=${source.expiry}&strike=${source.strike}&type=${source.type}`;
+    const candlesUrl = () => (source ? `/api/option/candles?${optQuery()}&` : '/api/bt/candles?');
     // The newest block of candles: the whole chart after a timeframe change, afterwards laid over what is shown.
     async function load(reset) {
       if (loading) return;
       loading = true;
       const my = seq;
       try {
-        const d = await api('/api/bt/candles?tf=' + tf);
+        const d = await api(`${candlesUrl()}tf=${tf}`);
         if (my !== seq) return;
         const block = d.candles.map(toBar);
         if (reset || !bars.length || !block.length) {
@@ -1005,7 +1015,7 @@
         }
         drawLevels();
         info();
-        status(block.length ? null : 'no Nifty candles in the cache yet (log in to Upstox to download them)');
+        status(block.length ? null : source ? 'no candles for this option yet' : 'no Nifty candles in the cache yet (log in to Upstox to download them)');
         nextLoadAt = Date.now() + (live ? RELOAD_LIVE_MS : RELOAD_IDLE_MS);
       } catch (e) {
         if (my === seq) {
@@ -1024,7 +1034,7 @@
       loadingOlder = true;
       const my = seq;
       try {
-        const d = await api(`/api/bt/candles?tf=${tf}&before=${first}`);
+        const d = await api(`${candlesUrl()}tf=${tf}&before=${first}`);
         if (my !== seq) return;
         more = d.more && d.candles.length > 0;
         if (d.candles.length) {
@@ -1082,12 +1092,16 @@
     async function tick() {
       if (!visible()) return;
       if (Date.now() >= nextLoadAt) load(!bars.length);
-      loadLevels();
-      loadFlow();
+      if (!source) {
+        loadLevels();
+        loadFlow();
+      }
       if (ticking) return;
       ticking = true;
+      const my = seq;
       try {
-        const t = await api('/api/nifty/ltp');
+        const t = await api(source ? `/api/option/ltp?${optQuery()}` : '/api/nifty/ltp');
+        if (my !== seq) return; // Nifty / option switched meanwhile: this price belongs to the other chart
         const was = live;
         live = Boolean(t.live && t.ltp != null);
         if (live) {
@@ -1103,7 +1117,7 @@
           if (live) nextLoadAt = 0;
         } // market just opened: fetch today's candles now
       } catch {
-        live = false;
+        if (my === seq) live = false;
       } finally {
         ticking = false;
       }
@@ -1131,6 +1145,45 @@
       el.fpKey.classList.toggle('hidden', !showFp);
       el.flowKey.classList.toggle('hidden', !showFlow);
       el.log?.classList.toggle('on', logScale);
+      root.classList.toggle('nc-opt-mode', Boolean(source));
+      // no weekly / monthly history for an option
+      el.tf.querySelectorAll('button').forEach((b) => b.classList.toggle('hidden', Boolean(source) && (b.dataset.tf === 'W' || b.dataset.tf === 'M')));
+      if (el.nifty) {
+        el.nifty.classList.toggle('on', !source);
+        el.optTab.classList.toggle('hidden', !source);
+        if (source) {
+          const exp = new Date(source.expiry + 'T00:00:00Z').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', timeZone: 'UTC' });
+          el.optBtn.textContent = `${source.strike} ${source.type} · ${exp}`;
+          el.optBtn.title = `Nifty ${source.strike} ${source.type}, expiry ${source.expiry}`;
+          el.optBtn.className = `btn-sm ghost on ${source.type === 'CE' ? 'ce' : 'pe'}`;
+        }
+      }
+    }
+    // Shows one option of the chain (or Nifty again, with null). The other's candles, price and levels go at once.
+    function setSource(next) {
+      if (next && source && next.expiry === source.expiry && next.strike === source.strike && next.type === source.type) return;
+      if (!next && !source) return;
+      source = next;
+      const saved = TF_TITLE[get('tf', tf0)] ? get('tf', tf0) : tf0;
+      tf = source && (saved === 'W' || saved === 'M') ? '5' : saved;
+      seq++;
+      bars = [];
+      meta = null;
+      hover = null;
+      more = false;
+      first = null;
+      lastTick = null;
+      live = false;
+      nextLoadAt = 0;
+      series.setData([]);
+      series.applyOptions(seriesOptions()); // the footprint is for Nifty's intraday candles only
+      drawLevels();
+      setFlowSeries();
+      buttons();
+      info();
+      status();
+      load(true);
+      window.chartShows?.(source && { ...source });
     }
     el.tf.addEventListener('click', (e) => {
       if (e.target.dataset.tf && e.target.dataset.tf !== tf) setTf(e.target.dataset.tf);
@@ -1163,6 +1216,7 @@
       setFlowSeries();
     });
     el.now.addEventListener('click', () => chart.timeScale().scrollToRealTime());
+    el.nifty?.addEventListener('click', () => setSource(null));
     el.pop?.addEventListener('click', () => window.open('chart.html', 'niftyChart', 'popup,width=1400,height=820'));
     el.ohlc.addEventListener('pointerdown', (e) => {
       if (e.target.dataset.rm) removeInd(Number(e.target.dataset.rm));
@@ -1294,12 +1348,19 @@
     if (full) for (const s of getJson('inds', [])) addInd(s.kind, { ...IND[s.kind]?.params, ...s.params }, false);
     setInterval(tick, TICK_MS);
     tick();
+    return {
+      showOption: (o) => setSource({ expiry: o.expiry, strike: Number(o.strike), type: o.type === 'PE' ? 'PE' : 'CE' }),
+      showNifty: () => setSource(null),
+    };
   }
 
   const MISSING = '<div class="pad err">Chart library missing: run <code>npm install</code> and restart the server.</div>';
   const panel = document.getElementById('niftyPanel');
-  if (panel && LC) mount(panel, { full: document.body.classList.contains('nc-window') });
-  else if (panel) panel.innerHTML = MISSING;
+  if (panel && LC) {
+    const full = document.body.classList.contains('nc-window');
+    const chainChart = mount(panel, { full, options: !full });
+    if (!full) window.chainChart = chainChart;
+  } else if (panel) panel.innerHTML = MISSING;
   // Market Pulse: the same chart, opening on 1-minute candles.
   const pulsePanel = document.getElementById('pulseChart');
   if (pulsePanel && LC) mount(pulsePanel, { store: 'ncp.', tf0: '1', flow0: false });

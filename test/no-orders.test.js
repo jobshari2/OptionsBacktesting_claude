@@ -1,5 +1,7 @@
-// The app is a research and scanning tool: it reads market data and never places, modifies or cancels an order.
-// This test fails if a call to one of Upstox's order endpoints (or a write to the Upstox API) is ever added.
+// The app reads market data from Upstox and never places, modifies or cancels an order there. This test fails if a
+// call to one of Upstox's order endpoints (or a write to the Upstox API) is ever added.
+// The one exception is Zerodha Kite: the Feeds screen's live trading (feedlive.js), switched on by hand, sends
+// orders through lib/kite.js. The last test keeps Kite orders to those two files.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -29,4 +31,17 @@ test('no order placement anywhere in the app', () => {
   // the one Upstox client only ever reads: no request to the Upstox API carries a method or a body
   const client = fs.readFileSync(path.join(ROOT, 'lib/upstox.js'), 'utf8');
   assert.ok(!/method:\s*['"](POST|PUT|DELETE|PATCH)['"]/i.test(client), 'lib/upstox.js sends only GET requests');
+});
+
+test('Kite orders are sent only by lib/kite.js, and only the live trader uses them', () => {
+  const orderEndpoint = /\/orders\/(regular|amo|co|iceberg|auction)|\/gtt\/triggers/i;
+  const orderCall = /\b(placeOrder|cancelOrder)\s*\(/;
+  for (const f of sources(ROOT)) {
+    const rel = path.relative(ROOT, f).replace(/\\/g, '/');
+    const text = fs.readFileSync(f, 'utf8');
+    if (rel !== 'lib/kite.js') assert.ok(!orderEndpoint.test(text), `${rel} references a Kite order endpoint`);
+    if (rel !== 'lib/kite.js' && rel !== 'feedlive.js') assert.ok(!orderCall.test(text), `${rel} sends a Kite order`);
+  }
+  const live = fs.readFileSync(path.join(ROOT, 'feedlive.js'), 'utf8');
+  assert.ok(/let on = false;/.test(live), 'live trading starts switched off');
 });

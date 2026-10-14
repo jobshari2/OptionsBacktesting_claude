@@ -77,7 +77,15 @@
       "mcp__1a59c906-04da-521d-bda7-7f71b9f9e01c__update",
       "Bash(cp .claude/launch.json \"C:/Users/Admin/AppData/Local/Temp/claude/D--Claude-new-OptionsBacktesting-claude/4d10147a-3e1d-4d0c-821b-f9c521d355ab/scratchpad/launch.json.bak\")",
       "Bash(git check-ignore *)",
-      "Bash(cd /c/Users/Admin/.claude/projects/D--Claude-new-OptionsBacktesting-claude/memory/ && cat verifying-live-upstox-paths.md bash-tool-collapses-backslashes.md)"
+      "Bash(cd /c/Users/Admin/.claude/projects/D--Claude-new-OptionsBacktesting-claude/memory/ && cat verifying-live-upstox-paths.md bash-tool-collapses-backslashes.md)",
+      "Bash(sed -i \"s/const { createOptionCandles, aggregate, respond, demoRows, OPT_TFS }/const { createOptionCandles, respond, demoRows, OPT_TFS }/\" server.js)",
+      "Bash(node -e \"require\\('./lib/optcandles'\\)\")",
+      "PowerShell(Get-Content .env.example; \\(Get-Content server.js\\).Count; Get-Content lib/upstox.js -TotalCount 60; Get-Content feed.js -TotalCount 80)",
+      "PowerShell($c = Get-Content public/index.html; $c.Count; $c | Select-String -Pattern '<main id=|<script' | ForEach-Object { \"$\\($_.LineNumber\\): $\\($_.Line.Trim\\(\\)\\)\" }; \\(Get-Content public/app.js\\).Count; Get-Content public/app.js | Select-String -Pattern 'data-view|VIEWS|showView|function setView|group|book' | Select-Object -First 80 | ForEach-Object { \"$\\($_.LineNumber\\): $\\($_.Line.Trim\\(\\)\\)\" })",
+      "PowerShell(node -v)",
+      "PowerShell(node -e \"const ws = new WebSocket\\('wss://127.0.0.1:1/', { headers: { Origin: 'https://kite.zerodha.com' } }\\); ws.onerror = \\(e\\) => console.log\\('err ok', e.message||''\\); ws.onclose=\\(\\)=>console.log\\('closed'\\);\")",
+      "PowerShell($f='feedcmp.js'; $c=[IO.File]::ReadAllText\\($f\\); $c=$c.Replace\\(\"const { NIFTY_TOKEN, kiteDay, niftyInstruments, createKiteTicker } = require\\('./lib/kite'\\);\",\"const { NIFTY_TOKEN, kiteDay, niftyInstruments, createKiteTicker, profile } = require\\('./lib/kite'\\);\"\\).Replace\\(\"await require\\('./lib/kite'\\).profile\\(auth\\);\",\"await profile\\(auth\\);\"\\).Replace\\(\"  setInterval\\(loop, 2000\\).unref\\(\\);`n`n  // Demo mode\",\"  // Demo mode\"\\); $c=$c.Replace\\(\"  function pick\\(q\\) {\",\"  setInterval\\(loop, 2000\\).unref\\(\\);`n`n  function pick\\(q\\) {\"\\); [IO.File]::WriteAllText\\($f,$c\\); Select-String -Path $f -Pattern 'setInterval\\\\\\(loop|profile\\\\\\(' | % { \"$\\($_.LineNumber\\): $\\($_.Line\\)\" })",
+      "PowerShell($c=[IO.File]::ReadAllText\\('.gitignore'\\); $c=$c.Replace\\(\".token.json`n\", \".token.json`n.kite-token.json`n\"\\).Replace\\(\"bt-data/data-sync.json`n\",\"bt-data/data-sync.json`nbt-data/feedcmp-config-demo.json`n\"\\); [IO.File]::WriteAllText\\('.gitignore',$c\\); Get-Content .gitignore -TotalCount 20; \\(Get-Content .env.example -Raw\\) -match \"`r`n\")"
     ]
   }
 }

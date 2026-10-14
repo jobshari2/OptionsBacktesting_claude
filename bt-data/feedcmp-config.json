@@ -1,0 +1,26 @@
+{
+  "paper": {
+    "enabled": true,
+    "minGap": 1.5,
+    "target": 5,
+    "stop": 5,
+    "maxHoldSec": 300,
+    "lots": 1,
+    "cooldownSec": 60,
+    "side": "buy"
+  },
+  "live": {
+    "lots": 1,
+    "product": "MIS",
+    "maxEntries": 10,
+    "maxOpen": 1
+  },
+  "enabled": true,
+  "expiry": "nearest",
+  "around": 5,
+  "extra": [],
+  "fields": [
+    "ltp"
+  ],
+  "index": true
+}

@@ -70,6 +70,7 @@ function createFeed({ getToken, logError, onTick }) {
     }
     if (!msg.feeds) return;
     const now = Date.now();
+    const keys = [];
     for (const [key, f] of Object.entries(msg.feeds)) {
       const m = f.fullFeed?.marketFF;
       const idx = f.fullFeed?.indexFF;
@@ -96,10 +97,11 @@ function createFeed({ getToken, logError, onTick }) {
       }
       t.at = now;
       ticks.set(key, t);
+      keys.push(key);
     }
     lastTickAt = now;
     version++;
-    onTick?.();
+    onTick?.(keys, now); // the instruments in this message and when it arrived (the Feeds screen times them)
   }
 
   // Split new volume into buyer- vs seller-initiated (cumulative since subscribing), using the quote

@@ -21,6 +21,7 @@ const state = {
   levels: null, // support / resistance from /api/bt/levels
   levelsAt: 0,
   prevLtp: {},
+  chartOpt: null, // the option shown in the chart beside the chain (null = Nifty)
   scrolledFor: null,
   windowsBuilt: false,
 };
@@ -66,7 +67,7 @@ function localSet(k, v) {
 }
 
 // ---------- data loop ----------
-const API_VERSION = 19; // must match API_VERSION in server.js
+const API_VERSION = 20; // must match API_VERSION in server.js
 
 async function refresh() {
   let json;
@@ -268,6 +269,15 @@ function runScreenHooks() {
   for (const h of SCREEN_HOOKS) window[h]?.();
 }
 
+// The little chart button beside a strike: shows that option in the chart on the right (chain-chart.js).
+const CHART_ICON =
+  '<svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M1 10.5V1.5M1 10.5h10M3 8l2.5-3 2 2L11 2.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+function chartBtn(expiry, strike, type) {
+  const o = state.chartOpt;
+  const on = o && o.expiry === expiry && o.strike === strike && o.type === type;
+  return `<button type="button" class="ch-btn ${type === 'CE' ? 'ce' : 'pe'}${on ? ' on' : ''}" data-strike="${strike}" data-type="${type}" title="Show the ${strike} ${type} chart beside the chain">${CHART_ICON}</button>`;
+}
+
 function renderChain(d, rows) {
   const w = state.win;
   const maxCeOi = Math.max(1, ...rows.map((r) => r.ce.oi));
@@ -334,7 +344,7 @@ function renderChain(d, rows) {
       <td class="muted${ceItm}">${r.ce.iv == null ? '—' : r.ce.iv.toFixed(1)}</td>
       ${bookCell(r.ce, ceItm)}
       ${ltpCell(r.ce, 'c' + k, ceItm)}
-      <td class="strike">${k}${lvBadge(k, rows)}</td>
+      <td class="strike">${chartBtn(d.expiry, k, 'CE')}${k}${lvBadge(k, rows)}${chartBtn(d.expiry, k, 'PE')}</td>
       ${ltpCell(r.pe, 'p' + k, peItm)}
       ${bookCell(r.pe, peItm)}
       <td class="muted${peItm}">${r.pe.iv == null ? '—' : r.pe.iv.toFixed(1)}</td>
@@ -357,6 +367,21 @@ function renderChain(d, rows) {
     state.scrolledFor = scrollKey;
   }
 }
+
+$('chainBody').addEventListener('click', (e) => {
+  const b = e.target.closest('.ch-btn');
+  if (!b || !state.data || !window.chainChart) return;
+  const opt = { expiry: state.data.expiry, strike: Number(b.dataset.strike), type: b.dataset.type };
+  if (state.sidePane !== 'chart') setPane('side', 'chart'); // the chart sits behind the Signals tab
+  window.chainChart.showOption(opt);
+});
+// The chart tells which option it shows (null = Nifty), so the buttons can mark it.
+window.chartShows = (opt) => {
+  state.chartOpt = opt;
+  document.querySelectorAll('#chainBody .ch-btn').forEach((b) => {
+    b.classList.toggle('on', Boolean(opt) && opt.strike === Number(b.dataset.strike) && opt.type === b.dataset.type && opt.expiry === state.data?.expiry);
+  });
+};
 
 function buildWindowButtons(windows) {
   if (state.windowsBuilt) return;

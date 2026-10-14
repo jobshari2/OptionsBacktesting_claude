@@ -63,6 +63,7 @@
       <button data-view="pulse" title="Market pulse: a plain-language read of trend, option writers and order flow">Pulse</button>
       <button data-view="book" title="Order book: bid / ask queues and how Nifty reacted">Book</button>
       <button data-view="sigtest" title="Test the signals on recorded days: hit rate per kind of signal">Signal test</button>
+      <button data-view="feeds" title="Upstox vs Zerodha Kite: the same options tick by tick, where the prices differ, for how long and which feed moved first">Feeds</button>
     </span>
     <span class="sub-group" data-group="strat">
       <button data-view="an" title="Option arbitrage and fair-value deviations: live scanner and history scan">Arbitrage</button>
@@ -433,6 +434,81 @@
     </div>
   </main>
 
+  <!-- ===== Feeds: Upstox vs Zerodha Kite ticks (feeds-view.js) ===== -->
+  <main id="feeds" class="feeds hidden">
+    <section class="panel fd-top">
+      <div class="fd-kite" id="fdKite"></div>
+      <div class="fd-cfg">
+        <label class="mini" title="Compare the two feeds (also while the page is closed, during market hours)"><input type="checkbox" id="fdOn"> Compare</label>
+        <label class="mini">Expiry <select id="fdExpiry"></select></label>
+        <label class="mini" title="Strikes either side of ATM, calls and puts">ATM ± <input class="num xs" type="number" id="fdAround" min="0" max="20" step="1"></label>
+        <label class="mini" title="More strikes to watch, separated by commas">Also <input class="txt fd-extra" type="text" id="fdExtra" placeholder="e.g. 24500, 25500"></label>
+        <span class="mini">Compare <span class="chips" id="fdFields"><button type="button" class="chip" data-f="ltp">LTP</button><button type="button" class="chip" data-f="bid">Bid</button><button type="button" class="chip" data-f="ask">Ask</button></span></span>
+        <label class="mini"><input type="checkbox" id="fdIndex"> Nifty index</label>
+        <span class="muted small" id="fdCfgNote"></span>
+      </div>
+    </section>
+    <section class="panel fd-tiles" id="fdTiles"></section>
+    <div class="fd-grid">
+      <section class="panel fd-live">
+        <div class="chart-head"><h3>Live · Upstox vs Kite</h3><span class="muted small" id="fdLiveNote">a highlighted row is apart right now · click a row to filter the episodes</span></div>
+        <div class="flow-table-wrap"><table class="flow-table fd-table" id="fdLive"></table></div>
+      </section>
+      <section class="panel fd-lag">
+        <div class="chart-head"><h3>Who is faster</h3><span class="muted small">how long the other feed took to show the same price</span></div>
+        <div id="fdHist" class="fd-hist"></div>
+        <div class="flow-table-wrap"><table class="flow-table fd-table" id="fdPer"></table></div>
+      </section>
+    </div>
+    <section class="panel fd-paper">
+      <div class="chart-head fd-filter">
+        <h3>Paper trades on big gaps</h3>
+        <label class="mini" title="Open a paper trade whenever the two feeds' LTPs are this far apart"><input type="checkbox" id="fpOn"> Trade gaps ≥ ₹ <input class="num xs" type="number" id="fpGap" min="0.5" step="0.5"></label>
+        <label class="mini" title="Close once the trade is this much up per unit, at the price it could really be closed at">Book profit at +₹ <input class="num xs" type="number" id="fpTarget" min="0.05" step="0.5"></label>
+        <label class="mini" title="Close once the trade is this much down per unit (0 = no stop)">Stop −₹ <input class="num xs" type="number" id="fpStop" min="0" step="0.5"></label>
+        <label class="mini" title="Close a trade that has hit neither after this long">Max hold <input class="num xs" type="number" id="fpHold" min="5" step="30"> s</label>
+        <label class="mini">Lots <input class="num xs" type="number" id="fpLots" min="1" step="1"></label>
+        <label class="mini" title="Kite = Kite moved first and the trade was entered at Kite's quote; Upstox = Upstox moved first. Filters the tiles and the table.">Show <select id="fpFeed"><option value="">All trades</option><option value="k">Kite trades</option><option value="u">Upstox trades</option></select></label>
+        <label class="mini" title="Selling an option needs margin; Buy only keeps to buying">Side <select id="fpSide"><option value="both">Buy &amp; sell</option><option value="buy">Buy only</option><option value="sell">Sell only</option></select></label>
+      </div>
+      <!-- live orders on Kite following these paper trades (feedlive.js): real money -->
+      <div class="fd-livebar" id="flBar">
+        <label class="fd-live-sw" title="When on, every paper trade that opens also sends a real MARKET order to Kite, and its close sends the opposite order. Off again after every server restart or Kite login change."><input type="checkbox" id="flOn"> <b>LIVE</b>&nbsp;send orders to Kite</label>
+        <span class="small" id="flAcct"></span>
+        <label class="mini" title="Send only trades where Kite moved first, i.e. entered at Kite's own quote. Trades where Upstox moved first are skipped."><input type="checkbox" id="flKiteOnly"> Kite trades only</label>
+        <label class="mini" title="Lots per live entry when Size by budget is off">Lots <input class="num xs" type="number" id="flLots" min="1" max="50" step="1"></label>
+        <label class="mini" title="Size each live entry from the funds available on Kite: as many lots as this share of the funds pays for (a buy: the premium; a sell: Kite's margin), up to Max lots"><input type="checkbox" id="flBudget"> Size by budget</label>
+        <label class="mini" title="Share of Kite's available funds one entry may use">use <input class="num xs" type="number" id="flBudgetPct" min="1" max="100" step="5">%</label>
+        <label class="mini" title="Never more lots than this in one entry">max lots <input class="num xs" type="number" id="flMaxLots" min="1" max="50" step="1"></label>
+        <label class="mini">Product <select id="flProduct"><option value="MIS">MIS (intraday)</option><option value="NRML">NRML</option></select></label>
+        <label class="mini" title="No new live entries after this many today (exits are always sent)">Max entries / day <input class="num xs" type="number" id="flMaxEntries" min="1" step="1"></label>
+        <label class="mini" title="No new live entry while this many live positions are open">Max open <input class="num xs" type="number" id="flMaxOpen" min="1" step="1"></label>
+        <select id="flTestKind" title="What the test button sends"><option value="CE">Buy ATM CE (market)</option><option value="PE">Buy ATM PE (market)</option><option value="check">Check only (₹0.05 limit)</option></select>
+        <button type="button" class="btn-sm ghost" id="flTest" title="Buy 1 lot of the ATM option at market, a real position closed by Square off all or at 15:15. Or, as a check only, a ₹0.05 limit buy that can't fill and is cancelled at once.">Test order</button>
+        <button type="button" class="btn-sm ghost danger" id="flSquare" title="Close every live position opened from this screen, now, at market">Square off all</button>
+      </div>
+      <div class="fd-funds" id="flFunds"></div>
+      <div class="fd-livelog" id="flLog"></div>
+      <div class="fd-ptiles" id="fpTiles"></div>
+      <div class="muted small fd-pnote">BUY when the feed that moved first shows the higher price, SELL when it shows the lower one. Fills are at the live quote (ask to buy, bid to sell) of the feed that moved first, because an order fills at the exchange's price, not at the old price the slow feed still shows. "If filled at the stale price" is the P&amp;L the gap seems to offer but no order could get. Trades keep being followed for 15 minutes after entry. Saved to <code>events/&lt;date&gt;/feedpaper.jsonl</code>.</div>
+      <div class="flow-table-wrap"><table class="flow-table fd-table" id="fpTable"></table></div>
+    </section>
+    <section class="panel fd-eps">
+      <div class="chart-head fd-filter">
+        <h3>Differences <span class="muted small" id="fdCount"></span></h3>
+        <label class="mini">Day <select id="fdDay"></select></label>
+        <label class="mini" title="Only differences that lasted at least this long">Lasted ≥ <input class="num xs" type="number" id="fdMinMs" min="0" step="50"> ms</label>
+        <label class="mini" title="Only differences at least this big (largest gap while apart)">Gap ≥ ₹ <input class="num xs" type="number" id="fdMinDiff" min="0" step="0.05"></label>
+        <label class="mini">Field <select id="fdField"><option value="">All</option><option value="ltp">LTP</option><option value="bid">Bid</option><option value="ask">Ask</option></select></label>
+        <label class="mini">Instrument <select id="fdInst"><option value="">All</option></select></label>
+        <label class="mini">First <select id="fdLead"><option value="">Either</option><option value="u">Upstox</option><option value="k">Kite</option></select></label>
+        <label class="mini">Ended <select id="fdHow"><option value="">Any way</option><option value="follow">Other feed followed</option><option value="revert">Price went back</option><option value="cross">Both moved</option><option value="cut">Cut short</option></select></label>
+        <span class="muted small">saved to <code>events/&lt;date&gt;/feedcmp.jsonl</code></span>
+      </div>
+      <div class="flow-table-wrap"><table class="flow-table fd-table" id="fdEps"></table></div>
+    </section>
+  </main>
+
   <!-- ===== Portfolio hedge: planner and backtest ===== -->
   <main id="hedge" class="hedge hidden">
     <div class="h-tabs">
@@ -769,6 +845,7 @@
   <script src="signals-backtest.js"></script>
   <script src="pulse-view.js"></script>
   <script src="book-view.js"></script>
+  <script src="feeds-view.js"></script>
   <script src="hedge-view.js"></script>
   <script src="hedge-backtest.js"></script>
   <script src="/lib/pricing.js"></script>
