@@ -85,7 +85,9 @@
       "PowerShell(node -v)",
       "PowerShell(node -e \"const ws = new WebSocket\\('wss://127.0.0.1:1/', { headers: { Origin: 'https://kite.zerodha.com' } }\\); ws.onerror = \\(e\\) => console.log\\('err ok', e.message||''\\); ws.onclose=\\(\\)=>console.log\\('closed'\\);\")",
       "PowerShell($f='feedcmp.js'; $c=[IO.File]::ReadAllText\\($f\\); $c=$c.Replace\\(\"const { NIFTY_TOKEN, kiteDay, niftyInstruments, createKiteTicker } = require\\('./lib/kite'\\);\",\"const { NIFTY_TOKEN, kiteDay, niftyInstruments, createKiteTicker, profile } = require\\('./lib/kite'\\);\"\\).Replace\\(\"await require\\('./lib/kite'\\).profile\\(auth\\);\",\"await profile\\(auth\\);\"\\).Replace\\(\"  setInterval\\(loop, 2000\\).unref\\(\\);`n`n  // Demo mode\",\"  // Demo mode\"\\); $c=$c.Replace\\(\"  function pick\\(q\\) {\",\"  setInterval\\(loop, 2000\\).unref\\(\\);`n`n  function pick\\(q\\) {\"\\); [IO.File]::WriteAllText\\($f,$c\\); Select-String -Path $f -Pattern 'setInterval\\\\\\(loop|profile\\\\\\(' | % { \"$\\($_.LineNumber\\): $\\($_.Line\\)\" })",
-      "PowerShell($c=[IO.File]::ReadAllText\\('.gitignore'\\); $c=$c.Replace\\(\".token.json`n\", \".token.json`n.kite-token.json`n\"\\).Replace\\(\"bt-data/data-sync.json`n\",\"bt-data/data-sync.json`nbt-data/feedcmp-config-demo.json`n\"\\); [IO.File]::WriteAllText\\('.gitignore',$c\\); Get-Content .gitignore -TotalCount 20; \\(Get-Content .env.example -Raw\\) -match \"`r`n\")"
+      "PowerShell($c=[IO.File]::ReadAllText\\('.gitignore'\\); $c=$c.Replace\\(\".token.json`n\", \".token.json`n.kite-token.json`n\"\\).Replace\\(\"bt-data/data-sync.json`n\",\"bt-data/data-sync.json`nbt-data/feedcmp-config-demo.json`n\"\\); [IO.File]::WriteAllText\\('.gitignore',$c\\); Get-Content .gitignore -TotalCount 20; \\(Get-Content .env.example -Raw\\) -match \"`r`n\")",
+      "Bash(xargs ls -la)",
+      "Bash(cd /d/Claude/new/OptionsBacktesting_claude/events/2026-10-14 && wc -l feedpaper.jsonl events.jsonl && head -c 3000 feedpaper.jsonl && echo && head -c 1500 events.jsonl && sed -n 40,140p ../../feedpaper.js)"
     ]
   }
 }

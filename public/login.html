@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sign in · Nifty Options Lab</title>
+  <style>
+    /* self-contained: the app's own files are only served after sign-in */
+    :root { --bg: #0e1117; --panel: #161b22; --line: #2a313c; --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff; --down: #f0716b; --on-accent: #0b1220; }
+    :root[data-theme="day"] { --bg: #f4f5f7; --panel: #ffffff; --line: #d9dde3; --text: #1f2933; --muted: #5f6b7a; --accent: #1f6feb; --down: #cf222e; --on-accent: #ffffff; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 16px; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    form { width: 100%; max-width: 340px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 24px; }
+    h1 { margin: 0 0 4px; font-size: 18px; }
+    p { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
+    label { display: block; margin-bottom: 12px; font-size: 12px; color: var(--muted); }
+    input { display: block; width: 100%; margin-top: 4px; padding: 8px 10px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 14px; }
+    input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+    button { width: 100%; margin-top: 4px; padding: 9px; border: 0; border-radius: 6px; background: var(--accent); color: var(--on-accent); font: inherit; font-weight: 600; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: default; }
+    #err { min-height: 18px; margin: 0 0 8px; color: var(--down); font-size: 13px; }
+  </style>
+  <script>try { document.documentElement.dataset.theme = localStorage.getItem("nifty-theme") === "day" ? "day" : "night"; } catch (e) {}</script>
+</head>
+<body>
+  <form id="f" method="post" action="/login.html" autocomplete="on">
+    <h1>NIFTY 50 · Options Lab</h1>
+    <p>Sign in to continue.</p>
+    <label>Username<input id="u" name="username" autocomplete="username" required autofocus /></label>
+    <label>Password<input id="p" name="password" type="password" autocomplete="current-password" required /></label>
+    <div id="err" role="alert"></div>
+    <button id="go" type="submit">Sign in</button>
+  </form>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    // Only a path on this site is followed after signing in (never another address).
+    const next = (() => {
+      const n = new URLSearchParams(location.search).get('next') || '/';
+      const local = n.startsWith('/') && !n.startsWith('//') && !n.startsWith('/' + String.fromCharCode(92));
+      return local && !n.startsWith('/login.html') ? n : '/';
+    })();
+    fetch('/api/auth/status', { cache: 'no-store' })
+      .then((r) => r.json())
+      .then((s) => {
+        if (!s.enabled || s.authenticated) location.replace(next);
+      })
+      .catch(() => {});
+    $('f').addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      $('err').textContent = '';
+      $('go').disabled = true;
+      try {
+        const r = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: $('u').value, password: $('p').value }),
+        });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(j.error || 'HTTP ' + r.status);
+        location.replace(next);
+      } catch (e) {
+        $('err').textContent = e.message;
+        $('p').value = '';
+        $('p').focus();
+        $('go').disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

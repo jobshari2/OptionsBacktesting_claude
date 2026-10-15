@@ -18,6 +18,7 @@ const { createAnomalyLive } = require('./anomaly-live');
 const { execFile } = require('child_process');
 const { istDate, isMarketOpen } = require('./lib/time');
 const { loadEnv, num } = require('./lib/env');
+const { createAuth, LOGIN_PAGE } = require('./lib/auth');
 const { createUpstox, parseChain } = require('./lib/upstox');
 const { createOptionCandles, respond, demoRows, OPT_TFS } = require('./lib/optcandles');
 const { createKiteSession, loginUrl: kiteLoginUrl, exchangeRequestToken, profile: kiteProfile } = require('./lib/kite');
@@ -38,6 +39,8 @@ const CFG = {
   pollMs: Math.max(1000, num(env.POLL_MS, 3000)),
   signals: signalConfig(env, env.EVENTS_DIR ? path.resolve(env.EVENTS_DIR) : path.join(__dirname, DEMO ? 'events-demo' : 'events')),
 };
+
+const auth = createAuth(env); // AUTH_USERNAME / AUTH_PASSWORD from .env; off when either is missing
 
 const API = 'https://api.upstox.com/v2';
 const NIFTY_KEY = 'NSE_INDEX|Nifty 50';
@@ -665,6 +668,36 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const p = url.pathname;
 
+  // ---- sign-in: the login page and /api/auth/* are open; everything else needs a session (or a Basic header) ----
+  if (p === '/api/auth/status') {
+    return sendJson(res, 200, { enabled: auth.enabled, authenticated: auth.isAuthed(req), user: auth.enabled ? auth.user : null });
+  }
+  if (p === '/api/auth/login' && req.method === 'POST') {
+    try {
+      const b = JSON.parse((await readBody(req, 2_000)).toString('utf8') || '{}');
+      const r = auth.login(req, String(b.username ?? ''), String(b.password ?? ''));
+      if (!r.ok) return sendJson(res, r.status, { error: r.error });
+      res.setHeader('Set-Cookie', r.cookie);
+      return sendJson(res, 200, { ok: true, user: auth.user });
+    } catch (e) {
+      return sendJson(res, 400, { error: e.message });
+    }
+  }
+  if (p === '/api/auth/logout' && req.method === 'POST') {
+    res.setHeader('Set-Cookie', auth.logout(req));
+    return sendJson(res, 200, { ok: true });
+  }
+  if (p === LOGIN_PAGE && req.method === 'GET') return serveStatic(req, res, p);
+  if (!auth.isAuthed(req)) {
+    // a page asks the browser to sign in; anything else gets a 401 the page's scripts turn into the same redirect
+    if (req.method === 'GET' && String(req.headers.accept || '').includes('text/html')) {
+      res.writeHead(302, { Location: `${LOGIN_PAGE}?next=${encodeURIComponent(req.url)}` });
+      return res.end();
+    }
+    res.writeHead(401, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); // no WWW-Authenticate: it would pop the browser's own dialog
+    return res.end(JSON.stringify({ error: 'Sign in required', login: LOGIN_PAGE }));
+  }
+
   if (p === '/login') {
     if (!CFG.apiKey || !CFG.apiSecret) {
       return sendJson(res, 400, { error: 'Set UPSTOX_API_KEY and UPSTOX_API_SECRET in .env first' });
@@ -980,6 +1013,7 @@ server.listen(CFG.port, () => {
   console.log(`Nifty option chain running at http://localhost:${CFG.port}`);
   console.log(DEMO ? 'Data source: DEMO (synthetic data, not real prices)' : 'Data source: Upstox API (real market data)');
   if (!token) console.log('Not logged in yet — open the page and click "Login with Upstox".');
+  console.log(auth.enabled ? `Sign-in required (user "${auth.user}")` : 'WARNING: no sign-in. Set AUTH_USERNAME and AUTH_PASSWORD in .env to require one.');
   console.log(`Spike recordings are saved to ${CFG.signals.dir}`);
   console.log(`Errors are logged to ${LOG_FILE}`);
 });

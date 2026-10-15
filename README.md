@@ -13,8 +13,9 @@ You need Node.js 22 or newer. Run `npm install` once (installs `protobufjs` for 
 
 1. Create an app at <https://account.upstox.com/developer/apps> and set its Redirect URL to `http://localhost:3000/callback`.
 2. Copy `.env.example` to `.env` and fill in `UPSTOX_API_KEY` and `UPSTOX_API_SECRET`, or paste a token into `UPSTOX_ACCESS_TOKEN`.
-3. Run `npm start` and open <http://localhost:3000>.
-4. Click **Login with Upstox** if asked. The token is saved to `.token.json` until it expires (about 3:30 AM IST the next day).
+3. Set `AUTH_USERNAME` and `AUTH_PASSWORD` in `.env` to require a sign-in. The page then shows a login screen first, every `/api/*` route answers 401 without a session, and a **Sign out** button appears in the top bar. Scripts can send an HTTP Basic header (`curl -u user:pass ...`). With either value empty, sign-in is off and the server prints a warning. The sign-in lasts `AUTH_SESSION_HOURS` (default 12) and ends when the server restarts.
+4. Run `npm start` and open <http://localhost:3000>.
+5. Click **Login with Upstox** if asked. The token is saved to `.token.json` until it expires (about 3:30 AM IST the next day).
 
 `npm run demo` shows the live screens with synthetic data. Backtesting and the Hedge screen need real Upstox data. `npm test` runs the tests.
 

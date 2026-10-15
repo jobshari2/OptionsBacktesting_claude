@@ -7,6 +7,9 @@
 .theme-sw button:hover { color: var(--text); }
 .theme-sw button.on { background: var(--accent); color: var(--on-accent, #0b1220); font-weight: 600; }
 
+.logout { background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.logout:hover { color: var(--text); }
+
 :root { --on-accent: #0b1220; }
 
 /* ----- Day: Kite-style light theme: white surfaces, soft grey headers/borders, dark-grey text,

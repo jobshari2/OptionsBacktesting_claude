@@ -38,6 +38,7 @@
           body: JSON.stringify({ mode: 'enctoken', enctoken: String(ev.data.enctoken || ''), userId: String(ev.data.userId || '') }),
         });
         const j = await res.json().catch(() => ({}));
+        if (res.status === 401) throw new Error('Sign in to the app in this browser first (open it in a tab), then use the bookmark again.');
         if (!res.ok || j.error) throw new Error(j.error || 'HTTP ' + res.status);
         show(`Logged in as ${j.kite.userId}${j.kite.userName ? ' (' + j.kite.userName + ')' : ''}. The Feeds screen streams Kite now; this window closes by itself.`, 'ok');
         setTimeout(() => window.close(), 2500);
