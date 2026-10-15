@@ -227,6 +227,8 @@ addEventListener('message',function h(ev){if(ev.origin!==o||ev.data!=='ready')re
       .forEach((b) => b.classList.toggle('on', c.fields.includes(b.dataset.f)));
     const p = c.paper;
     $('fpOn').checked = p.enabled;
+    $('fpConv').checked = p.exitOnConverge;
+    $('fpTarget').disabled = p.exitOnConverge;
     $('fpSide').value = p.side;
     for (const [id, k] of Object.entries(PAPER_INPUTS)) if (document.activeElement !== $(id)) $(id).value = p[k];
     $('flProduct').value = c.live.product;
@@ -240,6 +242,7 @@ addEventListener('message',function h(ev){if(ev.origin!==o||ev.data!=='ready')re
   const PAPER_INPUTS = { fpGap: 'minGap', fpTarget: 'target', fpStop: 'stop', fpHold: 'maxHoldSec', fpLots: 'lots' };
   for (const [id, k] of Object.entries(PAPER_INPUTS)) $(id).onchange = (e) => saveConfig({ paper: { [k]: Number(e.target.value) } });
   $('fpOn').onchange = (e) => saveConfig({ paper: { enabled: e.target.checked } });
+  $('fpConv').onchange = (e) => saveConfig({ paper: { exitOnConverge: e.target.checked } });
   $('fpSide').onchange = (e) => saveConfig({ paper: { side: e.target.value } });
   $('fpFeed').value = fs.filter.pfeed;
   $('fpFeed').onchange = (e) => {
@@ -278,7 +281,7 @@ addEventListener('message',function h(ev){if(ev.origin!==o||ev.data!=='ready')re
       const ok = confirm(
         `Switch LIVE trading on for Kite account ${acct}?\n\n` +
           `Every paper trade that opens from now on sends a real MARKET order: ${L.budget ? `lots sized by budget (${L.budgetPct}% of the Kite funds available, max ${L.maxLots} lots)` : `${L.lots} lot(s)`}, ${L.product}, ${p.side === 'both' ? 'buys and sells' : p.side + ' only'}, on gaps of ₹${p.minGap} or more${L.kiteOnly ? ', only when Kite moved first' : ''}.\n` +
-          `Each is closed with the opposite MARKET order at +₹${p.target}${p.stop ? `, −₹${p.stop}` : ''} or after ${p.maxHoldSec} s, and by 15:15 at the latest.\n` +
+          `Each is closed with the opposite MARKET order ${p.exitOnConverge ? 'when the Upstox and Kite LTPs match again' : `at +₹${p.target}`}${p.stop ? `, at −₹${p.stop}` : ''} or after ${p.maxHoldSec} s, and by 15:15 at the latest.\n` +
           `At most ${L.maxEntries} entries today and ${L.maxOpen} open at a time.\n\nReal money. Continue?`,
       );
       if (!ok) {
@@ -444,7 +447,15 @@ addEventListener('message',function h(ev){if(ev.origin!==o||ev.data!=='ready')re
 
   const rupees = (n) => (n == null ? '—' : `${n < 0 ? '−' : n > 0 ? '+' : ''}₹${Math.abs(n).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`);
   const pnlCell = (n) => `<td class="${n > 0 ? 'pos' : n < 0 ? 'neg' : 'muted'}">${n == null ? '—' : rupees(n)}</td>`;
-  const REASON = { target: 'target hit', stop: 'stop', time: 'max hold', eod: '15:25 close', lost: 'lost (restart)' };
+  const REASON = { target: 'target hit', stop: 'stop', time: 'max hold', converge: 'feeds matched', eod: '15:25 close', lost: 'lost (restart)' };
+
+  // Profit had the trade been closed when the feeds first matched again: net of charges, with the details on hover.
+  function convCell(t) {
+    const c = t.conv;
+    if (!c) return `<td class="muted" title="The feeds have not shown the same LTP since entry">${t.status === 'open' ? 'waiting' : '—'}</td>`;
+    const title = `Feeds matched at ${px(c.ltp)} after ${dur(c.at - t.at)}. Closing then: ${px(c.px)} = ${rupees(c.pnl)} per unit · gross ${rupees(c.gross)} · net ${rupees(c.net)}`;
+    return `<td class="${c.net > 0 ? 'pos' : c.net < 0 ? 'neg' : 'muted'}" title="${esc(title)}"><b>${rupees(c.net)}</b> <span class="muted small">${dur(c.at - t.at)}</span></td>`;
+  }
 
   function renderPaper(d) {
     const p = d.paper;
@@ -478,7 +489,7 @@ addEventListener('message',function h(ev){if(ev.origin!==o||ev.data!=='ready')re
       ),
     ].join('');
     const later = (t, s) => pnlCell(t.later?.[s]);
-    const head = `<thead><tr><th>Opened (IST)</th><th>Instrument</th><th>Side</th><th title="Upstox LTP / Kite LTP when the trade opened">Upstox / Kite</th><th>Moved first</th><th>Entry</th><th title="The slow feed's price: what the gap seemed to offer">Stale price</th><th>Exit</th><th>Why closed</th><th>Held</th><th>P&amp;L / unit</th><th title="P&amp;L per unit had the entry been at the stale price (not possible)">At stale price</th><th>Net ₹</th><th title="The real order on Kite, when live trading was on">Kite order</th><th title="Best / worst P&amp;L per unit while open">Best / worst</th><th title="P&amp;L per unit at these times after entry, held or not: what happened later">+30s</th><th>+1m</th><th>+5m</th><th>+15m</th></tr></thead>`;
+    const head = `<thead><tr><th>Opened (IST)</th><th>Instrument</th><th>Side</th><th title="Upstox LTP / Kite LTP when the trade opened">Upstox / Kite</th><th>Moved first</th><th>Entry</th><th title="The slow feed's price: what the gap seemed to offer">Stale price</th><th>Exit</th><th>Why closed</th><th>Held</th><th>P&amp;L / unit</th><th title="P&amp;L per unit had the entry been at the stale price (not possible)">At stale price</th><th>Net ₹</th><th title="Profit after charges had the trade been closed the first time Upstox and Kite showed the same LTP again (shown for every trade, whether or not it exits there)">At convergence</th><th title="The real order on Kite, when live trading was on">Kite order</th><th title="Best / worst P&amp;L per unit while open">Best / worst</th><th title="P&amp;L per unit at these times after entry, held or not: what happened later">+30s</th><th>+1m</th><th>+5m</th><th>+15m</th></tr></thead>`;
     const rows = p.trades.map((t) => {
       const held = t.status === 'lost' ? null : (t.exitAt || d.now) - t.at;
       return `<tr class="${t.status === 'open' ? 'fd-open' : ''}">
@@ -495,6 +506,7 @@ addEventListener('message',function h(ev){if(ev.origin!==o||ev.data!=='ready')re
         ${pnlCell(t.pnl)}
         <td class="muted">${t.stalePnl == null ? '—' : rupees(t.stalePnl)}</td>
         ${pnlCell(t.net)}
+        ${convCell(t)}
         ${liveCell(t)}
         <td><span class="pos">${rupees(t.mfe)}</span> / <span class="neg">${rupees(t.mae)}</span></td>
         ${later(t, 30)}${later(t, 60)}${later(t, 300)}${later(t, 900)}
@@ -505,7 +517,7 @@ addEventListener('message',function h(ev){if(ev.origin!==o||ev.data!=='ready')re
       '<tbody>' +
       (rows.length
         ? rows.join('')
-        : `<tr><td class="muted" colspan="19">${d.live ? `No gap of ₹${d.config.paper.minGap} or more yet${d.config.paper.enabled ? '' : ' (paper trading is off)'}.` : 'No paper trades on this day.'}</td></tr>`) +
+        : `<tr><td class="muted" colspan="20">${d.live ? `No gap of ₹${d.config.paper.minGap} or more yet${d.config.paper.enabled ? '' : ' (paper trading is off)'}.` : 'No paper trades on this day.'}</td></tr>`) +
       '</tbody>';
   }
 

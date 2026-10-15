@@ -467,6 +467,7 @@
         <label class="mini" title="Open a paper trade whenever the two feeds' LTPs are this far apart"><input type="checkbox" id="fpOn"> Trade gaps ≥ ₹ <input class="num xs" type="number" id="fpGap" min="0.5" step="0.5"></label>
         <label class="mini" title="Close once the trade is this much up per unit, at the price it could really be closed at">Book profit at +₹ <input class="num xs" type="number" id="fpTarget" min="0.05" step="0.5"></label>
         <label class="mini" title="Close once the trade is this much down per unit (0 = no stop)">Stop −₹ <input class="num xs" type="number" id="fpStop" min="0" step="0.5"></label>
+        <label class="mini" title="Exit a trade when Upstox and Kite show the same LTP again (the gap has closed), instead of at the profit target. Stop, max hold and the 15:25 close still apply. The 'At convergence' column shows the profit at that moment either way."><input type="checkbox" id="fpConv"> Exit when feeds match</label>
         <label class="mini" title="Close a trade that has hit neither after this long">Max hold <input class="num xs" type="number" id="fpHold" min="5" step="30"> s</label>
         <label class="mini">Lots <input class="num xs" type="number" id="fpLots" min="1" step="1"></label>
         <label class="mini" title="Kite = Kite moved first and the trade was entered at Kite's quote; Upstox = Upstox moved first. Filters the tiles and the table.">Show <select id="fpFeed"><option value="">All trades</option><option value="k">Kite trades</option><option value="u">Upstox trades</option></select></label>
