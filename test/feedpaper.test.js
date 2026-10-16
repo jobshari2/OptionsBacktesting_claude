@@ -113,6 +113,61 @@ test('side filter, the day file, and the summary', () => {
   assert.equal(s.stalePnl, 9.9);
 });
 
+test('exit when feeds match: closes at the first matching LTPs instead of the target, and every trade notes its convergence profit', () => {
+  const { q, p } = setup({ exitOnConverge: true });
+  q.k = { ltp: 305, bid: 304.8, ask: 305.2, at: T0 };
+  q.u = { ltp: 300, bid: 299.8, ask: 300.2, at: T0 - 20_000 };
+  p.check('X', 'e', { u: 300, k: 305, l: 'k' }, T0);
+  q.k = { ltp: 312, bid: 311.8, ask: 312.2, at: T0 + 2000 }; // +6.8 per unit, past the ₹3 target: no exit, feeds differ
+  p.tick(T0 + 2000);
+  assert.equal(p.list()[0].status, 'open');
+  assert.equal(p.list()[0].conv, undefined);
+  q.u = { ltp: 312, bid: 311.7, ask: 312.3, at: T0 + 4000 }; // Upstox caught up: same LTP
+  p.tick(T0 + 4000);
+  const t = p.list()[0];
+  assert.equal(t.status, 'closed');
+  assert.equal(t.reason, 'converge');
+  assert.equal(t.exit, 311.7);
+  assert.equal(t.pnl, 6.5);
+  assert.deepEqual([t.conv.at, t.conv.ltp, t.conv.px, t.conv.pnl, t.conv.gross], [T0 + 4000, 312, 311.7, 6.5, 422.5]);
+  assert.equal(t.conv.net, t.net, "closed there: the convergence profit is the trade's net");
+});
+
+test('with the exit off the trade closes as before, but the convergence profit is still noted', () => {
+  const { q, p } = setup();
+  q.k = { ltp: 105, bid: 104.9, ask: 105.1, at: T0 };
+  q.u = { ltp: 100, at: T0 - 1000 };
+  p.check('A', 'e', { u: 100, k: 105, l: 'k' }, T0);
+  q.k = { ltp: 108.5, bid: 108.4, ask: 108.6, at: T0 + 1000 };
+  p.tick(T0 + 1000);
+  assert.equal(p.list()[0].reason, 'target');
+  assert.equal(p.list()[0].conv, undefined);
+  q.u = { ltp: 108.5, at: T0 + 2000 }; // matches after the close, within the follow window
+  p.tick(T0 + 2000);
+  const t = p.list()[0];
+  assert.equal(t.reason, 'target');
+  assert.equal(t.conv.pnl, 3.4); // priced at Upstox's LTP: it has no bid
+  assert.ok(t.conv.net < t.conv.gross);
+});
+
+test('a loss-making match still exits when the exit is on; the stop wins if both hold', () => {
+  const { q, p } = setup({ exitOnConverge: true, stop: 1 });
+  q.k = { ltp: 105, bid: 104.9, ask: 105.1, at: T0 };
+  q.u = { ltp: 100, at: T0 - 1000 };
+  p.check('A', 'e', { u: 100, k: 105, l: 'k' }, T0);
+  q.k = { ltp: 100, bid: 99.9, ask: 100.1, at: T0 + 1000 }; // Kite fell back to Upstox: -5.2 per unit, same LTP
+  p.tick(T0 + 1000);
+  assert.equal(p.list()[0].reason, 'stop');
+  const b = setup({ exitOnConverge: true });
+  b.q.k = { ltp: 105, bid: 104.9, ask: 105.1, at: T0 };
+  b.q.u = { ltp: 100, at: T0 - 1000 };
+  b.p.check('A', 'e', { u: 100, k: 105, l: 'k' }, T0);
+  b.q.k = { ltp: 100, bid: 99.9, ask: 100.1, at: T0 + 1000 };
+  b.p.tick(T0 + 1000);
+  assert.equal(b.p.list()[0].reason, 'converge');
+  assert.equal(b.p.list()[0].pnl, -5.2);
+});
+
 // ---- the optional broad-surge gate
 function setupSurge(over = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'feedpaper-'));
@@ -130,7 +185,10 @@ test('the surge gate is off by default, and every trade is tagged with the volum
   p.check('A', 'e', { u: 100, k: 105, l: 'k' }, T0);
   breadth.pct = 72.456;
   p.check('B', 'e', { u: 100, k: 105, l: 'k' }, T0);
-  assert.deepEqual(p.list().map((t) => t.surge), [20, 72.46]);
+  assert.deepEqual(
+    p.list().map((t) => t.surge),
+    [20, 72.46],
+  );
 });
 
 test('with the gate on, no trade opens below the level or while the breadth is not ready, and no cooldown is used up', () => {
@@ -151,7 +209,16 @@ test('with the gate on, no trade opens below the level or while the breadth is n
 });
 
 test('trades split by the breadth they opened in; older ones without a tag are kept apart', () => {
-  const mk = (surge, pnl, net) => ({ status: 'closed', reason: 'target', pnl, net, gross: net, costs: 0, stalePnl: 0, ...(surge === undefined ? {} : { surge }) });
+  const mk = (surge, pnl, net) => ({
+    status: 'closed',
+    reason: 'target',
+    pnl,
+    net,
+    gross: net,
+    costs: 0,
+    stalePnl: 0,
+    ...(surge === undefined ? {} : { surge }),
+  });
   const r = summarizeBySurge([mk(80, 3, 100), mk(60, -5, -300), mk(10, -5, -300), mk(null, 3, 100), mk(undefined, 3, 100)], 60);
   assert.equal(r.minPct, 60);
   assert.equal(r.surge.trades, 2);

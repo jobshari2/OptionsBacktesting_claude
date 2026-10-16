@@ -5,8 +5,11 @@
 // not at the stale price the slow feed still shows. Entry = the ask (BUY) or bid (SELL) of the feed that moved
 // first; afterwards each mark uses the feed whose quote arrived last. The P&L of the impossible fill at the stale
 // price is kept beside it ("at stale price"), to show how much of the gap was never really there.
-// A trade closes at +target ₹ per unit, at -stop (if set), after maxHoldSec, or at 15:25 IST. It is then still
-// followed until 15 minutes after entry, so the screen shows what the price did later.
+// A trade closes at +target ₹ per unit, at -stop (if set), after maxHoldSec, or at 15:25 IST. With `exitOnConverge` on,
+// the +target is replaced by the moment the two feeds' LTPs show the same price again (stop, max hold and 15:25 still
+// apply). Whether or not that exit is on, the first time the feeds agree again after entry is noted on the trade
+// (`conv`: when, and the profit per unit / in ₹ / after charges had it been closed then). A trade is closed, then
+// still followed until 15 minutes after entry, so the screen shows what the price did later.
 // Trades are appended to <events dir>/<date>/feedpaper.jsonl (a trade's later lines replace its earlier ones).
 const fs = require('fs');
 const path = require('path');
@@ -15,7 +18,20 @@ const Costs = require('./lib/costs');
 
 const LATER_SEC = [5, 30, 60, 300, 900];
 const FOLLOW_MS = 900_000; // keep watching a trade until 15 minutes after its entry
-const PAPER_DEFAULTS = { enabled: true, minGap: 5, target: 3, stop: 0, maxHoldSec: 300, lots: 1, cooldownSec: 60, side: 'both', surgeGate: false, surgePct: 60 };
+const PAPER_DEFAULTS = {
+  enabled: true,
+  minGap: 5,
+  target: 3,
+  stop: 0,
+  maxHoldSec: 300,
+  lots: 1,
+  cooldownSec: 60,
+  side: 'both',
+  exitOnConverge: false,
+  surgeGate: false,
+  surgePct: 60,
+};
+const CONVERGED = 0.025; // LTPs are quoted in 0.05 steps: closer than half a step = the same price
 
 const r2 = (n) => (n == null ? null : Math.round(n * 100) / 100);
 
@@ -33,6 +49,7 @@ function cleanPaper(p = {}) {
     lots: Math.round(n(p.lots, PAPER_DEFAULTS.lots, 1, 100)),
     cooldownSec: Math.round(n(p.cooldownSec, PAPER_DEFAULTS.cooldownSec, 0, 3600)),
     side: ['both', 'buy', 'sell'].includes(p.side) ? p.side : 'both',
+    exitOnConverge: p.exitOnConverge === true,
     surgeGate: p.surgeGate === true,
     surgePct: n(p.surgePct, PAPER_DEFAULTS.surgePct, 1, 100),
   };
@@ -51,7 +68,17 @@ function charges(t) {
 // volume), or null. Every trade is tagged with it (t.surge, in %); with the surge gate on, no trade opens below
 // surgePct, or while the breadth isn't known yet.
 // onOpen(trade) / onClose(trade, reason): told when a trade opens and closes (live trading follows them).
-function createFeedPaper({ dir, getConfig, quotes, getLot, getSurge = () => null, onOpen = () => {}, onClose = () => {}, logError = () => {}, now = () => Date.now() }) {
+function createFeedPaper({
+  dir,
+  getConfig,
+  quotes,
+  getLot,
+  getSurge = () => null,
+  onOpen = () => {},
+  onClose = () => {},
+  logError = () => {},
+  now = () => Date.now(),
+}) {
   let day = istDate(now());
   let trades = readTrades(dir, day); // this day's trades, oldest first
   const cool = new Map(); // instrument -> no new trade before this time
@@ -180,6 +207,12 @@ function createFeedPaper({ dir, getConfig, quotes, getLot, getSurge = () => null
         if (px == null) continue;
         const pnl = r2((px - t.entry) * (t.side === 'BUY' ? 1 : -1));
         const age = at - t.at;
+        const same = q.u?.ltp != null && q.k?.ltp != null && Math.abs(q.u.ltp - q.k.ltp) < CONVERGED;
+        if (same && !t.conv) {
+          const gross = r2(pnl * t.lot * t.lots);
+          const costs = charges({ ...t, exit: px, at: t.at });
+          t.conv = { at, ltp: q.u.ltp, px: r2(px), pnl, gross, net: r2(gross - costs) };
+        }
         for (const s of LATER_SEC) if (t.later[s] == null && age >= s * 1000) t.later[s] = pnl;
         if (t.status === 'open') {
           t.mark = r2(px);
@@ -187,8 +220,9 @@ function createFeedPaper({ dir, getConfig, quotes, getLot, getSurge = () => null
           t.pnl = pnl;
           t.mfe = Math.max(t.mfe, pnl);
           t.mae = Math.min(t.mae, pnl);
-          if (pnl >= c.target - 1e-9) close(t, px, mq.src, at, 'target');
+          if (!c.exitOnConverge && pnl >= c.target - 1e-9) close(t, px, mq.src, at, 'target');
           else if (c.stop > 0 && pnl <= -c.stop + 1e-9) close(t, px, mq.src, at, 'stop');
+          else if (c.exitOnConverge && same) close(t, px, mq.src, at, 'converge');
           else if (age >= c.maxHoldSec * 1000) close(t, px, mq.src, at, 'time');
           else if (eod) close(t, px, mq.src, at, 'eod');
         }
@@ -233,6 +267,7 @@ function summarizePaper(trades) {
     open: trades.filter((t) => t.status === 'open').length,
     closed: n,
     target: closed.filter((t) => t.reason === 'target').length,
+    converge: closed.filter((t) => t.reason === 'converge').length,
     wins: closed.filter((t) => t.pnl > 0).length,
     pnl: sum((t) => t.pnl),
     stalePnl: sum((t) => t.stalePnl),
