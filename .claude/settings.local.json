@@ -91,7 +91,16 @@
       "Bash(node \"C:/Users/Admin/AppData/Local/Temp/claude/D--Claude-new-OptionsBacktesting-claude/0ea23f65-c4d2-4c66-82ce-61684f5f769d/scratchpad/a1.js\")",
       "PowerShell(git fetch origin 2>&1)",
       "PowerShell(git rev-list --left-right --count HEAD...origin/main)",
-      "PowerShell(git add -A)"
+      "PowerShell(git add -A)",
+      "PowerShell(git merge --no-edit origin/main 2>&1)",
+      "PowerShell(node -e \"console.log\\(require\\('./package.json'\\).scripts\\)\")",
+      "PowerShell(node --check public/feeds-view.js)",
+      "PowerShell(npm test 2>&1)",
+      "PowerShell(npx eslint feedpaper.js public/feeds-view.js test/feedpaper.test.js 2>&1)",
+      "PowerShell(npx prettier --check feedpaper.js public/feeds-view.js test/feedpaper.test.js 2>&1)",
+      "PowerShell(npx prettier --write feedpaper.js public/feeds-view.js test/feedpaper.test.js 2>&1; npx eslint feedpaper.js public/feeds-view.js test/feedpaper.test.js; \"eslint exit: $LASTEXITCODE\"; node --test test/feedpaper.test.js 2>&1 | Select-String '^# \\(tests|pass|fail\\)'; git diff .claude/settings.local.json)",
+      "PowerShell(git add feedpaper.js public/feeds-view.js test/feedpaper.test.js)",
+      "PowerShell(git push origin main 2>&1)"
     ]
   }
 }
