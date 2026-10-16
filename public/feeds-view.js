@@ -228,6 +228,7 @@ addEventListener('message',function h(ev){if(ev.origin!==o||ev.data!=='ready')re
     const p = c.paper;
     $('fpOn').checked = p.enabled;
     $('fpSide').value = p.side;
+    $('fpSurgeOn').checked = p.surgeGate;
     for (const [id, k] of Object.entries(PAPER_INPUTS)) if (document.activeElement !== $(id)) $(id).value = p[k];
     $('flProduct').value = c.live.product;
     $('flKiteOnly').checked = c.live.kiteOnly;
@@ -237,9 +238,10 @@ addEventListener('message',function h(ev){if(ev.origin!==o||ev.data!=='ready')re
   }
 
   // ---------- paper trades on big gaps ----------
-  const PAPER_INPUTS = { fpGap: 'minGap', fpTarget: 'target', fpStop: 'stop', fpHold: 'maxHoldSec', fpLots: 'lots' };
+  const PAPER_INPUTS = { fpGap: 'minGap', fpTarget: 'target', fpStop: 'stop', fpHold: 'maxHoldSec', fpLots: 'lots', fpSurgePct: 'surgePct' };
   for (const [id, k] of Object.entries(PAPER_INPUTS)) $(id).onchange = (e) => saveConfig({ paper: { [k]: Number(e.target.value) } });
   $('fpOn').onchange = (e) => saveConfig({ paper: { enabled: e.target.checked } });
+  $('fpSurgeOn').onchange = (e) => saveConfig({ paper: { surgeGate: e.target.checked } });
   $('fpSide').onchange = (e) => saveConfig({ paper: { side: e.target.value } });
   $('fpFeed').value = fs.filter.pfeed;
   $('fpFeed').onchange = (e) => {
@@ -446,6 +448,31 @@ addEventListener('message',function h(ev){if(ev.origin!==o||ev.data!=='ready')re
   const pnlCell = (n) => `<td class="${n > 0 ? 'pos' : n < 0 ? 'neg' : 'muted'}">${n == null ? '—' : rupees(n)}</td>`;
   const REASON = { target: 'target hit', stop: 'stop', time: 'max hold', eod: '15:25 close', lost: 'lost (restart)' };
 
+  // The day's paper trades split by the volume breadth they opened in (the same split the optional gate uses).
+  function renderSurge(d) {
+    const b = d.paper.bySurge;
+    const cfg = d.config.paper;
+    const now = d.paper.surgeNow;
+    const nowTxt = d.live
+      ? now?.ready
+        ? `Volume breadth now <b class="${now.pct >= cfg.surgePct ? 'pos' : ''}">${Math.round(now.pct)}%</b> of strikes surging`
+        : 'Volume breadth not ready yet'
+      : '';
+    const gateTxt = cfg.surgeGate ? `<b>Gate on:</b> trades open only at ≥ ${cfg.surgePct}%` : 'Gate off: every trade is still tagged with the breadth';
+    const sgn = (n) => (n > 0 ? 'pos' : n < 0 ? 'neg' : '');
+    const line = (label, s, title) => {
+      const per = s.closed ? Math.round(s.net / s.closed) : null;
+      return `<tr title="${title}"><td>${label}</td><td>${s.trades}</td><td>${s.closed ? Math.round((s.wins / s.closed) * 100) + '%' : '—'}</td><td class="${sgn(s.avg)}">${rupees(s.avg)}</td><td class="${sgn(s.net)}">${rupees(s.net)}</td><td class="${sgn(per)}">${rupees(per)}</td></tr>`;
+    };
+    $('fpSurge').innerHTML =
+      `<span class="muted">${[nowTxt, gateTxt].filter(Boolean).join(' · ')}</span>` +
+      '<table><thead><tr><th>Opened when…</th><th>Trades</th><th>In profit</th><th>Avg P&amp;L / unit</th><th>Net ₹</th><th>Net ₹ / trade</th></tr></thead><tbody>' +
+      line(`Volume surge (≥ ${b.minPct}% of strikes)`, b.surge, 'Trades that opened while at least this share of strikes near ATM traded at 2× their normal volume or more') +
+      line('Calmer volume', b.calm, 'Trades that opened below that level') +
+      (b.untagged.trades ? line('Not tagged', b.untagged, 'Opened before the breadth was recorded with each trade, or while it was not ready') : '') +
+      '</tbody></table>';
+  }
+
   function renderPaper(d) {
     const p = d.paper;
     const s = p.summary;
@@ -477,8 +504,9 @@ addEventListener('message',function h(ev){if(ev.origin!==o||ev.data!=='ready')re
         cls((p.live.net || 0) + (p.live.openPnl || 0)),
       ),
     ].join('');
+    renderSurge(d);
     const later = (t, s) => pnlCell(t.later?.[s]);
-    const head = `<thead><tr><th>Opened (IST)</th><th>Instrument</th><th>Side</th><th title="Upstox LTP / Kite LTP when the trade opened">Upstox / Kite</th><th>Moved first</th><th>Entry</th><th title="The slow feed's price: what the gap seemed to offer">Stale price</th><th>Exit</th><th>Why closed</th><th>Held</th><th>P&amp;L / unit</th><th title="P&amp;L per unit had the entry been at the stale price (not possible)">At stale price</th><th>Net ₹</th><th title="The real order on Kite, when live trading was on">Kite order</th><th title="Best / worst P&amp;L per unit while open">Best / worst</th><th title="P&amp;L per unit at these times after entry, held or not: what happened later">+30s</th><th>+1m</th><th>+5m</th><th>+15m</th></tr></thead>`;
+    const head = `<thead><tr><th>Opened (IST)</th><th>Instrument</th><th>Side</th><th title="Upstox LTP / Kite LTP when the trade opened">Upstox / Kite</th><th>Moved first</th><th title="Share of strikes near ATM trading at 2× their normal volume or more when the trade opened">Surge</th><th>Entry</th><th title="The slow feed's price: what the gap seemed to offer">Stale price</th><th>Exit</th><th>Why closed</th><th>Held</th><th>P&amp;L / unit</th><th title="P&amp;L per unit had the entry been at the stale price (not possible)">At stale price</th><th>Net ₹</th><th title="The real order on Kite, when live trading was on">Kite order</th><th title="Best / worst P&amp;L per unit while open">Best / worst</th><th title="P&amp;L per unit at these times after entry, held or not: what happened later">+30s</th><th>+1m</th><th>+5m</th><th>+15m</th></tr></thead>`;
     const rows = p.trades.map((t) => {
       const held = t.status === 'lost' ? null : (t.exitAt || d.now) - t.at;
       return `<tr class="${t.status === 'open' ? 'fd-open' : ''}">
@@ -487,6 +515,7 @@ addEventListener('message',function h(ev){if(ev.origin!==o||ev.data!=='ready')re
         <td class="${t.side === 'BUY' ? 'pos' : 'neg'}"><b>${t.side}</b></td>
         <td>${px(t.uLtp)} / ${px(t.kLtp)} <span class="muted small">gap ₹${px(t.gap)}</span></td>
         <td>${feedTag(t.lead)}</td>
+        <td class="${t.surge >= d.config.paper.surgePct ? 'pos' : 'muted'}">${t.surge == null ? '—' : Math.round(t.surge) + '%'}</td>
         <td title="${t.quoted ? `${NAME[t.entryFeed]} bid ${px(t.entryQuote.bid)} / ask ${px(t.entryQuote.ask)}` : 'no quote: filled at LTP'}">${px(t.entry)}${t.quoted ? '' : ' <span class="muted small">LTP</span>'}</td>
         <td class="muted">${px(t.stale)}</td>
         <td>${t.status === 'open' ? `<span class="muted">now ${px(t.mark)}</span>` : px(t.exit)}</td>
@@ -505,7 +534,7 @@ addEventListener('message',function h(ev){if(ev.origin!==o||ev.data!=='ready')re
       '<tbody>' +
       (rows.length
         ? rows.join('')
-        : `<tr><td class="muted" colspan="19">${d.live ? `No gap of ₹${d.config.paper.minGap} or more yet${d.config.paper.enabled ? '' : ' (paper trading is off)'}.` : 'No paper trades on this day.'}</td></tr>`) +
+        : `<tr><td class="muted" colspan="20">${d.live ? `No gap of ₹${d.config.paper.minGap} or more yet${d.config.paper.enabled ? '' : ' (paper trading is off)'}.` : 'No paper trades on this day.'}</td></tr>`) +
       '</tbody>';
   }
 

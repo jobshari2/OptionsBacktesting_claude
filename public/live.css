@@ -231,6 +231,11 @@
 }
 .fd-paper { display: flex; flex-direction: column; }
 .fd-paper .flow-table-wrap { max-height: 480px; }
+.fd-psurge { padding: 8px 12px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.fd-psurge table { border-collapse: collapse; margin-top: 4px; }
+.fd-psurge th, .fd-psurge td { padding: 2px 14px 2px 0; text-align: right; white-space: nowrap; }
+.fd-psurge th:first-child, .fd-psurge td:first-child { text-align: left; }
+.fd-psurge th { font-weight: 500; color: var(--muted); }
 .fd-ptiles { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 1px; background: var(--line); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .fd-ptiles .st { background: var(--panel); padding: 8px 12px; display: flex; flex-direction: column; gap: 1px; }
 .fd-ptiles .st .s { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .3px; }

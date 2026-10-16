@@ -15,7 +15,7 @@ const Costs = require('./lib/costs');
 
 const LATER_SEC = [5, 30, 60, 300, 900];
 const FOLLOW_MS = 900_000; // keep watching a trade until 15 minutes after its entry
-const PAPER_DEFAULTS = { enabled: true, minGap: 5, target: 3, stop: 0, maxHoldSec: 300, lots: 1, cooldownSec: 60, side: 'both' };
+const PAPER_DEFAULTS = { enabled: true, minGap: 5, target: 3, stop: 0, maxHoldSec: 300, lots: 1, cooldownSec: 60, side: 'both', surgeGate: false, surgePct: 60 };
 
 const r2 = (n) => (n == null ? null : Math.round(n * 100) / 100);
 
@@ -33,6 +33,8 @@ function cleanPaper(p = {}) {
     lots: Math.round(n(p.lots, PAPER_DEFAULTS.lots, 1, 100)),
     cooldownSec: Math.round(n(p.cooldownSec, PAPER_DEFAULTS.cooldownSec, 0, 3600)),
     side: ['both', 'buy', 'sell'].includes(p.side) ? p.side : 'both',
+    surgeGate: p.surgeGate === true,
+    surgePct: n(p.surgePct, PAPER_DEFAULTS.surgePct, 1, 100),
   };
 }
 
@@ -45,8 +47,11 @@ function charges(t) {
 }
 
 // quotes(id) -> { u: { ltp, bid, ask, at }, k: {...} } (latest of each feed); getLot() -> contract size.
+// getSurge() -> the signals' volume breadth { ready, pct } (share of strikes near ATM trading well above their normal
+// volume), or null. Every trade is tagged with it (t.surge, in %); with the surge gate on, no trade opens below
+// surgePct, or while the breadth isn't known yet.
 // onOpen(trade) / onClose(trade, reason): told when a trade opens and closes (live trading follows them).
-function createFeedPaper({ dir, getConfig, quotes, getLot, onOpen = () => {}, onClose = () => {}, logError = () => {}, now = () => Date.now() }) {
+function createFeedPaper({ dir, getConfig, quotes, getLot, getSurge = () => null, onOpen = () => {}, onClose = () => {}, logError = () => {}, now = () => Date.now() }) {
   let day = istDate(now());
   let trades = readTrades(dir, day); // this day's trades, oldest first
   const cool = new Map(); // instrument -> no new trade before this time
@@ -92,6 +97,8 @@ function createFeedPaper({ dir, getConfig, quotes, getLot, onOpen = () => {}, on
     if (!fq) return;
     const quoted = side === 'BUY' ? fq.ask : fq.bid;
     const entry = quoted || fresh;
+    const b = getSurge();
+    const surge = b?.ready && Number.isFinite(b.pct) ? r2(b.pct) : null;
     const t = {
       id: `${istTime(at).replace(/:/g, '')}-${id}-${++seq}`,
       i: id,
@@ -99,6 +106,7 @@ function createFeedPaper({ dir, getConfig, quotes, getLot, onOpen = () => {}, on
       side,
       lead,
       at,
+      surge,
       gap: r2(Math.abs(u - k)),
       uLtp: u,
       kLtp: k,
@@ -145,6 +153,10 @@ function createFeedPaper({ dir, getConfig, quotes, getLot, onOpen = () => {}, on
       if (!c.enabled || id === 'NIFTY' || !g || Math.abs(g.u - g.k) < c.minGap - 1e-9) return;
       if (trades.some((t) => t.i === id && t.status === 'open')) return;
       if (at < (cool.get(id) || 0)) return;
+      if (c.surgeGate) {
+        const b = getSurge();
+        if (!b?.ready || !(b.pct >= c.surgePct - 1e-9)) return; // no broad volume surge: no trade, and no cooldown used up
+      }
       cool.set(id, at + c.cooldownSec * 1000);
       open(id, expiry, g, at);
     },
@@ -232,4 +244,16 @@ function summarizePaper(trades) {
   };
 }
 
-module.exports = { createFeedPaper, cleanPaper, summarizePaper, readTrades, PAPER_DEFAULTS, LATER_SEC };
+// The day's trades split by the volume breadth they opened in: at or above the gate's level, below it, or not tagged
+// (opened before the breadth was recorded, or while it wasn't ready).
+function summarizeBySurge(trades, minPct = PAPER_DEFAULTS.surgePct) {
+  const has = (t) => typeof t.surge === 'number';
+  return {
+    minPct,
+    surge: summarizePaper(trades.filter((t) => has(t) && t.surge >= minPct)),
+    calm: summarizePaper(trades.filter((t) => has(t) && t.surge < minPct)),
+    untagged: summarizePaper(trades.filter((t) => !has(t))),
+  };
+}
+
+module.exports = { createFeedPaper, cleanPaper, summarizePaper, summarizeBySurge, readTrades, PAPER_DEFAULTS, LATER_SEC };

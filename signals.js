@@ -438,6 +438,7 @@ function createSignals(cfg, logError = (src, e) => console.error(src, e), odds =
     onSnapshot,
     flush: finalize, // write any in-progress recording (e.g. on shutdown)
     all: () => events,
+    breadth: () => breadth, // the latest volume breadth only (state() builds the whole signal list)
     state: () => ({
       breadth,
       recording: capture

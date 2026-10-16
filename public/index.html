@@ -470,6 +470,7 @@
         <label class="mini" title="Close a trade that has hit neither after this long">Max hold <input class="num xs" type="number" id="fpHold" min="5" step="30"> s</label>
         <label class="mini">Lots <input class="num xs" type="number" id="fpLots" min="1" step="1"></label>
         <label class="mini" title="Kite = Kite moved first and the trade was entered at Kite's quote; Upstox = Upstox moved first. Filters the tiles and the table.">Show <select id="fpFeed"><option value="">All trades</option><option value="k">Kite trades</option><option value="u">Upstox trades</option></select></label>
+        <label class="mini" title="Only open a trade while the volume breadth (share of strikes near ATM trading at least 2× their normal volume, the Broad Volume Surge meter on the Signals pane) is at this level or higher. Off: trades open on any gap, and are still tagged with the breadth so the results below can be split."><input type="checkbox" id="fpSurgeOn"> Only in a volume surge ≥ <input class="num xs" type="number" id="fpSurgePct" min="1" max="100" step="5">%</label>
         <label class="mini" title="Selling an option needs margin; Buy only keeps to buying">Side <select id="fpSide"><option value="both">Buy &amp; sell</option><option value="buy">Buy only</option><option value="sell">Sell only</option></select></label>
       </div>
       <!-- live orders on Kite following these paper trades (feedlive.js): real money -->
@@ -491,6 +492,7 @@
       <div class="fd-funds" id="flFunds"></div>
       <div class="fd-livelog" id="flLog"></div>
       <div class="fd-ptiles" id="fpTiles"></div>
+      <div class="fd-psurge" id="fpSurge"></div>
       <div class="muted small fd-pnote">BUY when the feed that moved first shows the higher price, SELL when it shows the lower one. Fills are at the live quote (ask to buy, bid to sell) of the feed that moved first, because an order fills at the exchange's price, not at the old price the slow feed still shows. "If filled at the stale price" is the P&amp;L the gap seems to offer but no order could get. Trades keep being followed for 15 minutes after entry. Saved to <code>events/&lt;date&gt;/feedpaper.jsonl</code>.</div>
       <div class="flow-table-wrap"><table class="flow-table fd-table" id="fpTable"></table></div>
     </section>

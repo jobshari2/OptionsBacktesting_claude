@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { createFeedPaper, cleanPaper, summarizePaper, readTrades } = require('../feedpaper');
+const { createFeedPaper, cleanPaper, summarizePaper, summarizeBySurge, readTrades } = require('../feedpaper');
 
 const T0 = Date.parse('2026-10-14T10:50:00+05:30');
 
@@ -111,4 +111,51 @@ test('side filter, the day file, and the summary', () => {
   assert.equal(s.target, 1);
   assert.equal(s.pnl, 3.8);
   assert.equal(s.stalePnl, 9.9);
+});
+
+// ---- the optional broad-surge gate
+function setupSurge(over = {}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'feedpaper-'));
+  const q = { u: { ltp: 100, bid: 99.9, ask: 100.1, at: T0 }, k: { ltp: 105, bid: 104.9, ask: 105.1, at: T0 } };
+  const breadth = { ready: true, pct: 20 };
+  const cfg = cleanPaper({ minGap: 5, target: 3, cooldownSec: 60, ...over });
+  const p = createFeedPaper({ dir, getConfig: () => cfg, quotes: () => q, getLot: () => 65, getSurge: () => breadth, now: () => T0 });
+  return { p, breadth, cfg };
+}
+
+test('the surge gate is off by default, and every trade is tagged with the volume breadth it opened in', () => {
+  assert.equal(cleanPaper().surgeGate, false);
+  assert.equal(cleanPaper().surgePct, 60);
+  const { p, breadth } = setupSurge();
+  p.check('A', 'e', { u: 100, k: 105, l: 'k' }, T0);
+  breadth.pct = 72.456;
+  p.check('B', 'e', { u: 100, k: 105, l: 'k' }, T0);
+  assert.deepEqual(p.list().map((t) => t.surge), [20, 72.46]);
+});
+
+test('with the gate on, no trade opens below the level or while the breadth is not ready, and no cooldown is used up', () => {
+  const { p, breadth } = setupSurge({ surgeGate: true, surgePct: 60 });
+  p.check('A', 'e', { u: 100, k: 105, l: 'k' }, T0);
+  assert.equal(p.list().length, 0, 'breadth 20% < 60%');
+  breadth.pct = 59.9;
+  p.check('A', 'e', { u: 100, k: 105, l: 'k' }, T0 + 1000);
+  assert.equal(p.list().length, 0);
+  breadth.ready = false;
+  breadth.pct = 90;
+  p.check('A', 'e', { u: 100, k: 105, l: 'k' }, T0 + 2000);
+  assert.equal(p.list().length, 0, 'breadth not ready');
+  breadth.ready = true;
+  p.check('A', 'e', { u: 100, k: 105, l: 'k' }, T0 + 3000);
+  assert.equal(p.list().length, 1, 'opens at once when the surge arrives: gated ticks did not start a cooldown');
+  assert.equal(p.list()[0].surge, 90);
+});
+
+test('trades split by the breadth they opened in; older ones without a tag are kept apart', () => {
+  const mk = (surge, pnl, net) => ({ status: 'closed', reason: 'target', pnl, net, gross: net, costs: 0, stalePnl: 0, ...(surge === undefined ? {} : { surge }) });
+  const r = summarizeBySurge([mk(80, 3, 100), mk(60, -5, -300), mk(10, -5, -300), mk(null, 3, 100), mk(undefined, 3, 100)], 60);
+  assert.equal(r.minPct, 60);
+  assert.equal(r.surge.trades, 2);
+  assert.equal(r.surge.net, -200);
+  assert.equal(r.calm.trades, 1);
+  assert.equal(r.untagged.trades, 2);
 });

@@ -527,6 +527,7 @@ feedCmp = createFeedCompare({
   },
   kite: kiteSession,
   getLot: () => contracts.lot, // the paper trades on big gaps are sized in lots
+  getSurge: () => signals.breadth(), // volume breadth: tags the paper trades, and the optional broad-surge gate
   // live orders (Feeds screen): Kite Connect logins only unless KITE_ORDERS_ENCTOKEN=1; market protection optional
   allowEnctokenOrders: env.KITE_ORDERS_ENCTOKEN === '1',
   marketProtection: env.KITE_MARKET_PROTECTION || null,
