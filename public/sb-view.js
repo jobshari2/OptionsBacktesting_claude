@@ -61,6 +61,8 @@
     atmIvEntry: null,
     spotEntry: null,
     seq: 0,
+    showChart: false,
+    chainMinBeforeChart: false,
   };
   let S = { ...def, ...BT.store.get('sb', {}) };
   if (!Array.isArray(S.legs)) S.legs = [];
@@ -1079,6 +1081,8 @@
       let recordedAt = 0;
       liveTimer = setInterval(async () => {
         if (inFlight || window.app.state.view !== 'sb' || S.src !== 'live') return;
+        const held = liveMap.get(S.liveExpiry);
+        if (held && !held.error && window.app.marketClosed()) return; // market shut: the chain held is the close
         inFlight = true;
         try {
           const before = liveMap.get(S.liveExpiry)?.at;
@@ -1129,7 +1133,9 @@
               .join('')}</select>
         <span class="muted small">Paper trading on the live chain (LTP fills); refreshes every 5 s. No orders are sent.</span>`
       }
+      <label class="mini" title="Show the Nifty chart beside the payoff (the option chain is minimized meanwhile; click its header to open it again)"><input type="checkbox" id="sbShowChart" ${S.showChart ? 'checked' : ''}> Index chart</label>
       <span class="spacer"></span>
+      <div class="sb-acts">
       <span class="lbl">Strategy</span><select id="sbStrat"><option value="">— custom (click B / S in the chain) —</option>${Object.entries(groups)
         .map(([g, list]) => `<optgroup label="${esc(g)}">${list.map((s) => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</optgroup>`)
         .join('')}</select>
@@ -1139,6 +1145,7 @@
       <span id="sbSaveBox"></span>
       <button class="btn-sm ghost" id="sbBacktest" title="Open the open, ticked legs as a strategy in the Backtest">Backtest ▸</button>
       <button class="btn-sm ghost danger" id="sbClear" title="Close the position view and start again">Reset</button>
+      </div>
     </div>${
       S.from
         ? `<div class="sb-from"><span>Loaded from <b>${esc(S.from.strategy.name)}</b>${S.from.note ? ` · ${esc(S.from.note)}` : ''}</span>
@@ -1710,7 +1717,7 @@
     } else if (t.id === 'sbLots') {
       S.lots = Math.max(1, Number(t.value) || 1);
       save();
-    }
+    } else if (t.id === 'sbShowChart') setShowChart(t.checked);
   });
   $('sbReplay').addEventListener('click', async (e) => {
     const b = e.target.closest('button');
@@ -1889,7 +1896,33 @@
     applyChainMin();
     render();
   });
+  // "Index chart": the Chain screen's Nifty chart (chain-chart.js) beside the payoff. Ticking it minimizes the option chain
+  // (and unticking puts it back the way it was); the chain's own header still opens it again.
+  let niftyChart = null;
+  function applyChart() {
+    $('sbGrid').classList.toggle('with-chart', !!S.showChart);
+    const box = $('sbChartPanel');
+    if (!S.showChart || box.offsetParent === null) return; // nothing to draw while it is off / the Builder is not on screen
+    if (!niftyChart) {
+      if (!window.mountNiftyChart) box.innerHTML = '<div class="pad err">Chart library missing: run <code>npm install</code> and restart the server.</div>';
+      else niftyChart = window.mountNiftyChart(box, { store: 'ncb.', options: false });
+      return;
+    }
+    niftyChart.refresh();
+  }
+  function setShowChart(on) {
+    S.showChart = on;
+    if (on) {
+      S.chainMinBeforeChart = !!S.chainMin;
+      S.chainMin = true;
+    } else S.chainMin = !!S.chainMinBeforeChart;
+    save();
+    applyChainMin();
+    applyChart();
+    render();
+  }
   applyChainMin();
+  applyChart();
   // keep Positions the same height as Payoff
   new ResizeObserver(() => {
     const h = document.querySelector('#sbGrid > .sb-payoff').offsetHeight;
@@ -2269,8 +2302,10 @@
     loadTrades();
   };
   window.addEventListener('viewchange', (e) => {
-    if (e.detail === 'sb') init();
-    else {
+    if (e.detail === 'sb') {
+      init();
+      applyChart();
+    } else {
       pause();
       if (e.detail === 'tr') initTrades();
     }

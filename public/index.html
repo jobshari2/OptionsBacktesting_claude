@@ -366,6 +366,8 @@
         <div class="chart-head"><h3>What’s happening</h3><span class="muted small" id="pAsOf"></span></div>
         <ul id="pBullets" class="p-bullets"></ul>
         <div class="muted small p-note">Describes what the data shows. It is not a recommendation to trade.</div>
+        <div class="p-days-head chart-head"><h3>Daily paper P&amp;L</h3><span class="muted small">trade idea · per lot · click a day to load it</span></div>
+        <div id="pDays" class="p-days"></div>
       </section>
       <section class="panel">
         <div class="chart-head"><h3 id="pOiTitle">Option writers &amp; buyers</h3><span class="muted small">OI change + price change per strike</span></div>
@@ -380,6 +382,11 @@
           <span><i class="cl short-buildup"></i>short build-up = writing</span>
           <span><i class="cl short-covering"></i>short covering</span>
           <span><i class="cl long-unwinding"></i>long unwinding</span>
+        </div>
+        <div id="pPlay" class="p-play"></div>
+        <div class="p-play p-ledger-box">
+          <div class="pp-head"><span class="muted small">PAPER TRADES · per lot, after charges · filled 3 s after the signal</span><select id="pDay" title="Saved pulse signals: pick a day to load it"></select><span id="pDaySum"></span></div>
+          <div id="pLedger" class="pp-ledger"></div>
         </div>
       </section>
       <div class="p-side">
@@ -739,6 +746,8 @@
           <span class="small"><label class="mini" title="Lots for the B / S buttons in this chain. Overrides the Lots at the top; leave empty to use that one.">Lots <input class="num xs" type="number" id="sbChainLots" min="1" step="1"></label> <span id="sbChainExp" class="sb-exps" title="Expiry shown in the chain: pick a different one to add legs of another expiry (calendar / diagonal spreads)"></span> <select id="sbWidth"><option value="6">ATM ± 6</option><option value="10" selected>ATM ± 10</option><option value="15">ATM ± 15</option><option value="20">ATM ± 20</option><option value="30">ATM ± 30</option></select></span></div>
         <div class="tbl-wrap sb-chain-wrap" id="sbChain"></div>
       </section>
+      <!-- "Index chart" ticked in the top bar: the Chain screen's Nifty chart (chain-chart.js), beside the payoff -->
+      <section class="panel nifty-panel sb-chartp" id="sbChartPanel"></section>
       <section class="panel sb-payoff">
         <div class="panel-head"><h3>Payoff</h3><span class="muted small" id="sbPayInfo"></span>
           <label class="mini hidden" id="sbPayOnBox" title="Date the main payoff curve, max profit / loss and breakevens are taken on (end of that day). Legs that have expired by then count at intrinsic value; later expiries keep their time value (Black-Scholes at today's IV).">Payoff on <select id="sbPayOn"></select></label></div>

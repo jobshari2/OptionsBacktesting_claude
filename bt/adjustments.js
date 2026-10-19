@@ -1,19 +1,19 @@
 // Adjustment variations for the Backtest screen's "Adjustments" tab: the loaded strategy with one adjustment
-// changed at a time (take profit, overall stop, leg stops and re-entry, exit, roll timing, closing in the first
-// week instead of rolling, the put side on its own, entry filters, the mirror-image position) and a few of them
+// changed at a time (take profit, overall stop, exit, roll timing, closing in the first week instead of rolling, the put
+// side further out, adjustments on market movement, entry filters, the mirror-image position) and a few of them
 // together. Each one is a complete strategy, so picking
 // it shows the same details (scenarios, months, trades, equity) as the strategy itself.
 // Which variations exist depends on the strategy: roll / week-1 ones need a rolled leg, "% of capital" stops need
 // the strategy to use that unit, and so on.
-const { normalizeStrategy } = require('./engine');
+const { wholeStrategyStops } = require('./engine');
 
 function buildAdjustments(strategy) {
-  const base = normalizeStrategy(strategy);
+  const base = wholeStrategyStops(strategy); // stops on the whole strategy, as every run uses them
   const out = [];
   const add = (key, group, name, note, change, extra = {}) => {
     const s = JSON.parse(JSON.stringify(base));
     change(s);
-    out.push({ key, group, name, note, strategy: normalizeStrategy(s), ...extra });
+    out.push({ key, group, name, note, strategy: wholeStrategyStops(s), ...extra });
   };
   const pos = base.mode === 'positional';
   const cap = base.risk.unit === 'pct'; // overall amounts are % of capital
@@ -220,60 +220,11 @@ function buildAdjustments(strategy) {
   for (const v of stops)
     add(`sl${v}`, 'Overall stop', `Overall ${stopTxt(v)}`, 'Whole position closed at this loss (checked on 1-minute closes).', (s) => stop(s, v));
 
-  // ---- stops on the short legs ----
-  if (shorts.length && shorts.every((i) => base.legs[i].sl.type === 'none')) {
-    const each = (s, f) => shorts.forEach((i) => f(s.legs[i]));
-    for (const v of [50, 100, 150])
-      add(`leg${v}`, 'Leg stops', `Short legs: stop at +${v}% of their premium`, 'Only the stopped leg is closed; the rest stays.', (s) =>
-        each(s, (l) => {
-          l.sl = { type: 'pct', value: v };
-        }),
-      );
-    add('leg100-all', 'Leg stops', 'Short legs: stop at +100%, then exit everything', 'A leg stop closes the whole position.', (s) => {
-      each(s, (l) => {
-        l.sl = { type: 'pct', value: 100 };
-      });
-      s.risk.onLegSl = 'all';
-    });
-    add(
-      'leg100-re',
-      'Leg stops',
-      'Short legs: stop at +100%, re-sell a fresh strike once',
-      'The stopped short is sold again at the strike the strategy would pick now (rolling the tested side away).',
-      (s) =>
-        each(s, (l) => {
-          l.sl = { type: 'pct', value: 100 };
-          l.re = { on: 'sl', mode: 'atm', max: 1 };
-        }),
-    );
-    for (const v of [1.5, 2])
-      add(`nifty${v}`, 'Leg stops', `Short legs: stop when Nifty moves ${v}% against them`, 'Only the stopped leg is closed.', (s) =>
-        each(s, (l) => {
-          l.sl = { type: 'upct', value: v };
-        }),
-      );
-    add('nifty2-all', 'Leg stops', 'Nifty moves 2% against a short leg: exit everything', 'A leg stop closes the whole position.', (s) => {
-      each(s, (l) => {
-        l.sl = { type: 'upct', value: 2 };
-      });
-      s.risk.onLegSl = 'all';
-    });
-  }
+  // (No stops on single legs: a stop-loss always judges the whole strategy's loss, see engine.wholeStrategyStops.)
 
-  // ---- the put side: a stop on the short puts only, and short puts further out ----
-  // Falls are faster than rallies, and the put side is where a short strangle loses. The short put is cut early and
-  // its bought put kept (it gains if the fall goes on); the call side is left alone (a stop there costs more than it saves).
+  // ---- the put side further out, a wider target ----
+  // Falls are faster than rallies, and the put side is where a short strangle loses: more room there.
   const sPuts = shorts.filter((i) => base.legs[i].type === 'PE');
-  const putStop = sPuts.length > 0 && sPuts.length < shorts.length && shorts.every((i) => base.legs[i].sl.type === 'none');
-  const stopPuts = (s, v) =>
-    sPuts.forEach((i) => {
-      s.legs[i].sl = { type: 'pct', value: v };
-    });
-  if (putStop)
-    for (const v of [35, 45])
-      add(`put${v}`, 'Leg stops', `Short put: stop at +${v}% of its premium`, 'Only the short put is closed; its bought put and the call side stay.', (s) =>
-        stopPuts(s, v),
-      );
   const farPuts = sPuts.length > 0 && sPuts.every((i) => base.legs[i].strike.by === 'pts');
   const further = (s, d) =>
     sPuts.forEach((i) => {
@@ -295,43 +246,76 @@ function buildAdjustments(strategy) {
         s.risk.tgtPrem = null;
       });
 
-  // ---- the adjustments that held up together ----
-  // Put stop + a wider target, then the hedge rolled on its expiry day and / or the short put further out. In testing
-  // each of these helped whatever the others were set to, and the put stop gave about the same result from 30% to 45%.
-  if (putStop && cap) {
-    const tuned = (s) => {
-      stopPuts(s, 35);
-      s.risk.tgt = 4;
-      s.risk.tgtPrem = null;
-    };
-    const onDay = (s) =>
-      s.legs.forEach((l) => {
-        if (l.roll) l.roll.dteDays = 0;
+  // ---- adjustments on market movement (engine: strategy.adjust) ----
+  // When Nifty comes near a short strike, moves a set distance or a short leg's premium multiplies, one side (or every
+  // leg) is closed and opened again at the strikes the strategy's own rules pick at that moment; wings "from another leg"
+  // follow their short. In the 2-year backtest (Oct 2024 - Oct 2026) rolling the tested side of a weekly 0.2-delta iron
+  // condor when a short doubled, and re-centring a weekly strangle when Nifty came within 100 pts of a short strike, made
+  // more in both years with about half the drawdown; on intraday straddles no rule helped (their losing moves come too fast).
+  if (shorts.length) {
+    const mv = (key, name, note, adjust) =>
+      add(key, 'Market move', name, note, (s) => {
+        s.adjust = adjust;
       });
-    const late = rolled >= 0 && base.legs[rolled].roll.dteDays !== 0;
-    add('put35-t4', 'Combination', 'Put stop 35%, target 4% of capital', 'The short put is cut early, the rest runs to a wider target.', tuned);
-    if (late)
-      add(
-        'put35-t4-roll0',
-        'Combination',
-        'Put stop 35%, target 4%, roll on the day the hedge expires',
-        'The same, with the hedge rolled a day later: one day less of the dearer hedge.',
-        (s) => {
-          tuned(s);
-          onDay(s);
-        },
+    const n = pos ? 3 : 2;
+    if (base.adjust)
+      add('adj-none', 'Market move', 'No adjustment', 'The strategy without its market-move adjustment.', (s) => {
+        s.adjust = null;
+      });
+    if (pos) {
+      mv(
+        'adj-near100-both',
+        'Re-centre when Nifty is within 100 pts of a short strike',
+        'Every leg is moved to the strikes its rule picks now (e.g. back to 0.2 delta on both sides), up to 3 times: the best rule in testing for weekly strangles.',
+        { on: 'near', value: 100, unit: 'pts', action: 'both', max: n },
       );
-    if (farPuts)
-      add('put35-t4-far', 'Combination', 'Put stop 35%, target 4%, short put 200 pts further out', 'The same, with more room on the downside.', (s) => {
-        tuned(s);
-        further(s, 200);
+      mv('adj-near50-both', 'Re-centre when Nifty is within 50 pts of a short strike', 'The same, a little later.', {
+        on: 'near',
+        value: 50,
+        unit: 'pts',
+        action: 'both',
+        max: n,
       });
-    if (farPuts && late)
-      add('put35-t4-far-roll0', 'Combination', 'Put stop 35%, target 4%, short put 200 pts further out, roll on the day', 'All four together.', (s) => {
-        tuned(s);
-        further(s, 200);
-        onDay(s);
+      mv(
+        'adj-near0-tested',
+        'Roll the tested side out when Nifty reaches a short strike',
+        'Only the side under pressure (its short and wing) is moved out to a fresh strike; the other side keeps decaying.',
+        { on: 'near', value: 0, unit: 'pts', action: 'tested', max: n },
+      );
+      mv('adj-move1-tested', 'Roll the tested side out after a 1% Nifty move', 'Measured from the entry, then from the last adjustment.', {
+        on: 'move',
+        value: 1,
+        unit: 'pct',
+        action: 'tested',
+        max: n,
       });
+      mv(
+        'adj-move1-untested',
+        'Roll the untested side in after a 1% Nifty move',
+        'The side Nifty moved away from is sold again closer, for more credit; the tested side is left as it is.',
+        { on: 'move', value: 1, unit: 'pct', action: 'untested', max: n },
+      );
+    } else {
+      mv('adj-move100-tested', 'Roll the tested side out after a 100-pt Nifty move', 'Measured from the entry, then from the last adjustment.', {
+        on: 'move',
+        value: 100,
+        unit: 'pts',
+        action: 'tested',
+        max: n,
+      });
+      mv(
+        'adj-near0-tested',
+        'Roll the tested side out when Nifty reaches a short strike',
+        'Only the side under pressure (its short and wing) is moved out to a fresh strike.',
+        { on: 'near', value: 0, unit: 'pts', action: 'tested', max: n },
+      );
+    }
+    mv(
+      'adj-prem2-tested',
+      'Roll the tested side out when a short leg doubles',
+      "A short at twice its entry price is moved out to the strike its rule picks now, with its wing; the classic 'premium doubled' adjustment.",
+      { on: 'prem', value: 2, unit: 'x', action: 'tested', max: n },
+    );
   }
 
   // ---- exit ----

@@ -2,11 +2,15 @@
 // History comes from /api/bt/candles (the cached 1-minute files, a block of sessions at a time: scrolling back
 // loads more); today's candles are re-read every 30 s and in between the last candle follows the live tick
 // from /api/nifty/ltp. Support / resistance levels are drawn across it (hover one for its details).
+// "Nifty Fut" switches to the near-month Nifty future and the chain's chart buttons to one option; both have volume,
+// drawn as bars under the candles. The Tick view draws every trade of today (from /api/ticks, recorded by the server
+// off the live feed), evenly spaced, with its quantity as the volume bar.
 // The pop-out window adds indicators (overlays and separate panes), drawings, chart types, log scale and snapshots.
 // Times on the chart are IST.
 (() => {
   const LC = window.LightweightCharts;
   const TFS = [
+    ['T', 'Tick'],
     ['1', '1m'],
     ['3', '3m'],
     ['5', '5m'],
@@ -19,6 +23,7 @@
     ['M', 'M'],
   ];
   const TF_TITLE = {
+    T: 'Tick by tick: every trade of today, evenly spaced, with its quantity (recorded off the live feed since the server started)',
     1: '1-minute candles',
     3: '3-minute candles',
     5: '5-minute candles',
@@ -40,7 +45,7 @@
   const TICK_MS = 1000;
   const RELOAD_LIVE_MS = 30_000;
   const RELOAD_IDLE_MS = 5 * 60_000;
-  const LEVELS_MS = 10 * 60_000;
+  const LEVELS_MS = 60_000; // the server keeps the day's swing levels; the levels beyond them follow the price
   const FLOW_MS = 10_000; // how often the order flow is re-read while the market is open
   const OPEN_MIN = 555; // 09:15
   const MPD = 375;
@@ -213,7 +218,7 @@
   // store: prefix of this chart's saved settings (each place remembers its own); tf0: the timeframe it first opens on.
   // flow0: whether the order flow panes start switched on (each place remembers its own choice).
   // options: the chart can switch to a single option of the chain (the Chain screen's chart button) and back to Nifty.
-  function mount(root, { full = false, store = full ? 'ncw.' : 'nc.', tf0 = '5', flow0 = true, options = false } = {}) {
+  function mount(root, { full = false, indicators = full, store = full ? 'ncw.' : 'nc.', tf0 = '5', flow0 = true, options = false } = {}) {
     const pre = store;
     const get = (k, d) => {
       try {
@@ -247,24 +252,27 @@
       .join('');
     root.innerHTML = `
       <div class="panel-head nc-head">
-        <h3>${
-          options
-            ? `<span class="nc-title"><button class="btn-sm ghost on" data-r="nifty" title="Show the Nifty 50 chart with its support / resistance levels and order flow">Nifty 50</button><span class="nc-opt hidden" data-r="optTab"><button class="btn-sm ghost on" data-r="optBtn"></button></span></span>`
-            : 'Nifty 50'
-        } <span class="nc-last" data-r="last"></span></h3>
+        <h3><span class="nc-title"><button class="btn-sm ghost on" data-r="nifty" title="Show the Nifty 50 chart with its support / resistance levels and order flow">Nifty 50</button><button class="btn-sm ghost" data-r="fut" title="Show the near-month Nifty future: candles with their volume, and every trade on the Tick view">Nifty Fut</button>${
+          options ? '<span class="nc-opt hidden" data-r="optTab"><button class="btn-sm ghost on" data-r="optBtn"></button></span>' : ''
+        }</span> <span class="nc-last" data-r="last"></span></h3>
         <div class="nc-tools">
           <span class="seg sm" data-r="tf">${TFS.map(([v, l]) => `<button data-tf="${v}" title="${TF_TITLE[v]}">${l}</button>`).join('')}</span>
           <select data-r="type" title="Chart type">${TYPES.filter(([v]) => full || v === 'candle' || v === 'line')
             .map(([v, l]) => `<option value="${v}">${l}</option>`)
             .join('')}</select>
           ${
-            full
+            indicators
               ? `<span class="nc-dd"><button class="btn-sm ghost" data-r="indBtn" title="Add indicators: moving averages, Bollinger Bands, Supertrend, RSI, MACD, ATR, Stochastic">ƒx Indicators ▾</button>
-            <div class="nc-menu hidden" data-r="indMenu"><div class="muted small">Set the parameters and press Add. The same indicator can be added more than once (e.g. EMA 20 and EMA 50). Remove one with ✕ in the legend at the top left of the chart.</div>${indMenu}</div></span>
-          <span class="seg sm" data-r="draw"><button data-draw="h" title="Horizontal line: click the chart at the price">― Line</button><button data-draw="t" title="Trend line: click its two ends">╱ Trend</button><button data-draw="clear" title="Remove all drawings (right-click a single drawing to remove only that one)">Clear</button></span>
+            <div class="nc-menu hidden" data-r="indMenu"><div class="muted small">Set the parameters and press Add. The same indicator can be added more than once (e.g. EMA 20 and EMA 50). Remove one with ✕ in the legend at the top left of the chart.</div>${indMenu}</div></span>`
+              : ''
+          }
+          ${
+            full
+              ? `<span class="seg sm" data-r="draw"><button data-draw="h" title="Horizontal line: click the chart at the price">― Line</button><button data-draw="t" title="Trend line: click its two ends">╱ Trend</button><button data-draw="clear" title="Remove all drawings (right-click a single drawing to remove only that one)">Clear</button></span>
           <button class="btn-sm ghost" data-r="log" title="Logarithmic price scale">Log</button>`
               : ''
           }
+          <button class="btn-sm ghost hidden" data-r="vol" title="Show / hide the volume traded: one bar per candle (per trade on the Tick view), green when the price rose">Volume</button>
           <button class="btn-sm ghost" data-nifty-only data-r="sr" title="Show / hide the support and resistance levels">S/R</button>
           <button class="btn-sm ghost" data-nifty-only data-r="fp" title="Footprint: beside each candle, the call (left) and put (right) volume traded at each Nifty level, with the candle's delta and total below">Order flow</button>
           <button class="btn-sm ghost" data-nifty-only data-r="of" title="Show / hide the Δ and CVD panes under the candles: net buying vs selling in the Nifty options per candle, and its running total">Δ / CVD</button>
@@ -273,7 +281,7 @@
             full
               ? `<button class="btn-sm ghost" data-r="shot" title="Save the chart as a PNG image">📷</button>
           <button class="btn-sm ghost" data-r="fs" title="Full screen">⛶</button>`
-              : '<button class="btn-sm ghost" data-nifty-only data-r="pop" title="Open the chart in its own window, with indicators and drawing tools">⧉ New window</button>'
+              : '<button class="btn-sm ghost" data-r="pop" title="Open the chart in its own window (same timeframe), with indicators, drawing tools, log scale and snapshots">⧉ New window</button>'
           }
         </div>
       </div>
@@ -282,19 +290,26 @@
         <div class="nc-ohlc small" data-r="ohlc"></div>
         <div class="nc-tip hidden" data-r="tip"></div>
       </div>
-      <div class="muted small nc-legend"><span data-nifty-only><i class="nc-sw r"></i>Resistance</span><span data-nifty-only><i class="nc-sw s"></i>Support</span><span data-nifty-only>solid = major · dotted = minor · hover a level for details</span><span>drag to move · wheel to zoom · scroll back for older candles</span><span data-nifty-only data-r="fpKey"><b>Order flow</b> in lots, at the Nifty level it traded: calls left of the candle, puts right · green = bought / sold with the market going up, red = down (3:1 or more) · box = busiest level · <b>Delta</b> = calls bought + puts sold − calls sold − puts bought · recorded days only</span><span data-nifty-only data-r="flowKey"><b>Δ</b> per candle, <b>CVD</b> running total for the day</span><span data-r="msg"></span></div>`;
+      <div class="muted small nc-legend"><span data-nifty-only><i class="nc-sw r"></i>Resistance</span><span data-nifty-only><i class="nc-sw s"></i>Support</span><span data-nifty-only>solid = major · dotted = minor · dashed = projected past the last swing level (round numbers, R3 / S3) · hover a level for details</span><span>drag to move · wheel to zoom · scroll back for older candles</span><span class="hidden" data-r="tickKey"><b>Tick</b>: every trade of today, evenly spaced, recorded off the live feed since the server started (a restart starts over)</span><span data-nifty-only data-r="fpKey"><b>Order flow</b> in lots, at the Nifty level it traded: calls left of the candle, puts right · green = bought / sold with the market going up, red = down (3:1 or more) · box = busiest level · <b>Delta</b> = calls bought + puts sold − calls sold − puts bought · recorded days only</span><span data-nifty-only data-r="flowKey"><b>Δ</b> per candle, <b>CVD</b> running total for the day</span><span data-r="msg"></span></div>`;
     const el = {};
     root.querySelectorAll('[data-r]').forEach((n) => {
       el[n.dataset.r] = n;
     });
 
-    let source = null; // null = Nifty; { expiry, strike, type } = one option of the chain
+    // null = Nifty; { fut: true } = the near-month Nifty future (remembered); { expiry, strike, type } = one option
+    let source = get('src', '') === 'fut' ? { fut: true } : null;
     let tf = TF_TITLE[get('tf', tf0)] ? get('tf', tf0) : tf0;
+    if (source && (tf === 'W' || tf === 'M')) tf = '5'; // no weekly / monthly history for a contract
     let type =
       TYPES.some(([v]) => v === get('type', 'candle')) && el.type.querySelector(`[value="${get('type', 'candle')}"]`) ? get('type', 'candle') : 'candle';
     let showLevels = get('sr', '1') === '1';
     let showFp = get('fp', flow0 ? '1' : '0') === '1'; // footprint beside the candles
     let showFlow = get('of', '0') === '1'; // Δ / CVD panes
+    let showVol = get('vol', '1') === '1'; // volume bars under the candles (the future and options: Nifty has none)
+    let volSeries = null;
+    let volCum = null; // the day's volume at the last live price, so the next one adds only what traded in between
+    let tickGen = null; // Tick view: the server's tick-store generation and the number of today's ticks held
+    let tickNext = 0;
     // [time ms, callBuy, callSell, putBuy, putSell, bookLean, niftyClose, [level, callBuy, callSell, putBuy, putSell, ...]]
     // per minute, oldest first
     let flowRows = [];
@@ -307,7 +322,9 @@
     let cvdSeries = null;
     let flowLast = null; // { delta, cvd } of the newest candle that has flow
     let logScale = full && get('log', '0') === '1';
-    let bars = []; // { time, open, high, low, close }, oldest first
+    // { time, open, high, low, close, vol }, oldest first. On the Tick view one per trade: time = its number in the day
+    // (the chart spaces ticks evenly), at = when it traded, open = the trade before, vol = its quantity.
+    let bars = [];
     let meta = null; // last /api/bt/candles response (without the candles)
     let more = false;
     let first = null; // oldest day loaded: the next block ends before it
@@ -319,6 +336,7 @@
     let loading = false;
     let loadingOlder = false;
     let nextLoadAt = 0;
+    let loaded = false; // the first load since the source / timeframe last changed has finished (or failed)
     let live = false;
     let lastTick = null;
     let hover = null; // candle under the crosshair
@@ -334,16 +352,51 @@
     let overDraw = null; // drawing under the mouse: { kind: 'h' | 't', i }
     let segs = []; // trend lines in pixels, for hit testing
 
+    const visible = () => !document.hidden && root.offsetParent !== null;
+    const intraday = () => !isNaN(Number(tf));
+    const isTick = () => tf === 'T';
+    const isFut = () => Boolean(source?.fut);
+    const isOpt = () => Boolean(source && !source.fut);
+    const view = () => (isTick() ? 'line' : type); // ticks are drawn as a line whatever the chart type
+    const toBar = (c) => ({ time: c[0], open: c[1], high: c[2], low: c[3], close: c[4], vol: c[5] ?? null });
+    const last = () => bars[bars.length - 1] || null;
+    // The trade behind a Tick-view time (ticks are numbered without gaps, so it is a direct look-up).
+    const tickAt = (time) => (bars.length ? bars[time - bars[0].time] : null);
+
+    // Time labels: IST wall-clock seconds as if UTC on candles; the trade's own time (to the second, the crosshair
+    // to the millisecond) on the Tick view, whose times are tick numbers.
+    const two = (n) => String(n).padStart(2, '0');
+    const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const clock = (at, ms) => {
+      const d = new Date(at + 19800_000);
+      const s = `${two(d.getUTCHours())}:${two(d.getUTCMinutes())}:${two(d.getUTCSeconds())}`;
+      return ms ? s + '.' + String(d.getUTCMilliseconds()).padStart(3, '0') : s;
+    };
+    function timeLabel(time) {
+      if (isTick()) {
+        const b = tickAt(time);
+        return b ? clock(b.at, true) : '';
+      }
+      const d = new Date(time * 1000);
+      const day = `${two(d.getUTCDate())} ${MON[d.getUTCMonth()]} '${String(d.getUTCFullYear()).slice(2)}`;
+      return intraday() ? `${day} ${two(d.getUTCHours())}:${two(d.getUTCMinutes())}` : day;
+    }
+
     const chart = LC.createChart(el.chart, {
       autoSize: true,
       crosshair: { mode: LC.CrosshairMode.Normal },
-      timeScale: { timeVisible: true, secondsVisible: false, rightOffset: 6 },
+      localization: { timeFormatter: timeLabel },
+      timeScale: {
+        timeVisible: true,
+        secondsVisible: false,
+        rightOffset: 6,
+        tickMarkFormatter: (time) => {
+          if (!isTick()) return null; // the library's own labels
+          const b = tickAt(time);
+          return b ? clock(b.at) : '';
+        },
+      },
     });
-
-    const visible = () => !document.hidden && root.offsetParent !== null;
-    const intraday = () => !isNaN(Number(tf));
-    const toBar = (c) => ({ time: c[0], open: c[1], high: c[2], low: c[3], close: c[4] });
-    const last = () => bars[bars.length - 1] || null;
     const colours = () => ({ up: css('--up'), down: css('--down'), accent: css('--accent') });
     // Index of the last candle at or before `time` (-1 when it is older than everything loaded).
     function barAt(time) {
@@ -362,9 +415,9 @@
 
     // ---------- price series ----------
     // What the series shows: the candles themselves, their closes (line / area) or Heikin Ashi candles.
+    const point = (b) => (view() === 'line' || view() === 'area' ? { time: b.time, value: b.close } : b);
     function viewData() {
-      if (type === 'line' || type === 'area') return bars.map((b) => ({ time: b.time, value: b.close }));
-      if (type !== 'ha') return bars;
+      if (view() !== 'ha') return bars.map(point);
       const out = [];
       let po = null;
       let pc = null;
@@ -392,6 +445,7 @@
           priceLineColor: c.accent,
           priceFormat: PRICE2,
         };
+      if (isTick()) return { color: c.accent, lineWidth: 1.5, priceLineColor: c.accent, priceFormat: PRICE2 };
       if (type === 'line') return { color: c.accent, lineWidth: 2, priceLineColor: c.accent, priceFormat: PRICE2 };
       if (type === 'area')
         return {
@@ -417,7 +471,8 @@
     // price pane is never empty (an empty pane is dropped, which would move the indicator panes up).
     function makeSeries() {
       const old = series;
-      const def = type === 'line' ? LC.LineSeries : type === 'area' ? LC.AreaSeries : type === 'bar' ? LC.BarSeries : LC.CandlestickSeries;
+      const v = view();
+      const def = v === 'line' ? LC.LineSeries : v === 'area' ? LC.AreaSeries : v === 'bar' ? LC.BarSeries : LC.CandlestickSeries;
       series = chart.addSeries(def, seriesOptions(), 0);
       series.setData(viewData());
       series.attachPrimitive(trendLines);
@@ -430,8 +485,46 @@
     }
     function render() {
       series.setData(viewData());
+      drawVol();
       refreshInds();
       drawFlow();
+    }
+
+    // ---------- volume ----------
+    // The future's and the options' volume as bars along the bottom of the price pane (an overlay scale of its own;
+    // the candles move up to make room). Nifty is an index and has none.
+    const qtyFmt = (v) =>
+      v >= 1e7
+        ? (v / 1e7).toFixed(2) + ' Cr'
+        : v >= 1e5
+          ? (v / 1e5).toFixed(2) + ' L'
+          : v >= 1e4
+            ? (v / 1e3).toFixed(1) + 'k'
+            : Math.round(v).toLocaleString('en-IN');
+    const lotSize = () => meta?.lot || 65;
+    const volText = (v) => `${qtyFmt(v)} (${Math.round(v / lotSize()).toLocaleString('en-IN')} lot${Math.round(v / lotSize()) === 1 ? '' : 's'})`;
+    function volPoint(b) {
+      const c = colours();
+      return { time: b.time, value: b.vol || 0, color: rgba(b.close >= b.open ? c.up : c.down, 0.5) };
+    }
+    function drawVol() {
+      volSeries?.setData(bars.map(volPoint));
+    }
+    function setVolSeries() {
+      const want = showVol && Boolean(source);
+      if (want && !volSeries) {
+        volSeries = chart.addSeries(
+          LC.HistogramSeries,
+          { priceScaleId: 'vol', priceLineVisible: false, lastValueVisible: false, priceFormat: { type: 'volume' } },
+          0,
+        );
+        chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.78, bottom: 0 } });
+        drawVol();
+      } else if (!want && volSeries) {
+        chart.removeSeries(volSeries);
+        volSeries = null;
+      }
+      chart.priceScale('right').applyOptions({ scaleMargins: want ? { top: 0.08, bottom: 0.26 } : { top: 0.2, bottom: 0.1 } });
     }
 
     function applyTheme() {
@@ -451,6 +544,7 @@
       series.applyOptions(seriesOptions());
       drawLevels();
       drawHLines();
+      drawVol();
       refreshInds();
       cvdSeries?.applyOptions({ color: css('--accent') });
       drawFlow();
@@ -471,7 +565,7 @@
             price: l.price,
             color: rgba(css(res ? '--down' : '--up'), major ? 0.95 : 0.6),
             lineWidth: major ? 2 : 1,
-            lineStyle: major ? LC.LineStyle.Solid : LC.LineStyle.Dotted,
+            lineStyle: l.projected ? LC.LineStyle.Dashed : major ? LC.LineStyle.Solid : LC.LineStyle.Dotted,
             axisLabelVisible: major,
             title: major ? (res ? 'R' : 'S') : '',
           }),
@@ -744,7 +838,7 @@
       flowLast = p.delta.length ? { delta: p.delta[p.delta.length - 1].value, cvd: p.cvd[p.cvd.length - 1].value } : null;
     }
     function setFlowSeries() {
-      const want = showFlow && !source; // the order flow is Nifty's
+      const want = showFlow && !source && !isTick(); // the order flow is Nifty's, per candle
       if (want && !deltaSeries) {
         const pane = chart.panes().length;
         deltaSeries = chart.addSeries(LC.HistogramSeries, { priceLineVisible: false, lastValueVisible: false, title: 'Δ lots', priceFormat: lotsFormat }, pane);
@@ -768,7 +862,7 @@
     // Today's rows are re-read often (the last few minutes only); the first read and every read while the server is
     // still loading earlier days takes everything.
     async function loadFlow() {
-      if (source || !(showFlow || showFp) || flowBusy || Date.now() < flowAt) return;
+      if (source || isTick() || !(showFlow || showFp) || flowBusy || Date.now() < flowAt) return;
       flowBusy = true;
       try {
         const all = !flowRows.length || flowPending;
@@ -846,8 +940,10 @@
         series.createPriceLine({ price, color: css('--accent'), lineWidth: 1, lineStyle: LC.LineStyle.Dashed, axisLabelVisible: true, title: '' }),
       );
     }
-    // Pixel position of a drawing's point: on the candle that holds its time in the current timeframe.
+    // Pixel position of a drawing's point: on the candle that holds its time in the current timeframe. Trend lines are
+    // pinned to candle times, which the Tick view (times = tick numbers) does not have, so they wait for the candles.
     function pointPx(time, price) {
+      if (isTick()) return null;
       const i = barAt(time);
       if (i < 0) return null;
       const x = chart.timeScale().timeToCoordinate(bars[i].time);
@@ -946,7 +1042,10 @@
         prev == null
           ? ''
           : ` <span class="${s.close >= prev ? 'pos' : 'neg'}">${s.close >= prev ? '+' : ''}${num(s.close - prev)} (${(((s.close - prev) / prev) * 100).toFixed(2)}%)</span>`;
-      let html = `<div><span class="muted">${when(s.time)}</span> O <b class="${c}">${num(s.open)}</b> H <b class="${c}">${num(s.high)}</b> L <b class="${c}">${num(s.low)}</b> C <b class="${c}">${num(s.close)}</b>${d}</div>`;
+      const vol = source && s.vol != null ? ` · ${isTick() ? 'Qty' : 'Vol'} <b>${volText(s.vol)}</b>` : '';
+      let html = isTick()
+        ? `<div><span class="muted">${clock(s.at, true)}</span> <b class="${c}">${num(s.close)}</b>${d}${vol}</div>`
+        : `<div><span class="muted">${when(s.time)}</span> O <b class="${c}">${num(s.open)}</b> H <b class="${c}">${num(s.high)}</b> L <b class="${c}">${num(s.low)}</b> C <b class="${c}">${num(s.close)}</b>${d}${vol}</div>`;
       const ft = fpActive() ? fpTotals(s.time) : null;
       if (ft)
         html += `<div class="nc-ind"><i style="background:${css('--accent')}"></i>Order flow Delta <b class="${ft.delta >= 0 ? 'pos' : 'neg'}">${(ft.delta > 0 ? '+' : '') + lotsFmt(ft.delta)}</b> · Total <b>${lotsFmt(ft.total)}</b> lots</div>`;
@@ -975,24 +1074,42 @@
         el.msg.className = 'err';
         return;
       }
+      const day = (d) => new Date(d + 'T00:00:00Z').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', timeZone: 'UTC' });
+      const what = isFut() && meta?.symbol ? meta.symbol + ' · ' : '';
       el.msg.className = live ? 'pos' : '';
-      el.msg.textContent = live
-        ? '● live'
-        : meta?.day
-          ? `market closed · last session ${new Date(meta.day + 'T00:00:00Z').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', timeZone: 'UTC' })}`
-          : '';
+      if (isTick()) {
+        const n = bars.length.toLocaleString('en-IN');
+        el.msg.textContent = !meta
+          ? ''
+          : !bars.length
+            ? `${what}no trades recorded yet: the server records them off the live feed while the market is open`
+            : `${what}${live ? '● live · ' : ''}${n} ${source ? 'trades' : 'ticks'}${meta.day ? ' on ' + day(meta.day) : ''}`;
+        return;
+      }
+      el.msg.textContent = what + (live ? '● live' : meta?.day ? `market closed · last session ${day(meta.day)}` : '');
     }
 
     // ---------- data ----------
-    // Where the candles and the live price come from: Nifty (the cached files) or the option shown (the server's chain).
+    // Where the candles and the live price come from: Nifty (the cached files), the Nifty future or the option shown
+    // (the server's chain).
     const optQuery = () => `expiry=${source.expiry}&strike=${source.strike}&type=${source.type}`;
-    const candlesUrl = () => (source ? `/api/option/candles?${optQuery()}&` : '/api/bt/candles?');
+    const candlesUrl = () => (isFut() ? '/api/future/candles?' : source ? `/api/option/candles?${optQuery()}&` : '/api/bt/candles?');
+    const ltpUrl = () => (isFut() ? '/api/future/ltp' : source ? `/api/option/ltp?${optQuery()}` : '/api/nifty/ltp');
+    const ticksUrl = () => `/api/ticks?${isFut() ? 'src=fut' : source ? 'src=opt&' + optQuery() : 'src=nifty'}&after=${tickNext}&gen=${tickGen ?? ''}`;
+    const noCandles = () =>
+      isFut()
+        ? 'no candles for the Nifty future yet'
+        : source
+          ? 'no candles for this option yet'
+          : 'no Nifty candles in the cache yet (log in to Upstox to download them)';
+
     // The newest block of candles: the whole chart after a timeframe change, afterwards laid over what is shown.
     async function load(reset) {
       if (loading) return;
       loading = true;
       const my = seq;
       try {
+        if (isTick()) return await loadTicks(my);
         const d = await api(`${candlesUrl()}tf=${tf}`);
         if (my !== seq) return;
         const block = d.candles.map(toBar);
@@ -1015,7 +1132,7 @@
         }
         drawLevels();
         info();
-        status(block.length ? null : source ? 'no candles for this option yet' : 'no Nifty candles in the cache yet (log in to Upstox to download them)');
+        status(block.length ? null : noCandles());
         nextLoadAt = Date.now() + (live ? RELOAD_LIVE_MS : RELOAD_IDLE_MS);
       } catch (e) {
         if (my === seq) {
@@ -1024,8 +1141,50 @@
         }
       } finally {
         loading = false;
+        if (my === seq) loaded = true;
         if (my !== seq) load(true);
       }
+    }
+
+    // Tick view: the trades the chart does not hold yet, or all of today's when the server's store started over (a new
+    // day, a restart) or dropped the ones the chart would need next. One bar per trade, numbered through the day.
+    async function loadTicks(my) {
+      const d = await api(ticksUrl());
+      if (my !== seq) return;
+      const fresh = d.gen !== tickGen || d.start !== tickNext;
+      let prev = fresh ? null : (last()?.close ?? null);
+      const add = d.ticks.map(([at, px, qty], j) => {
+        const open = prev ?? px;
+        prev = px;
+        return { time: d.start + j + 1, at, open, high: Math.max(open, px), low: Math.min(open, px), close: px, vol: qty };
+      });
+      tickGen = d.gen;
+      tickNext = d.start + d.ticks.length;
+      const was = live;
+      live = Boolean(d.live);
+      delete d.ticks;
+      meta = { ...d, prevClose: d.cp };
+      if (fresh || add.length > 500) {
+        bars = fresh ? add : bars.concat(add);
+        render();
+        if (fresh) {
+          const show = Math.max(80, Math.round(el.chart.clientWidth / 3));
+          if (bars.length <= show) chart.timeScale().fitContent();
+          else chart.timeScale().setVisibleLogicalRange({ from: bars.length - show, to: bars.length + 5 });
+        }
+      } else {
+        for (const b of add) {
+          bars.push(b);
+          series.update(point(b));
+          volSeries?.update(volPoint(b));
+        }
+        if (add.length) dirty = true;
+      }
+      if (fresh || add.length) {
+        drawLevels();
+        info();
+      }
+      if (fresh || add.length || live !== was) status();
     }
 
     // Scrolled near the left edge: put the block of sessions before the oldest one in front.
@@ -1067,41 +1226,57 @@
       return (tf === 'W' ? week(b.time) === week(day) : month(b.time) === month(day)) ? b.time : day;
     }
 
-    // Folds a tick into the last candle (or starts the next one). `quiet` = the caller redraws everything itself.
+    // Folds a live price into the last candle (or starts the next one), with the volume traded since the previous
+    // price (t.vol = the day's volume so far, for the future and options). `quiet` = the caller redraws everything
+    // itself and this price has been counted before.
     function applyTick(t, quiet) {
       const time = bucketOf(t.at);
       let b = last();
       if (time == null || !b || time < b.time) return;
+      let dv = 0;
+      if (!quiet && t.vol != null) {
+        if (volCum != null && t.vol > volCum) dv = t.vol - volCum;
+        volCum = t.vol;
+      }
       if (time === b.time) {
-        if (t.ltp === b.close) return;
+        if (t.ltp === b.close && !dv) return;
         b.close = t.ltp;
         if (t.ltp > b.high) b.high = t.ltp;
         if (t.ltp < b.low) b.low = t.ltp;
+        if (dv) b.vol = (b.vol || 0) + dv;
       } else {
-        b = { time, open: t.ltp, high: t.ltp, low: t.ltp, close: t.ltp };
+        b = { time, open: t.ltp, high: t.ltp, low: t.ltp, close: t.ltp, vol: source ? dv : null };
         bars.push(b);
       }
       if (quiet) return;
       dirty = true;
-      if (type === 'ha') series.setData(viewData());
-      else series.update(type === 'line' || type === 'area' ? { time: b.time, value: b.close } : b);
+      if (view() === 'ha') series.setData(viewData());
+      else series.update(point(b));
+      volSeries?.update(volPoint(b));
       info();
     }
 
     let ticking = false;
     async function tick() {
       if (!visible()) return;
-      if (Date.now() >= nextLoadAt) load(!bars.length);
-      if (!source) {
-        loadLevels();
-        loadFlow();
+      if (loaded && window.app?.marketClosed?.()) return; // market shut: nothing moves, so no more requests
+      if (!source) loadLevels();
+      if (isTick()) {
+        await load(false); // the new trades
+        if (dirty) {
+          refreshInds();
+          info();
+        }
+        return;
       }
+      if (Date.now() >= nextLoadAt) load(!bars.length);
+      if (!source) loadFlow();
       if (ticking) return;
       ticking = true;
       const my = seq;
       try {
-        const t = await api(source ? `/api/option/ltp?${optQuery()}` : '/api/nifty/ltp');
-        if (my !== seq) return; // Nifty / option switched meanwhile: this price belongs to the other chart
+        const t = await api(ltpUrl());
+        if (my !== seq) return; // Nifty / future / option switched meanwhile: this price belongs to the other chart
         const was = live;
         live = Boolean(t.live && t.ltp != null);
         if (live) {
@@ -1124,34 +1299,56 @@
     }
 
     // ---------- controls ----------
-    function setTf(v) {
-      tf = v;
-      series.applyOptions(seriesOptions()); // the footprint is for intraday candles only
-      set('tf', v);
+    // What a new timeframe or source starts from: nothing loaded, no live price or tick position carried over.
+    function clearData() {
       seq++;
+      loaded = false;
       bars = [];
       meta = null;
       hover = null;
       more = false;
+      tickGen = null;
+      tickNext = 0;
+      volCum = null;
+    }
+    function setTf(v) {
+      const was = view();
+      tf = v;
+      set('tf', v);
+      clearData();
+      // into or out of the Tick view (a line whatever the chart type) the series is remade; the footprint is for
+      // intraday candles only
+      if (view() !== was) makeSeries();
+      else series.applyOptions(seriesOptions());
+      setFlowSeries(); // the order flow is per candle: none on the Tick view
       buttons();
+      status();
       load(true);
     }
     function buttons() {
       el.tf.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.tf === tf));
       el.type.value = type;
+      el.type.disabled = isTick(); // ticks are always a line
       el.sr.classList.toggle('on', showLevels);
       el.of.classList.toggle('on', showFlow);
       el.fp.classList.toggle('on', showFp);
-      el.fpKey.classList.toggle('hidden', !showFp);
-      el.flowKey.classList.toggle('hidden', !showFlow);
+      el.of.disabled = el.fp.disabled = isTick();
+      el.fpKey.classList.toggle('hidden', !showFp || isTick());
+      el.flowKey.classList.toggle('hidden', !showFlow || isTick());
+      el.vol.classList.toggle('hidden', !source); // Nifty is an index: no volume
+      el.vol.classList.toggle('on', showVol);
+      el.tickKey.classList.toggle('hidden', !isTick());
       el.log?.classList.toggle('on', logScale);
+      const trend = el.draw?.querySelector('[data-draw="t"]');
+      if (trend) trend.disabled = isTick();
       root.classList.toggle('nc-opt-mode', Boolean(source));
-      // no weekly / monthly history for an option
+      // no weekly / monthly history for the future or an option
       el.tf.querySelectorAll('button').forEach((b) => b.classList.toggle('hidden', Boolean(source) && (b.dataset.tf === 'W' || b.dataset.tf === 'M')));
-      if (el.nifty) {
-        el.nifty.classList.toggle('on', !source);
-        el.optTab.classList.toggle('hidden', !source);
-        if (source) {
+      el.nifty.classList.toggle('on', !source);
+      el.fut.classList.toggle('on', isFut());
+      if (el.optTab) {
+        el.optTab.classList.toggle('hidden', !isOpt());
+        if (isOpt()) {
           const exp = new Date(source.expiry + 'T00:00:00Z').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', timeZone: 'UTC' });
           el.optBtn.textContent = `${source.strike} ${source.type} · ${exp}`;
           el.optBtn.title = `Nifty ${source.strike} ${source.type}, expiry ${source.expiry}`;
@@ -1159,31 +1356,35 @@
         }
       }
     }
-    // Shows one option of the chain (or Nifty again, with null). The other's candles, price and levels go at once.
+    // Shows the Nifty future ({ fut: true }), one option of the chain ({ expiry, strike, type }) or Nifty again (null).
+    // The other's candles, price and levels go at once.
     function setSource(next) {
-      if (next && source && next.expiry === source.expiry && next.strike === source.strike && next.type === source.type) return;
-      if (!next && !source) return;
+      const same = (a, b) =>
+        (!a && !b) || Boolean(a && b && Boolean(a.fut) === Boolean(b.fut) && a.expiry === b.expiry && a.strike === b.strike && a.type === b.type);
+      if (same(next, source)) return;
+      const was = view();
       source = next;
+      set('src', isFut() ? 'fut' : '');
       const saved = TF_TITLE[get('tf', tf0)] ? get('tf', tf0) : tf0;
       tf = source && (saved === 'W' || saved === 'M') ? '5' : saved;
-      seq++;
-      bars = [];
-      meta = null;
-      hover = null;
-      more = false;
+      clearData();
       first = null;
       lastTick = null;
       live = false;
       nextLoadAt = 0;
-      series.setData([]);
-      series.applyOptions(seriesOptions()); // the footprint is for Nifty's intraday candles only
+      if (view() !== was) makeSeries();
+      else {
+        series.setData([]);
+        series.applyOptions(seriesOptions()); // the footprint is for Nifty's intraday candles only
+      }
       drawLevels();
       setFlowSeries();
+      setVolSeries();
       buttons();
       info();
       status();
       load(true);
-      window.chartShows?.(source && { ...source });
+      window.chartShows?.(isOpt() ? { ...source } : null);
     }
     el.tf.addEventListener('click', (e) => {
       if (e.target.dataset.tf && e.target.dataset.tf !== tf) setTf(e.target.dataset.tf);
@@ -1216,21 +1417,36 @@
       setFlowSeries();
     });
     el.now.addEventListener('click', () => chart.timeScale().scrollToRealTime());
-    el.nifty?.addEventListener('click', () => setSource(null));
-    el.pop?.addEventListener('click', () => window.open('chart.html', 'niftyChart', 'popup,width=1400,height=820'));
+    el.vol.addEventListener('click', () => {
+      showVol = !showVol;
+      set('vol', showVol ? '1' : '0');
+      buttons();
+      setVolSeries();
+    });
+    el.nifty.addEventListener('click', () => setSource(null));
+    el.fut.addEventListener('click', () => setSource({ fut: true }));
+    // The window has its own settings (the 'ncw.' keys): start it on the Nifty or the Nifty future, on this timeframe.
+    el.pop?.addEventListener('click', () => {
+      try {
+        localStorage.setItem('ncw.src', source?.fut ? 'fut' : '');
+        if (!source || source.fut) localStorage.setItem('ncw.tf', tf);
+      } catch {
+        /* storage unavailable: it opens on its last settings */
+      }
+      window.open('chart.html', 'niftyChart', 'popup,width=1400,height=820');
+    });
     el.ohlc.addEventListener('pointerdown', (e) => {
       if (e.target.dataset.rm) removeInd(Number(e.target.dataset.rm));
     });
 
-    if (full) {
-      const applyLog = () => chart.priceScale('right').applyOptions({ mode: logScale ? LC.PriceScaleMode.Logarithmic : LC.PriceScaleMode.Normal });
-      el.log.addEventListener('click', () => {
-        logScale = !logScale;
-        set('log', logScale ? '1' : '0');
-        buttons();
-        applyLog();
+    if (indicators) {
+      el.indBtn.addEventListener('click', () => {
+        el.indMenu.classList.toggle('hidden');
+        // in a narrow panel the menu opens to the right of the button when it fits there, so it is not cut off
+        const room = root.getBoundingClientRect().right - el.indBtn.getBoundingClientRect().left;
+        el.indMenu.style.left = room >= el.indMenu.offsetWidth ? '0' : '';
+        el.indMenu.style.right = room >= el.indMenu.offsetWidth ? 'auto' : '0';
       });
-      el.indBtn.addEventListener('click', () => el.indMenu.classList.toggle('hidden'));
       document.addEventListener('pointerdown', (e) => {
         if (!e.target.closest('.nc-dd')) el.indMenu.classList.add('hidden');
       });
@@ -1245,6 +1461,16 @@
             params[i.dataset.p] = Math.max(i.dataset.p === 'mult' ? 0.1 : 1, Number(i.value) || IND[kind].params[i.dataset.p]);
           });
         addInd(kind, params);
+      });
+    }
+
+    if (full) {
+      const applyLog = () => chart.priceScale('right').applyOptions({ mode: logScale ? LC.PriceScaleMode.Logarithmic : LC.PriceScaleMode.Normal });
+      el.log.addEventListener('click', () => {
+        logScale = !logScale;
+        set('log', logScale ? '1' : '0');
+        buttons();
+        applyLog();
       });
       el.draw.addEventListener('click', (e) => {
         const d = e.target.dataset.draw;
@@ -1344,21 +1570,25 @@
     applyTheme();
     buttons();
     setFlowSeries();
+    setVolSeries();
     loadFlow();
-    if (full) for (const s of getJson('inds', [])) addInd(s.kind, { ...IND[s.kind]?.params, ...s.params }, false);
+    if (indicators) for (const s of getJson('inds', [])) addInd(s.kind, { ...IND[s.kind]?.params, ...s.params }, false);
     setInterval(tick, TICK_MS);
     tick();
     return {
       showOption: (o) => setSource({ expiry: o.expiry, strike: Number(o.strike), type: o.type === 'PE' ? 'PE' : 'CE' }),
       showNifty: () => setSource(null),
+      showFuture: () => setSource({ fut: true }),
+      refresh: tick, // after the chart's panel is shown (it does nothing while hidden)
     };
   }
 
+  window.mountNiftyChart = LC ? mount : null; // other screens (the Builder) mount their own copy of this chart
   const MISSING = '<div class="pad err">Chart library missing: run <code>npm install</code> and restart the server.</div>';
   const panel = document.getElementById('niftyPanel');
   if (panel && LC) {
     const full = document.body.classList.contains('nc-window');
-    const chainChart = mount(panel, { full, options: !full });
+    const chainChart = mount(panel, { full, options: !full, indicators: true });
     if (!full) window.chainChart = chainChart;
   } else if (panel) panel.innerHTML = MISSING;
   // Market Pulse: the same chart, opening on 1-minute candles.

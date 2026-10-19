@@ -74,7 +74,7 @@
     clearTimeout(fs.timer);
     if (window.app.state.view !== 'feeds') return;
     fs.timer = setTimeout(async () => {
-      await load();
+      if (!(fs.data && window.app.marketClosed())) await load(); // shut: nothing to compare, no more requests
       schedule();
     }, POLL_MS);
   }

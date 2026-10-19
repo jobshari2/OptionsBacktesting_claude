@@ -167,6 +167,41 @@ function createLevels() {
   return { forDay };
 }
 
+// Swing levels come from past price, so past the last of them on a side (a new high or low, or a move beyond the
+// ranges above) there are none to draw. Spot within `edge` of that last level (or beyond it) gets levels projected
+// there from the next round numbers (majorStep: major, minorStep: minor) and the previous session's R3 / S3 pivots.
+// Cheap, so it is applied to the day's levels against the current spot on every request.
+function extend(lv, spot, { edge = 0.03, majorStep = 500, minorStep = 100, nMajor = 2, nMinor = 3, tol = DEFAULTS.minorTol } = {}) {
+  if (!lv || !(spot > 0)) return lv;
+  const levels = lv.levels.slice();
+  const has = (p) => levels.some((x) => Math.abs(x.price - p) <= tol * p);
+  const put = (price, cls, src) => {
+    if (!has(price)) levels.push({ price: Math.round(price), cls, touches: 0, src, projected: true });
+  };
+  const P = lv.prev ? (lv.prev.h + lv.prev.l + lv.prev.c) / 3 : null;
+  for (const dir of [1, -1]) {
+    const side = lv.levels.filter((l) => (l.price - spot) * dir > 0);
+    const frontier = side.length ? (dir > 0 ? Math.max : Math.min)(...side.map((l) => l.price)) : spot;
+    if (side.length && Math.abs(frontier - spot) > edge * spot) continue; // the swing levels still reach well beyond spot
+    const name = dir > 0 ? 'resistance' : 'support';
+    const round = (step, n, cls) => {
+      let p = dir > 0 ? (Math.floor(frontier / step) + 1) * step : (Math.ceil(frontier / step) - 1) * step;
+      for (let added = 0, i = 0; added < n && i < 60 && p > 0; i++, p += dir * step) {
+        if (has(p)) continue;
+        put(p, cls, `round ${p.toLocaleString('en-IN')} · projected ${name}`);
+        added++;
+      }
+    };
+    round(majorStep, nMajor, 'major');
+    round(minorStep, nMinor, 'minor');
+    if (P != null) {
+      const piv = dir > 0 ? [lv.prev.h + 2 * (P - lv.prev.l), 'pivot R3'] : [lv.prev.l - 2 * (lv.prev.h - P), 'pivot S3'];
+      if ((piv[0] - spot) * dir > 0 && (piv[0] - frontier) * dir > 0) put(piv[0], 'minor', `${piv[1]} · projected ${name}`);
+    }
+  }
+  return { ...lv, spot, levels: levels.sort((a, b) => b.price - a.price) };
+}
+
 // Nearest support (below spot) and resistance (above) for each class.
 function nearest(lv, spot) {
   const out = { support: { major: null, minor: null, any: null }, resistance: { major: null, minor: null, any: null } };
@@ -183,4 +218,4 @@ function nearest(lv, spot) {
 
 const ofClass = (lv, cls) => (lv?.levels || []).filter((l) => cls === 'any' || l.cls === cls);
 
-module.exports = { createLevels, nearest, ofClass, DEFAULTS };
+module.exports = { createLevels, nearest, ofClass, extend, DEFAULTS };

@@ -5,18 +5,20 @@
   --line: #2a313c;
   --text: #e6edf3;
   --muted: #8b949e;
-  --ce: #f0716b;       /* calls: red (resistance side) */
-  --ce-soft: rgba(240, 113, 107, 0.16);
-  --pe: #3fb68b;       /* puts: green (support side) */
-  --pe-soft: rgba(63, 182, 139, 0.16);
+  --ce: #3fb68b;       /* calls: green */
+  --ce-soft: rgba(63, 182, 139, 0.16);
+  --pe: #f0716b;       /* puts: red */
+  --pe-soft: rgba(240, 113, 107, 0.16);
+  --res: #f0716b;      /* resistance levels: red (not tied to calls / puts) */
+  --sup: #3fb68b;      /* support levels: green */
   --itm: rgba(214, 175, 76, 0.07);
   --atm: #d6af4c;
   --up: #3fb68b;
   --down: #f0716b;
   --accent: #58a6ff;
   /* chart marks: CVD-validated pair on --panel (deutan ΔE 10) */
-  --ce-mark: #c43f3a;
-  --pe-mark: #2fa77a;
+  --ce-mark: #2fa77a;
+  --pe-mark: #c43f3a;
   --seq-hi: #58a6ff;
 }
 
@@ -69,7 +71,7 @@ select {
   display: inline-block; margin-top: 8px; padding: 10px 22px; border-radius: 8px;
   background: var(--accent); color: #0b1220; font-weight: 600; text-decoration: none;
 }
-.error-bar { background: rgba(240,113,107,.15); color: var(--ce); padding: 8px 16px; border-bottom: 1px solid var(--line); }
+.error-bar { background: rgba(240,113,107,.15); color: var(--down); padding: 8px 16px; border-bottom: 1px solid var(--line); }
 
 /* ---------- layout ---------- */
 .layout {
@@ -237,7 +239,7 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 11px; }
 .pill.premium-up { background: rgba(63,182,139,.2); color: var(--up); }
 .pill.premium-down { background: rgba(240,113,107,.2); color: var(--down); }
 .pill.premium-spike { background: rgba(163,113,247,.2); color: #b392f0; }
-.pill.both-rising { background: rgba(240,113,107,.2); color: var(--ce); }
+.pill.both-rising { background: rgba(240,113,107,.2); color: var(--down); }
 .pill.both-rising.off { background: var(--panel-2); color: var(--muted); }
 .pill.spot-up { background: rgba(63,182,139,.2); color: var(--up); }
 .pill.spot-down { background: rgba(240,113,107,.25); color: var(--down); }

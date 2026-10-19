@@ -100,7 +100,14 @@
       "PowerShell(npx prettier --check feedpaper.js public/feeds-view.js test/feedpaper.test.js 2>&1)",
       "PowerShell(npx prettier --write feedpaper.js public/feeds-view.js test/feedpaper.test.js 2>&1; npx eslint feedpaper.js public/feeds-view.js test/feedpaper.test.js; \"eslint exit: $LASTEXITCODE\"; node --test test/feedpaper.test.js 2>&1 | Select-String '^# \\(tests|pass|fail\\)'; git diff .claude/settings.local.json)",
       "PowerShell(git add feedpaper.js public/feeds-view.js test/feedpaper.test.js)",
-      "PowerShell(git push origin main 2>&1)"
+      "PowerShell(git push origin main 2>&1)",
+      "Bash(rm -rf *)",
+      "Bash(git log *)",
+      "Bash(node --check public/pulse-view.js)",
+      "Bash(node --check pulse.js)",
+      "Bash(node --test test)",
+      "Bash(node --test test/*.test.js)",
+      "Bash(netstat -ano)"
     ]
   }
 }

@@ -408,6 +408,10 @@
   async function pollLive() {
     clearTimeout(liveTimer);
     if (mode !== 'live' || window.app.state.view !== 'an') return;
+    if (liveState && window.app.marketClosed()) {
+      liveTimer = setTimeout(pollLive, 30_000); // market shut: keep what is shown, ask nothing
+      return;
+    }
     try {
       liveState = await BT.api('/api/an/live');
       renderLive();

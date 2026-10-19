@@ -30,7 +30,19 @@
 //    paid, in rupees). Used by the scenario scan (scenarios.js); when a rupee / % of capital rule is set too, the
 //    nearer one applies.
 //  - entry.noOverlap: one position at a time (a trade whose entry falls before the previous exit is skipped).
+//
+// Adjustments on market movement (strategy.adjust), checked on every candle close like the overall MTM rules:
+//  - on 'move': Nifty has moved `value` points (unit 'pts') or % (unit 'pct') from the position's centre (spot at entry,
+//    then at the last adjustment); the side Nifty moved towards is the tested one (up = calls).
+//  - on 'near': Nifty is within `value` points / % of a short strike (0 = touching it); that strike's side is tested.
+//  - on 'prem': a short leg's price is `value` times its entry price (2 = doubled); that leg's side is tested.
+//  action 'tested' re-strikes the tested side's legs (shorts and their wings), 'untested' the other side (rolled in
+//  closer), 'both' every leg (re-centred). The legs are closed at the next minute's open and the same legs opened at the
+//  strikes their own rules pick at that moment (a wing "from leg" follows its short), in the same expiry. Legs whose
+//  strike would not change are left alone; if any new leg has no price the adjustment is skipped as a whole, so a short is
+//  never left without its wing. At most `max` adjustments a trade, none in the last 30 minutes before the exit.
 const { MPD, addDays } = require('./data');
+const Costs = require('../lib/costs');
 const { normCondition, evaluate } = require('./conditions');
 const A = require('./anomalies');
 const { nearest: nearestLevels } = require('./levels');
@@ -83,6 +95,22 @@ function normLevel(x) {
   const value = Number(x?.value);
   if (type === 'srb') return { type, value: value >= 0 ? value : 0, lv: LV.has(x.lv) ? x.lv : 'any' }; // buffer may be 0
   return type === 'none' || !(value > 0) ? { type: 'none', value: 0 } : { type, value };
+}
+
+const ADJ_ON = new Set(['move', 'near', 'prem']);
+const ADJ_ACTION = new Set(['tested', 'untested', 'both']);
+function normAdjust(a) {
+  if (!a || !ADJ_ON.has(a.on)) return null;
+  const value = Number(a.value);
+  if (!(value > 0 || (a.on === 'near' && value === 0))) return null;
+  if (a.on === 'prem' && !(value > 1)) return null;
+  return {
+    on: a.on,
+    value,
+    unit: a.on === 'prem' ? 'x' : a.unit === 'pct' ? 'pct' : 'pts',
+    action: ADJ_ACTION.has(a.action) ? a.action : 'tested',
+    max: Math.max(1, Math.min(10, Math.round(Number(a.max) || 2))),
+  };
 }
 
 function normalizeStrategy(s) {
@@ -159,6 +187,7 @@ function normalizeStrategy(s) {
       partialPct: Math.max(1, Math.min(99, Number(r.partialPct) || 60)),
       partialFloor: r.partialFloor === '' || r.partialFloor == null || isNaN(Number(r.partialFloor)) ? null : Number(r.partialFloor),
     },
+    adjust: normAdjust(s?.adjust),
     filters: {
       vixMin: num(s?.filters?.vixMin),
       vixMax: num(s?.filters?.vixMax),
@@ -212,8 +241,9 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
 
   const needVix = Boolean(strat.filters.vixMin || strat.filters.vixMax);
   const lastDay = cal.expired[cal.expired.length - 1];
-  // Support/resistance looks back ~120 sessions before the first trade.
-  const days = await data.loadIndex(addDays(opts.from, usesLevels ? -200 : -70), lastDay, needVix);
+  // Support/resistance looks back ~120 sessions before the first trade. India VIX is recorded on every trade (the
+  // Breakdown tab's market regime); only a VIX filter needs it, without one a month that can't be had is left out.
+  const days = await data.loadIndex(addDays(opts.from, usesLevels ? -200 : -70), lastDay, needVix || 'soft');
   const dayIdx = new Map(days.map((d, i) => [d, i]));
   if (ext.hist) ext.hist.setDays(days);
   const levelsOf = (day) => (usesLevels && dayIdx.has(day) ? ext.levels.forDay(days, dayIdx.get(day), data.spotDay) : null);
@@ -386,16 +416,23 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
   }
 
   const fill = (px, buy) => (buy ? px * (1 + opts.slippage) : px * (1 - opts.slippage));
+  // Brokerage and charges of one leg's round trip, at the rates in force on the day of each side (lib/costs.js: STT
+  // changes with the budgets). A leg settled at expiry places no closing order: a bought option that expires in the
+  // money pays STT on its settlement value instead, and an option that expires worthless pays nothing more.
   function execCost(x) {
-    const buyTurn = (x.dir > 0 ? x.entryFill : x.exitFill) * x.qty;
-    const sellTurn = (x.dir > 0 ? x.exitFill : x.entryFill) * x.qty;
-    let cost = 2 * opts.brokerage;
-    if (opts.taxes) {
-      const turn = buyTurn + sellTurn;
-      const txn = turn * 0.0003503;
-      const sebi = turn * 0.000001;
-      cost += sellTurn * 0.001 + txn + sebi + 0.18 * (2 * opts.brokerage + txn + sebi) + buyTurn * 0.00003;
+    const settled = x.reason === 'expiry';
+    const buy = { turn: (x.dir > 0 ? x.entryFill : x.exitFill) * x.qty, day: x.dir > 0 ? x.entryDay : x.exitDay, order: x.dir > 0 || !settled };
+    const sell = { turn: (x.dir > 0 ? x.exitFill : x.entryFill) * x.qty, day: x.dir > 0 ? x.exitDay : x.entryDay, order: x.dir < 0 || !settled };
+    let cost = 0;
+    for (const [side, s] of [
+      ['buy', buy],
+      ['sell', sell],
+    ]) {
+      if (!s.order) continue;
+      if (!opts.taxes) cost += opts.brokerage;
+      else cost += Costs.orders({ [side]: s.turn, orders: 1, day: s.day, brokerage: opts.brokerage });
     }
+    if (opts.taxes && settled && x.dir > 0) cost += Costs.exercise(x.exitPx * x.qty, x.exitDay);
     return cost;
   }
 
@@ -409,10 +446,9 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
     if (tl.length === 1 && e0 >= xm) return { skip: 'signal too late to trade', silent: true };
     const sx = { hit: pos.hit || null, lv: levelsOf(pos.entryDay) };
     const spotIn = sp0[e0 * 4];
-    let vix = null;
+    const vixD = data.vixDay(pos.entryDay);
+    const vix = vixD ? vixD[e0 * 4] : null;
     if (needVix) {
-      const v = data.vixDay(pos.entryDay);
-      vix = v ? v[e0 * 4] : null;
       if (vix == null) return { skip: 'no VIX data' };
       if (strat.filters.vixMin && vix < strat.filters.vixMin) return { skip: 'VIX filter', silent: true };
       if (strat.filters.vixMax && vix > strat.filters.vixMax) return { skip: 'VIX filter', silent: true };
@@ -567,6 +603,11 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
     };
     let partialDone = false;
     const notes = [];
+    const ADJ = strat.adjust;
+    let center = spotIn; // Nifty at entry, then at the last adjustment
+    let adjCount = 0; // adjustments decided (the limit counts these)
+    let adjDone = 0; // ... and made
+    let adjQ = null; // an adjustment decided on a candle close, made at the next minute's open: { t, m, types, why }
 
     const execs = [];
     let realized = 0;
@@ -607,6 +648,7 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
         re: leg.reCount,
         dir: leg.dir,
         ...(leg.rolled ? { rolled: 1 } : {}),
+        ...(leg.adjusted ? { adj: 1 } : {}),
       };
       const cost = execCost(x);
       x.pnl = Math.round(pnl);
@@ -637,6 +679,47 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
         });
       }
     };
+
+    // The adjustment decided on the previous close: the legs of q.types are given the strikes their rules pick now.
+    async function adjustNow(t, m, q) {
+      const day = tl[t];
+      const spot = data.spotDay(day)[m * 4];
+      const old = legs.filter((l) => l.open && q.types.has(l.type));
+      if (!old.length) {
+        center = spot;
+        return;
+      }
+      const cur = sx.legStrikes; // what "from leg" wings are measured from: the legs' current strikes
+      for (const l of legs) if (l.open) cur[l.li] = l.strike;
+      const saved = cur.slice();
+      const fresh = [];
+      try {
+        for (const l of [...old.filter((x) => x.def.strike.by !== 'leg'), ...old.filter((x) => x.def.strike.by === 'leg')]) {
+          const strike = await selectStrike(l.def.strike, l.type, l.expiry, day, m, spot, sx);
+          cur[l.li] = strike;
+          if (strike === l.strike) continue;
+          const nl = await openLeg(l.def, l.li, t, m, strike, spot, l.reCount, null, l.expiry);
+          nl.qty = l.qty; // keeps any partial booking
+          nl.adjusted = true;
+          fresh.push([l, nl]);
+        }
+      } catch (e) {
+        if (!(e instanceof Skip)) throw e;
+        saved.forEach((k, i) => (cur[i] = k));
+        notes.push(`${hhmm(m)} ${day}: ${q.why}: adjustment skipped (${e.message})`);
+        center = spot;
+        return;
+      }
+      for (const [l, nl] of fresh) {
+        const a = arrOf(l, day);
+        close(l, t, m, a && a[m * 4] > 0 ? real(l, a[m * 4] / 100, spot, day, m) : l.entryPx, 'adjust', true);
+        legs.push(nl);
+      }
+      center = spot;
+      if (fresh.length) adjDone++;
+      if (fresh.length)
+        notes.push(`${hhmm(m)} ${day}: ${q.why}: ${fresh.map(([l, nl]) => `${l.dir > 0 ? 'B' : 'S'} ${l.type} ${l.strike}→${nl.strike}`).join(', ')}`);
+    }
 
     const closeAll = (t, m, useOpen, why) => {
       for (const leg of legs) {
@@ -691,9 +774,17 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
           }
         }
 
+        // Adjustment decided on the last close
+        if (adjQ && (t > adjQ.t || (t === adjQ.t && m >= adjQ.m))) {
+          const q = adjQ;
+          adjQ = null;
+          await adjustNow(t, m, q);
+        }
+
         // Scheduled rolls: close the leg at this minute's open, open the same strike in the next weekly expiry.
+        // (">=": a hedge opened by an adjustment after the roll time of its roll day is rolled straight away.)
         for (const leg of legs.slice()) {
-          if (!leg.open || !leg.rollAt || leg.rollAt.day !== day || leg.rollAt.m !== m) continue;
+          if (!leg.open || !leg.rollAt || leg.rollAt.day !== day || m < leg.rollAt.m) continue;
           leg.rollAt = null;
           const to = nthOnOrAfter(cal.all, addDays(leg.expiry, 1), 0);
           const a = arrOf(leg, day);
@@ -872,6 +963,48 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
           spotOut = sp[m * 4 + 3];
           break outer;
         }
+        // Market-move adjustment: decided on this close, made at the next minute's open.
+        if (ADJ && !adjQ && adjCount < ADJ.max && nOpen && !(t === tl.length - 1 && m > xm - 30)) {
+          const s = sp[m * 4 + 3];
+          const lim = (v) => (ADJ.unit === 'pct' ? (s * v) / 100 : v);
+          let tested = null;
+          let why = '';
+          if (ADJ.on === 'move') {
+            const d = s - center;
+            if (Math.abs(d) >= lim(ADJ.value)) {
+              tested = d > 0 ? 'CE' : 'PE';
+              why = `Nifty ${d > 0 ? '+' : '−'}${Math.abs(d).toFixed(0)} pts`;
+            }
+          } else {
+            for (const leg of legs) {
+              if (!leg.open || leg.dir > 0) continue;
+              if (ADJ.on === 'near') {
+                const room = leg.type === 'CE' ? leg.strike - s : s - leg.strike;
+                if (room <= lim(ADJ.value)) {
+                  tested = leg.type;
+                  why = `Nifty ${room <= 0 ? 'through' : room.toFixed(0) + ' pts from'} the short ${leg.strike} ${leg.type}`;
+                }
+              } else {
+                const a = arrOf(leg, day);
+                const c = a ? real(leg, a[m * 4 + 3] / 100, s, day, m) : leg.entryPx;
+                if (c >= ADJ.value * leg.entryPx) {
+                  tested = leg.type;
+                  why = `short ${leg.strike} ${leg.type} at ${(c / leg.entryPx).toFixed(1)}× its entry`;
+                }
+              }
+              if (tested) break;
+            }
+          }
+          if (tested) {
+            const other = tested === 'CE' ? 'PE' : 'CE';
+            const types = new Set(ADJ.action === 'tested' ? [tested] : ADJ.action === 'untested' ? [other] : ['CE', 'PE']);
+            // nothing to re-strike on that side (e.g. a call spread when Nifty falls): no adjustment
+            if (legs.some((l) => l.open && types.has(l.type))) {
+              adjQ = { t, m: m + 1, types, why };
+              adjCount++;
+            }
+          }
+        }
         if (!nOpen && !pending.length) {
           reason = 'legs-closed';
           done = true;
@@ -885,6 +1018,13 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
     if (!done) closeAll(tl.length - 1, xm, false, 'exit-time');
 
     const gross = execs.reduce((s, x) => s + x.pnl, 0);
+    // Nifty's range while the position was open (minute closes), for its market regime (metrics.js trendOf)
+    let spotHi = Math.max(spotIn, spotOut ?? spotIn);
+    let spotLo = Math.min(spotIn, spotOut ?? spotIn);
+    for (const v of spotPath) {
+      if (v > spotHi) spotHi = v;
+      if (v < spotLo) spotLo = v;
+    }
     return {
       trade: {
         entryDay: pos.entryDay,
@@ -896,6 +1036,9 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
         weekday: weekday(pos.entryDay),
         spotIn: r2(spotIn),
         spotOut: spotOut != null ? r2(spotOut) : null,
+        spotHi: r2(spotHi),
+        spotLo: r2(spotLo),
+        sessions: exitT + 1,
         vix: vix != null ? r2(vix) : null,
         gross: Math.round(gross),
         costs: Math.round(costs),
@@ -909,6 +1052,7 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
         ...(pos.sigText ? { signal: pos.sigText } : {}),
         ...(creditPts != null ? { credit: r2(creditPts) } : {}),
         ...(partialDone ? { partial: 1 } : {}),
+        ...(adjDone ? { adjusted: adjDone } : {}),
         ...(notes.length ? { notes } : {}),
       },
       path: { days: tl.slice(0, exitT + 1), em: e0, mtm, spot: spotPath },
@@ -1058,4 +1202,23 @@ function estimateMargin(legs, spot) {
   return Math.max(ce, pe) + 0.3 * Math.min(ce, pe) + debit;
 }
 
-module.exports = { runBacktest, normalizeStrategy, estimateMargin, bs, impliedVol, delta, yearsTo, hhmm, MIN_OF };
+// Stops judge the whole strategy, never one leg (the app's rule: Backtest, Compare and Bi-weekly screens). A leg stop in
+// % of its premium becomes a stop on the whole position at that % of the entry premium (the smallest one if legs differ,
+// or the strategy's own if that is nearer); stops on a leg's points, on a Nifty move or on S/R have no whole-strategy
+// equivalent and are dropped, with their trailing and their re-entry after a stop. Leg targets stay as they are.
+function wholeStrategyStops(raw) {
+  const s = normalizeStrategy(raw);
+  const pcts = s.legs.filter((l) => l.sl.type === 'pct').map((l) => l.sl.value);
+  if (pcts.length) s.risk.slPrem = Math.min(s.risk.slPrem ?? Infinity, ...pcts);
+  for (const l of s.legs) {
+    l.sl = { type: 'none', value: 0 };
+    l.trail = null;
+    if (l.re?.on === 'sl') l.re = null;
+    else if (l.re?.on === 'both') l.re.on = 'tgt';
+  }
+  s.risk.onLegSl = 'all';
+  s.risk.slToCost = false;
+  return s;
+}
+
+module.exports = { runBacktest, normalizeStrategy, wholeStrategyStops, estimateMargin, bs, impliedVol, delta, yearsTo, hhmm, MIN_OF };

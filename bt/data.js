@@ -123,9 +123,11 @@ function createData({ getToken, upstox = createUpstox({ getToken }), cacheDir, l
   };
 
   // Loads Nifty (and VIX) for [from, to]; returns the sorted trading days in that range.
+  // withVix 'soft': VIX months that can't be had (not cached, offline) are left out instead of failing the load.
   async function loadIndex(from, to, withVix = false) {
     const months = monthsBetween(from, to);
-    await Promise.all(months.flatMap((m) => [indexMonth(NIFTY, m), withVix ? indexMonth(VIX, m) : null]));
+    const vix = (m) => (withVix === 'soft' ? indexMonth(VIX, m).catch(() => null) : indexMonth(VIX, m));
+    await Promise.all(months.flatMap((m) => [indexMonth(NIFTY, m), withVix ? vix(m) : null]));
     const days = [];
     for (const m of months) for (const d of indexMem.get(`${NIFTY}|${m}`).keys()) if (d >= from && d <= to) days.push(d);
     return days.sort();

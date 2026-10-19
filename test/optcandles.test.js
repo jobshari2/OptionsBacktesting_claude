@@ -15,11 +15,11 @@ test('aggregate folds 1-minute rows into the timeframe, in IST wall-clock second
     row('2026-10-06T15:30:00', 1, 1, 1, 1), // after the session: dropped
   ];
   assert.deepStrictEqual(aggregate(rows, '5'), [
-    [sec('2026-10-06T09:15:00'), 10, 14, 9, 13],
-    [sec('2026-10-06T09:20:00'), 13, 13, 12, 12.5],
+    [sec('2026-10-06T09:15:00'), 10, 14, 9, 13, 300], // volume = the three minutes added up
+    [sec('2026-10-06T09:20:00'), 13, 13, 12, 12.5, 100],
   ]);
   assert.strictEqual(aggregate(rows, '1').length, 4);
-  assert.deepStrictEqual(aggregate(rows, 'D'), [[sec('2026-10-06T00:00:00'), 10, 14, 9, 12.5]]);
+  assert.deepStrictEqual(aggregate(rows, 'D'), [[sec('2026-10-06T00:00:00'), 10, 14, 9, 12.5, 400]]);
 });
 
 test('aggregate refuses timeframes an option chart does not offer', () => {

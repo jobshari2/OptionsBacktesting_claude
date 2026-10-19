@@ -2,7 +2,7 @@
 (() => {
   const { $, esc, inr, inrS, kinr, pct, num, cls, dayShort } = BT;
   let settings = null;
-  let selected = new Set(BT.store.get('cmpSel', ['lib-straddle-920', 'lib-straddle-920-re', 'lib-strangle-prem', 'lib-iron-condor', 'lib-straddle-cost']));
+  let selected = new Set(BT.store.get('cmpSel', ['lib-straddle-920', 'lib-strangle-prem', 'lib-iron-condor']));
   let result = null;
   let sortKey = BT.store.get('cmpSort', 'calmar');
   let sortDir = -1;

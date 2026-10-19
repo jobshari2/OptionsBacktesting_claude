@@ -1,5 +1,5 @@
 const REFRESH_MS = 400; // the server folds ticks into a snapshot every 500 ms
-const CLOSED_REFRESH_MS = 30_000; // refresh interval while the market is closed
+const WAKE_CHECK_MS = 30_000; // market closed: only look at the clock this often (no request) to resume at the open
 const STALE_MS = 15000;
 
 const $ = (id) => document.getElementById(id);
@@ -67,7 +67,7 @@ function localSet(k, v) {
 }
 
 // ---------- data loop ----------
-const API_VERSION = 20; // must match API_VERSION in server.js
+const API_VERSION = 21; // must match API_VERSION in server.js
 
 async function refresh() {
   let json;
@@ -113,13 +113,19 @@ async function refresh() {
     reportError(e, 'render');
   } finally {
     updateStatus();
-    scheduleRefresh(nextRefreshMs());
+    marketClosed() ? scheduleWake() : scheduleRefresh(REFRESH_MS);
   }
 }
 
-// With real data and the market shut nothing changes, so check back slowly. Changing the expiry still reloads at once.
-function nextRefreshMs() {
-  return state.data && state.data.source !== 'demo' && !isMarketOpen(Date.now()) ? CLOSED_REFRESH_MS : REFRESH_MS;
+// With real data and the market shut nothing changes, so the page makes no more requests: the chain it holds is the
+// last session's. Every poller on the other screens checks this too. Changing the expiry still reloads at once, and
+// the page picks the polling up again at the next open.
+function marketClosed() {
+  return Boolean(state.data) && state.data.source !== 'demo' && !isMarketOpen(Date.now());
+}
+function scheduleWake() {
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(() => (marketClosed() ? scheduleWake() : refresh()), WAKE_CHECK_MS);
 }
 
 // Send browser-side errors to the server's log file (same message at most once per minute).
@@ -166,7 +172,7 @@ function isMarketOpen(ts) {
   const ist = new Date(ts + 5.5 * 3600_000);
   const day = ist.getUTCDay();
   const mins = ist.getUTCHours() * 60 + ist.getUTCMinutes();
-  return day >= 1 && day <= 5 && mins >= 9 * 60 + 15 && mins <= 15 * 60 + 30;
+  return day >= 1 && day <= 5 && mins >= 9 * 60 + 15 && mins < 15 * 60 + 30; // 15:30 and later is closed
 }
 
 function updateStatus() {
@@ -340,7 +346,7 @@ function renderChain(d, rows) {
       ${oiCell(r.ce, 'ce' + ceItm, maxCeOi, r.ce.oi === maxCeOi)}
       ${oiChg(r.ce, ceItm)}
       <td class="${ceItm}">${compact(r.ce.vol)}</td>
-      ${volDelta(r.ce, ceItm, '240,113,107')}
+      ${volDelta(r.ce, ceItm, '63,182,139')}
       <td class="muted${ceItm}">${r.ce.iv == null ? '—' : r.ce.iv.toFixed(1)}</td>
       ${bookCell(r.ce, ceItm)}
       ${ltpCell(r.ce, 'c' + k, ceItm)}
@@ -348,7 +354,7 @@ function renderChain(d, rows) {
       ${ltpCell(r.pe, 'p' + k, peItm)}
       ${bookCell(r.pe, peItm)}
       <td class="muted${peItm}">${r.pe.iv == null ? '—' : r.pe.iv.toFixed(1)}</td>
-      ${volDelta(r.pe, peItm, '63,182,139')}
+      ${volDelta(r.pe, peItm, '240,113,107')}
       <td class="${peItm}">${compact(r.pe.vol)}</td>
       ${oiChg(r.pe, peItm)}
       ${oiCell(r.pe, 'pe' + peItm, maxPeOi, r.pe.oi === maxPeOi)}
@@ -777,6 +783,7 @@ const TONE_WORD = { bull: 'bullish', bear: 'bearish', neutral: 'neutral' };
 let flowReadAt = 0;
 async function loadFlowRead(force) {
   if (!force && (Date.now() - flowReadAt < 5000 || document.hidden || state.view !== 'chain')) return;
+  if (!force && marketClosed() && state.flowRead && !state.flowRead.error) return; // shut: the read does not change
   flowReadAt = Date.now();
   try {
     // `since` in the future: only the read itself, no minute rows
@@ -961,7 +968,7 @@ $('subtabs').addEventListener('click', (e) => {
   if (e.target.dataset.view) setView(e.target.dataset.view);
 });
 
-window.app = { state, compact, pctText, render, istClock, esc, setView, setError, price, TYPE_LABEL, nearestLevelsHtml };
+window.app = { marketClosed, state, compact, pctText, render, istClock, esc, setView, setError, price, TYPE_LABEL, nearestLevelsHtml };
 setView(state.view);
 
 // Top-bar clock with milliseconds, plus how old the last fetched data is.

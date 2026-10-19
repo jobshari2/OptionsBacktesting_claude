@@ -8,6 +8,7 @@ const { createFeed } = require('./feed');
 const { createFlow, flowConfig } = require('./flow');
 const { createTape, tapeDays, readTape } = require('./tape');
 const { createPulse } = require('./pulse');
+const { readDay, listDays } = require('./pulse-signals');
 const { createBook } = require('./book');
 const { createOrderflow } = require('./orderflow');
 const { createHedge } = require('./hedge');
@@ -23,6 +24,7 @@ const { createUpstox, parseChain } = require('./lib/upstox');
 const { createOptionCandles, respond, demoRows, OPT_TFS } = require('./lib/optcandles');
 const { createKiteSession, loginUrl: kiteLoginUrl, exchangeRequestToken, profile: kiteProfile } = require('./lib/kite');
 const { createFeedCompare } = require('./feedcmp');
+const { createTickStore } = require('./lib/ticks');
 
 loadEnv(path.join(__dirname, '.env'));
 
@@ -50,7 +52,7 @@ const WINDOWS_MIN = [1, 3, 5, 15]; // volume-change windows offered in the UI
 const HISTORY_MS = (Math.max(16, CFG.signals.beforeMin) + 1) * 60_000;
 // Bumped whenever the /api/chain response shape changes or the page needs routes an older server lacks, so an
 // old server + new page is detected.
-const API_VERSION = 20;
+const API_VERSION = 21;
 const FEED_STRIKES = num(env.FEED_STRIKES, 15); // strikes either side of ATM streamed over the WebSocket
 const TICK_SNAPSHOT_MS = 500; // how often ticks are folded into a snapshot (history, signals, UI)
 const REST_WITH_FEED_MS = 15_000; // REST refresh interval while the WebSocket feed is live
@@ -73,11 +75,17 @@ try {
   logError('signal-odds', e);
 }
 const signals = createSignals(CFG.signals, logError, signalOdds);
+const ticks = createTickStore(); // every trade of the streamed instruments today, for the chart's Tick view
 const feed = createFeed({
   getToken: () => token,
   logError,
-  // every message, as it arrives, to the Feeds screen's Upstox-vs-Kite comparison (created further down)
+  // every message, as it arrives, to the tick store and to the Feeds screen's Upstox-vs-Kite comparison (created
+  // further down)
   onTick: (keys, at) => {
+    for (const k of keys) {
+      const t = feed.tick(k);
+      if (t) ticks.record(k, at, t.ltp, t.vol);
+    }
     try {
       feedCmp?.onUpstoxTicks(keys, at);
     } catch (e) {
@@ -91,6 +99,7 @@ const pulse = createPulse({
   dir: CFG.signals.dir,
   buildupStrikes: num(env.PULSE_STRIKES, 5), // strikes either side of ATM used for the OI build-up read
   oiWindowMin: num(env.PULSE_OI_MIN, 15), // OI build-up is measured over this many minutes
+  getLot: () => contracts.lot,
   logError,
 });
 const book = createBook({ strikesAround: num(env.BOOK_STRIKES, 10), pressureStrikes: num(env.PULSE_STRIKES, 5) });
@@ -116,6 +125,10 @@ let lastError = null;
 let lastClientAt = 0;
 let polling = false;
 let feedCmp = null; // Upstox vs Kite tick comparison (Feeds screen), set up below
+let future = null; // the near-month Nifty future: { key, symbol, expiry, lot, day }
+let futureRetryAt = 0;
+let futureError = null;
+const chartKeys = new Map(); // instrument key -> last time the chart asked for it: streamed even when off the chain's range
 
 // ---------- Upstox helpers ----------
 // One client for the whole app (lib/upstox.js): the live calls below and the historical downloads of the
@@ -138,6 +151,42 @@ async function getContracts() {
   return contracts;
 }
 const getExpiries = async () => (await getContracts()).expiries;
+
+// The near-month Nifty future (the chart's "Nifty Fut"), looked up once per IST day with Upstox's instrument search. It
+// is streamed with the chain from then on, so its ticks are recorded whether or not the chart shows it. A failed
+// lookup is retried after 5 minutes.
+async function getFuture() {
+  const today = istDate();
+  if (future?.day === today) return future;
+  if (Date.now() < futureRetryAt) throw new Error(futureError);
+  try {
+    const data = await upstox('/instruments/search', { query: 'NIFTY', exchanges: 'NSE', segments: 'FUT', records: 30 });
+    const expiry = (x) => (typeof x.expiry === 'number' ? istDate(x.expiry) : String(x.expiry || '').slice(0, 10));
+    const f = (data || [])
+      .filter((x) => x.instrument_type === 'FUT' && x.underlying_key === NIFTY_KEY && x.instrument_key && expiry(x) >= today)
+      .sort((a, b) => (expiry(a) < expiry(b) ? -1 : 1))[0];
+    if (!f) throw new Error('Upstox returned no Nifty future');
+    future = { key: f.instrument_key, symbol: f.trading_symbol || 'NIFTY FUT', expiry: expiry(f), lot: f.lot_size || contracts.lot, day: today };
+    updateSubscriptions();
+    return future;
+  } catch (e) {
+    futureError = 'Nifty future not found: ' + e.message;
+    futureRetryAt = Date.now() + 5 * 60_000;
+    logError('future', e);
+    throw new Error(futureError, { cause: e });
+  }
+}
+
+// The chart asked for this contract: keep it streamed (and its ticks recorded) while it is on screen.
+function watchKey(key) {
+  if (!key) return;
+  const fresh = !chartKeys.has(key);
+  chartKeys.set(key, Date.now());
+  if (fresh) updateSubscriptions();
+}
+
+// Key of an option in the tick store: its instrument key (the demo chain has none, so expiry|strike|type there).
+const tickKey = (expiry, strike, type, o) => o.key || `${expiry}|${strike}|${type}`;
 
 // REST option chain: gives the strike list, instrument keys, prev OI and IV. While the WebSocket feed
 // is live it is refreshed every REST_WITH_FEED_MS; otherwise it is the data source, polled every POLL_MS.
@@ -251,9 +300,14 @@ function snapshotAll() {
   }
 }
 
-// Subscribe to the index plus FEED_STRIKES strikes either side of ATM (calls and puts) per tracked expiry.
+// Subscribe to the index, the Nifty future, whatever the chart shows and FEED_STRIKES strikes either side of ATM (calls
+// and puts) per tracked expiry.
 function updateSubscriptions() {
-  const keys = new Set([NIFTY_KEY, ...(feedCmp?.upstoxKeys() || [])]);
+  const keys = new Set([NIFTY_KEY, ...(future ? [future.key] : []), ...(feedCmp?.upstoxKeys() || [])]);
+  for (const [k, at] of chartKeys) {
+    if (Date.now() - at < IDLE_STOP_MS) keys.add(k);
+    else chartKeys.delete(k);
+  }
   for (const e of targetExpiries()) {
     const c = restChains.get(e);
     if (!c?.rows.length) continue;
@@ -284,6 +338,7 @@ async function restLoop() {
     const list = await getExpiries();
     nearestExpiry = list[0];
     if (!nearestExpiry) throw new Error('No upcoming Nifty expiries returned by Upstox');
+    await getFuture().catch(() => {}); // logged there; the chain does not depend on it
     const live = feed.status().connected;
     let fetched = false;
     for (const e of targetExpiries()) {
@@ -295,6 +350,7 @@ async function restLoop() {
       }
     }
     if (fetched) snapshotAll();
+    if (fetched && DEMO) recordDemoTicks();
     updateSubscriptions();
     lastError = null;
   } catch (e) {
@@ -848,6 +904,15 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 200, flow.series());
   }
 
+  // The Pulse trade idea's saved paper ledger: the days that have one (with their totals), and one day's trades.
+  if (p === '/api/pulse/days') return sendJson(res, 200, { days: listDays(CFG.signals.dir) });
+  if (p === '/api/pulse/signals') {
+    const day = url.searchParams.get('day') || '';
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return sendJson(res, 400, { error: 'day must be YYYY-MM-DD' });
+    const d = readDay(CFG.signals.dir, day);
+    return d ? sendJson(res, 200, d) : sendJson(res, 404, { error: `no saved pulse signals for ${day}` });
+  }
+
   // Replay a recorded day through the Volume Flow logic, optionally with different settings.
   if (p === '/api/flow-days') {
     return sendJson(res, 200, tapeDays(CFG.signals.dir));
@@ -945,18 +1010,74 @@ const server = http.createServer(async (req, res) => {
     const o = side && (q.get('type') === 'PE' ? side.pe : q.get('type') === 'CE' ? side.ce : null);
     if (!o) return sendJson(res, 404, { error: 'That option is not in the chain any more' });
     const cur = overlay(o, restChains.get(q.get('expiry')).fetchedAt);
+    watchKey(o.key);
     if (p === '/api/option/ltp') {
       const fresh = Date.now() - cur.at < 5 * 60_000;
-      return sendJson(res, 200, { ltp: cur.ltp, at: cur.at, live: cur.ltp != null && (DEMO || (isMarketOpen() && fresh)) });
+      return sendJson(res, 200, { ltp: cur.ltp, vol: cur.vol ?? null, at: cur.at, live: cur.ltp != null && (DEMO || (isMarketOpen() && fresh)) });
     }
     try {
       const tf = q.get('tf') || '5';
       if (!OPT_TFS.has(tf === 'D' ? 'D' : Number(tf))) throw new Error('Unknown chart timeframe ' + tf);
-      if (DEMO) return sendJson(res, 200, respond(demoRows(`${q.get('expiry')}${q.get('strike')}${q.get('type')}`, cur.ltp ?? 100), tf));
+      const lot = contracts.lot; // the chart shows the volume in lots too
+      if (DEMO) return sendJson(res, 200, { ...respond(demoRows(`${q.get('expiry')}${q.get('strike')}${q.get('type')}`, cur.ltp ?? 100), tf), lot });
       if (!o.key) throw new Error('No instrument key for this option');
-      return sendJson(res, 200, await optionCandles.candles(o.key, tf));
+      return sendJson(res, 200, { ...(await optionCandles.candles(o.key, tf)), lot });
     } catch (e) {
       logError('option-chart', e);
+      return sendJson(res, 400, { error: e.message });
+    }
+  }
+
+  // The Nifty future on the chart ("Nifty Fut" beside "Nifty 50"): candles with their volume, and the latest price.
+  if (p === '/api/future/candles' || p === '/api/future/ltp') {
+    lastClientAt = Date.now();
+    try {
+      const f = await getFuture();
+      watchKey(f.key);
+      const q = futureQuote(f);
+      const about = { symbol: f.symbol, expiry: f.expiry, lot: f.lot };
+      if (p === '/api/future/ltp') {
+        const fresh = q.at != null && Date.now() - q.at < 5 * 60_000;
+        return sendJson(res, 200, { ...q, ...about, live: q.ltp != null && (DEMO || (isMarketOpen() && fresh)) });
+      }
+      const tf = url.searchParams.get('tf') || '5';
+      if (!OPT_TFS.has(tf === 'D' ? 'D' : Number(tf))) throw new Error('Unknown chart timeframe ' + tf);
+      if (DEMO) return sendJson(res, 200, { ...respond(demoRows('NIFTYFUT', q.ltp ?? 24900), tf), ...about });
+      return sendJson(res, 200, { ...(await optionCandles.candles(f.key, tf)), ...about });
+    } catch (e) {
+      return sendJson(res, 400, { error: e.message });
+    }
+  }
+
+  // Every trade of today for the chart's Tick view: Nifty (src=nifty), the Nifty future (src=fut) or one option
+  // (src=opt with expiry, strike and type). after + gen = the ticks the chart already holds, so it gets only new ones.
+  if (p === '/api/ticks') {
+    lastClientAt = Date.now();
+    const q = url.searchParams;
+    try {
+      const src = q.get('src');
+      let key = NIFTY_KEY;
+      let lot = contracts.lot;
+      let symbol = null;
+      if (src === 'fut') {
+        const f = await getFuture();
+        key = f.key;
+        lot = f.lot;
+        symbol = f.symbol;
+        watchKey(key);
+      } else if (src === 'opt') {
+        const expiry = q.get('expiry');
+        const strike = Number(q.get('strike'));
+        const type = q.get('type');
+        const row = restChains.get(expiry)?.rows.find((r) => r.strike === strike);
+        const o = row && (type === 'PE' ? row.pe : type === 'CE' ? row.ce : null);
+        if (!o) throw new Error('That option is not in the chain any more');
+        key = tickKey(expiry, strike, type, o);
+        watchKey(o.key);
+      } else if (src !== 'nifty') throw new Error('src must be nifty, fut or opt');
+      const live = DEMO || (feed.status().connected && isMarketOpen());
+      return sendJson(res, 200, { ...ticks.since(key, Number(q.get('after')), Number(q.get('gen'))), cp: feed.tick(key)?.cp ?? null, lot, symbol, live });
+    } catch (e) {
       return sendJson(res, 400, { error: e.message });
     }
   }
@@ -1067,8 +1188,15 @@ function clearToken() {
 // Every DEMO_BURST_EVERY polls there's a short burst (volume ×12 on all strikes, spot jumps ~40 pts)
 // so the spike, broad-surge and spot-move signals can be seen in demo mode.
 // Bursts cycle through: Nifty rise, Nifty fall, and premiums expanding on both sides (IV pump).
-const demo = { spot: 24812, vols: {}, tick: 0, burstEvery: num(env.DEMO_BURST_EVERY, 100), tv: 1 };
+const demo = { spot: 24812, vols: {}, tick: 0, burstEvery: num(env.DEMO_BURST_EVERY, 100), tv: 1, futVol: 1_500_000 };
 function demoData(pathname) {
+  if (pathname === '/instruments/search') {
+    const expiry = demoFutureExpiry();
+    const d = new Date(expiry + 'T00:00:00Z');
+    const mon = d.toLocaleString('en', { month: 'short', timeZone: 'UTC' }).toUpperCase();
+    const symbol = `NIFTY FUT ${String(d.getUTCDate()).padStart(2, '0')} ${mon} ${String(d.getUTCFullYear()).slice(2)}`;
+    return [{ instrument_key: 'NSE_FO|DEMOFUT', trading_symbol: symbol, expiry, instrument_type: 'FUT', underlying_key: NIFTY_KEY, lot_size: 65 }];
+  }
   if (pathname === '/option/contract') {
     const out = [];
     const d = new Date();
@@ -1126,6 +1254,46 @@ function demoData(pathname) {
     rows.push({ strike_price: k, underlying_spot_price: s, call_options: mk(true), put_options: mk(false) });
   }
   return rows;
+}
+
+// Latest price, the day's volume and the previous close of the Nifty future: from the tick feed (the demo's own walk in
+// demo mode). Without ticks (market shut, feed not up yet) the price is null and the chart shows the last candle.
+function futureQuote(f) {
+  if (DEMO) return { ltp: demoFuture(), vol: demo.futVol, cp: null, at: Date.now() };
+  const t = feed.tick(f.key);
+  return { ltp: t?.ltp ?? null, vol: t?.vol ?? null, cp: t?.cp ?? null, at: t?.at ?? null };
+}
+
+// The demo future: Nifty plus about 6.5 % a year of carry to the last Tuesday of the month.
+function demoFutureExpiry(now = Date.now()) {
+  const d = new Date(now + 19800_000);
+  for (let add = 0; add < 3; add++) {
+    const last = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + add + 1, 0));
+    last.setUTCDate(last.getUTCDate() - ((last.getUTCDay() + 5) % 7)); // back to Tuesday
+    const day = last.toISOString().slice(0, 10);
+    if (day >= istDate(now)) return day;
+  }
+  return istDate(now);
+}
+function demoFuture() {
+  const days = Math.max(0, (Date.parse(demoFutureExpiry() + 'T10:00:00Z') - Date.now()) / 86400_000);
+  return Math.round((demo.spot * (1 + (0.065 * days) / 365) + (Math.random() - 0.5) * 2) * 20) / 20;
+}
+
+// Demo mode has no tick feed: each poll's prices go into the tick store instead, so the Tick view has something to draw.
+function recordDemoTicks() {
+  const now = Date.now();
+  for (const e of targetExpiries()) {
+    for (const r of snapshots.get(e)?.rows || []) {
+      ticks.record(tickKey(e, r.strike, 'CE', r.ce), now, r.ce.ltp, r.ce.vol);
+      ticks.record(tickKey(e, r.strike, 'PE', r.pe), now, r.pe.ltp, r.pe.vol);
+    }
+  }
+  ticks.record(NIFTY_KEY, now, Math.round(demo.spot * 100) / 100, null);
+  if (future) {
+    demo.futVol += 65 * Math.round(Math.random() * Math.random() * 6); // about the demo candles' volume per minute
+    ticks.record(future.key, now, demoFuture(), demo.futVol);
+  }
 }
 
 function escapeHtml(s) {

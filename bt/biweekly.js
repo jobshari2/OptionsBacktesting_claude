@@ -8,7 +8,9 @@
 // Headline numbers are kept in bt-data/biweekly.json; the trades of one variation are run when asked for.
 const fs = require('fs');
 const path = require('path');
-const { runBacktest, normalizeStrategy } = require('./engine');
+const { runBacktest: runRaw, normalizeStrategy, wholeStrategyStops } = require('./engine');
+// stop-losses judge the whole strategy, never a single leg (as on the Backtest screen)
+const runBacktest = (data, strategy, ...rest) => runRaw(data, wholeStrategyStops(strategy), ...rest);
 const { computeStats } = require('./metrics');
 const { buildAdjustments } = require('./adjustments');
 const { biweekly } = require('./library');

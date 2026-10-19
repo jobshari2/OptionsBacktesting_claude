@@ -52,7 +52,23 @@
     'legs-closed': 'All legs closed',
     roll: 'Rolled',
     partial: 'Partial booking',
+    adjust: 'Adjusted (new strike)',
   };
+  // Market regime of the trades (bt/metrics.js trendOf / vixBand): the Breakdown tab of the Backtest and Bi-weekly
+  // screens, each drawn with the screen's own bucket table: table(title, buckets, label, order, foot).
+  const TREND = { up: 'Trend up', down: 'Trend down', whipsaw: 'Whipsaw', range: 'Range' };
+  const VIX_BAND = { low: 'Below 13', mid: '13 – 16', high: 'Above 16' };
+  function regimeCards(regime, table) {
+    const has = (o) => o && Object.keys(o).length > 0;
+    if (!has(regime?.trend) && !has(regime?.vix))
+      return '<div class="bd-card"><h4>By market regime</h4><div class="muted small">Not available for this backtest: its trades were saved without the Nifty range. Run it again.</div></div>';
+    const foot =
+      '<div class="muted small bd-foot">What Nifty did while the trade was open. Trend: it moved more than 1 % × √sessions held (entry to exit). Whipsaw: no such move, but a high–low range above 1.8 % × √sessions. Range: neither.</div>';
+    return (
+      (has(regime.trend) ? table('By market regime (Nifty while open)', regime.trend, (k) => TREND[k], Object.keys(TREND), foot) : '') +
+      (has(regime.vix) ? table('By India VIX at entry', regime.vix, (k) => VIX_BAND[k], Object.keys(VIX_BAND)) : '')
+    );
+  }
 
   // ---------- API ----------
   async function api(path, body) {
@@ -173,6 +189,26 @@
         return c.kind;
     }
   }
+  // Adjustment on market movement (engine: strategy.adjust): what triggers it, and which legs get new strikes.
+  const ADJ_DEF = {
+    move: { on: 'move', value: 100, unit: 'pts', action: 'tested', max: 2 },
+    near: { on: 'near', value: 0, unit: 'pts', action: 'tested', max: 2 },
+    prem: { on: 'prem', value: 2, unit: 'x', action: 'tested', max: 2 },
+  };
+  const ADJ_ACT = { tested: 'roll the tested side out', untested: 'roll the untested side in', both: 're-centre every leg' };
+  function adjustLabel(a) {
+    if (!a) return '';
+    const u = a.unit === 'pct' ? '%' : ' pts';
+    const when =
+      a.on === 'move'
+        ? `Nifty moves ${a.value}${u}`
+        : a.on === 'near'
+          ? a.value
+            ? `Nifty within ${a.value}${u} of a short strike`
+            : 'Nifty reaches a short strike'
+          : `a short leg at ${a.value}× its entry`;
+    return `${when} → ${ADJ_ACT[a.action] || ADJ_ACT.tested} (max ${a.max})`;
+  }
   function timingLabel(s) {
     if (s.entry?.when === 'signal') {
       const conds = (s.entry.conditions || []).map(condLabel).join(' + ') || 'no conditions';
@@ -182,12 +218,12 @@
     if (s.mode === 'intraday') {
       const days = s.entry.days.length === 5 ? 'every day' : s.entry.days.map((d) => WD[d]).join(', ');
       const dte = s.entry.dte?.length ? ` · DTE ${s.entry.dte.join(',')}` : '';
-      return `Intraday ${s.entry.time}–${s.exit.time} · ${days}${dte} · ${s.expiry}`;
+      return `Intraday ${s.entry.time}–${s.exit.time} · ${days}${dte} · ${s.expiry}${s.adjust ? ' · adjust: ' + adjustLabel(s.adjust) : ''}`;
     }
     const enter = s.entry.after
       ? `enter the day after the expiry ${s.entry.after} week${s.entry.after > 1 ? 's' : ''} before`
       : `enter ${s.entry.dteDays}d before`;
-    return `Positional · ${enter} ${s.expiry} expiry ${s.entry.time} → exit ${s.exit.dteDays ? s.exit.dteDays + 'd before' : 'expiry day'} ${s.exit.time}${s.entry.noOverlap ? ' · one at a time' : ''}`;
+    return `Positional · ${enter} ${s.expiry} expiry ${s.entry.time} → exit ${s.exit.dteDays ? s.exit.dteDays + 'd before' : 'expiry day'} ${s.exit.time}${s.entry.noOverlap ? ' · one at a time' : ''}${s.adjust ? ' · adjust: ' + adjustLabel(s.adjust) : ''}`;
   }
 
   // ---------- strategy editor ----------
@@ -234,15 +270,31 @@
       lockTo: 0,
       trailEvery: null,
       trailBy: null,
-      onLegSl: 'leg',
+      onLegSl: 'all',
       slToCost: false,
       unit: 'inr',
       partialAt: null,
       partialPct: 60,
       partialFloor: null,
     },
+    adjust: null,
     filters: { vixMin: null, vixMax: null, minCredit: null, maxLossDown: null, maxLossUp: null },
   });
+  // Stops judge the whole strategy, never one leg (as bt/engine.js wholeStrategyStops): a leg stop in % of its premium becomes
+  // a stop on the whole position at that % of the entry premium; other leg stops, their trailing and re-entry after a stop go.
+  function wholeStops(out) {
+    const pcts = out.legs.filter((l) => l.sl?.type === 'pct' && l.sl.value > 0).map((l) => Number(l.sl.value));
+    if (pcts.length) out.risk.slPrem = Math.min(out.risk.slPrem ?? Infinity, ...pcts);
+    for (const l of out.legs) {
+      l.sl = { type: 'none', value: 0 };
+      l.trail = null;
+      if (l.re?.on === 'sl') l.re = null;
+      else if (l.re?.on === 'both') l.re = { ...l.re, on: 'tgt' };
+    }
+    out.risk.onLegSl = 'all';
+    out.risk.slToCost = false;
+    return out;
+  }
   // Fill any missing fields (older saves, library entries).
   function complete(s) {
     const b = blankStrategy();
@@ -252,6 +304,7 @@
     out.exit = { ...b.exit, ...(s.exit || {}) };
     out.risk = { ...b.risk, ...(s.risk || {}) };
     out.filters = { ...b.filters, ...(s.filters || {}) };
+    out.adjust = s.adjust ? { ...ADJ_DEF[s.adjust.on], ...clone(s.adjust) } : null;
     out.legs = (s.legs || []).map((l) => ({
       ...blankLeg(),
       ...l,
@@ -259,7 +312,7 @@
       sl: l.sl || { type: 'none', value: 0 },
       tgt: l.tgt || { type: 'none', value: 0 },
     }));
-    return out;
+    return wholeStops(out);
   }
 
   const getPath = (o, p) => p.split('.').reduce((a, k) => (a == null ? a : a[k]), o);
@@ -320,7 +373,6 @@
                   ? numIn(`${p}.${k}.value`, cur.value, 'min="0" step="any"')
                   : ''
             }`;
-          const canTrail = ['pct', 'pts'].includes(l.sl.type);
           const re = l.re || { on: 'off', mode: 'asap', max: 1 };
           return `<div class="leg-card ${l.action === 'B' ? 'buy' : 'sell'}">
           <div class="leg-top">
@@ -342,14 +394,9 @@
           <div class="leg-row"><span class="lbl">Strike</span>
             <select data-path="${p}.strike.by" data-rerender>${opt('atm', 'ATM ± strikes', st.by)}${opt('premium', 'Premium ₹', st.by)}${opt('delta', 'Delta', st.by)}${opt('pct', '% from spot', st.by)}${opt('pts', 'Points from spot', st.by)}${opt('straddle', 'Straddle width', st.by)}${opt('signal', 'Anomaly strike', st.by)}${opt('sr', 'Support / resistance', st.by)}${s.legs.length > 1 ? opt('leg', 'From another leg', st.by) : ''}</select>
             ${strikeCtl}</div>
-          <div class="leg-row"><span class="lbl">Stop-loss</span>${lvlSel('sl', l.sl)}</div>
           <div class="leg-row"><span class="lbl">Target</span>${lvlSel('tgt', l.tgt)}</div>
-          <div class="leg-row${canTrail ? '' : ' off'}"><span class="lbl">Trail SL</span>
-            <label class="chk"><input type="checkbox" data-act="trail" data-i="${i}" ${l.trail ? 'checked' : ''} ${canTrail ? '' : 'disabled'}> every</label>
-            ${l.trail ? `${numIn(`${p}.trail.x`, l.trail.x, 'min="0" step="any"')} <span class="muted">move SL</span> ${numIn(`${p}.trail.y`, l.trail.y, 'min="0" step="any"')} <span class="muted">${l.sl.type === 'pct' ? '%' : 'pts'}</span>` : `<span class="muted small">${canTrail ? 'off' : 'needs a % or points stop'}</span>`}
-          </div>
           <div class="leg-row"><span class="lbl">Re-entry</span>
-            <select data-act="re-on" data-i="${i}">${opt('off', 'Off', re.on)}${opt('sl', 'After SL', re.on)}${opt('tgt', 'After target', re.on)}${opt('both', 'After SL or target', re.on)}</select>
+            <select data-act="re-on" data-i="${i}">${opt('off', 'Off', re.on)}${opt('tgt', 'After target', re.on)}</select>
             ${l.re ? `<select data-path="${p}.re.mode">${opt('asap', 'Immediately, same strike', re.mode)}${opt('cost', 'When price returns to entry', re.mode)}${opt('atm', 'Immediately, fresh strike', re.mode)}</select> <label class="mini">max ${numIn(`${p}.re.max`, re.max, 'min="1" max="10" step="1"')}</label>` : ''}
           </div>
           ${
@@ -433,23 +480,39 @@
             <span class="muted">lock</span>${numIn('risk.lockTo', r.lockTo || null, 'step="500" placeholder="0"')}</div>
           <div class="ed-row wrap"><span class="lbl">Then trail</span><span class="muted">every</span>${numIn('risk.trailEvery', r.trailEvery, 'min="0" step="500" placeholder="—"')}
             <span class="muted">raise lock by</span>${numIn('risk.trailBy', r.trailBy, 'min="0" step="100" placeholder="—"')}</div>
-          <div class="ed-row"><span class="lbl">Leg stop hit</span>${seg(
-            'risk.onLegSl',
-            r.onLegSl,
-            [
-              ['leg', 'Exit that leg'],
-              ['all', 'Exit all legs'],
-            ],
-            false,
-          )}</div>
-          <div class="ed-row"><span class="lbl"></span><label class="chk"><input type="checkbox" data-path="risk.slToCost" data-type="bool" ${r.slToCost ? 'checked' : ''}> Move other legs' stop to cost after a leg stop</label></div>
+          <div class="ed-row"><span class="lbl">Stop-loss rule</span><span class="muted small">judged on the whole strategy's loss, never a single leg: set it above in ₹, % of capital or % of the entry premium</span></div>
         </div>
+        ${adjustHtml(s)}
         <div class="ed-sec">
           <h4>Filters</h4>
           <div class="ed-row"><span class="lbl">India VIX</span><span class="muted">from</span>${numIn('filters.vixMin', s.filters.vixMin, 'min="0" step="0.5" placeholder="any"')}<span class="muted">to</span>${numIn('filters.vixMax', s.filters.vixMax, 'min="0" step="0.5" placeholder="any"')}<span class="muted small">at entry</span></div>
           <div class="ed-row wrap"><span class="lbl">Net credit</span><span class="muted">at least</span>${numIn('filters.minCredit', s.filters.minCredit, 'min="0" step="5" placeholder="any"')}<span class="muted">pts per lot at entry</span></div>
           <div class="ed-row wrap"><span class="lbl">Max loss far</span><span class="muted">below</span>${numIn('filters.maxLossDown', s.filters.maxLossDown, 'min="0" step="5" placeholder="any"')}<span class="muted">above</span>${numIn('filters.maxLossUp', s.filters.maxLossUp, 'min="0" step="5" placeholder="any"')}<span class="muted small">pts per lot at expiry (every leg at intrinsic): skip the trade otherwise</span></div>
         </div>`;
+    }
+
+    // Adjustment on market movement: when Nifty moves, nears a short strike or a short leg's premium multiplies, the legs of
+    // one side (or all) are closed and opened again at the strikes their own rules pick at that moment (bt/engine.js).
+    function adjustHtml(s) {
+      const a = s.adjust;
+      const unitSel = (u) => `<select data-path="adjust.unit">${opt('pts', 'pts', u)}${opt('pct', '%', u)}</select>`;
+      const when = !a
+        ? ''
+        : a.on === 'prem'
+          ? `${numIn('adjust.value', a.value, 'min="1.1" step="0.1"')}<span class="muted">× its entry price</span>`
+          : `${numIn('adjust.value', a.value, `min="0" step="${a.unit === 'pct' ? '0.25' : '25'}"`)}${unitSel(a.unit)}${a.on === 'move' ? '<span class="muted">from entry (then from the last adjustment)</span>' : '<span class="muted">(0 = touches it)</span>'}`;
+      return `<div class="ed-sec">
+        <h4>Adjustment on market move</h4>
+        <div class="ed-row wrap"><span class="lbl">When</span><select data-act="adj-on">${opt('off', 'Off', a ? a.on : 'off')}${opt('move', 'Nifty moves', a?.on)}${opt('near', 'Nifty nears a short strike', a?.on)}${opt('prem', "A short leg's premium reaches", a?.on)}</select>${when}</div>
+        ${
+          a
+            ? `<div class="ed-row wrap"><span class="lbl">Then</span><select data-path="adjust.action">${Object.entries(ADJ_ACT)
+                .map(([v, t]) => opt(v, t, a.action))
+                .join('')}</select><label class="mini">max ${numIn('adjust.max', a.max, 'min="1" max="10" step="1"')} per trade</label></div>
+        <div class="muted small ed-hint">The legs of that side (shorts and their wings) are closed at the next minute's open and opened again at the strikes their own rules pick then, in the same expiry; a wing "from another leg" follows its short. Not in the last 30 minutes before the exit. Tested side = the side Nifty moved towards.</div>`
+            : ''
+        }
+      </div>`;
     }
 
     // Entry trigger: at the entry time, or on the first minute (from the entry time until "until") where all
@@ -552,8 +615,6 @@
           const lvl = getPath(S, t.dataset.path.replace(/\.type$/, ''));
           if (!lvl.value || t.value === 'srb') lvl.value = { pct: 25, pts: 20, upct: 0.5, upts: 100, none: 0, srb: 10 }[t.value];
           if (t.value === 'srb') lvl.lv = lvl.lv || 'any';
-          const leg = getPath(S, t.dataset.path.replace(/\.(sl|tgt)\.type$/, ''));
-          if (!['pct', 'pts'].includes(leg.sl.type)) leg.trail = null;
         }
         render();
         changed();
@@ -564,15 +625,15 @@
         render();
         changed();
       }
-      if (t.dataset.act === 'roll') {
-        const leg = S.legs[Number(t.dataset.i)];
-        leg.roll = t.checked ? { dteDays: 1, time: '15:15' } : null;
+      if (t.dataset.act === 'adj-on') {
+        S.adjust = t.value === 'off' ? null : { ...ADJ_DEF[t.value], ...(S.adjust ? { action: S.adjust.action, max: S.adjust.max } : {}) };
+        if (S.adjust?.on === 'move' && S.mode === 'positional') S.adjust.value = 250;
         render();
         changed();
       }
-      if (t.dataset.act === 'trail') {
+      if (t.dataset.act === 'roll') {
         const leg = S.legs[Number(t.dataset.i)];
-        leg.trail = t.checked ? { x: leg.sl.type === 'pct' ? 10 : 10, y: leg.sl.type === 'pct' ? 5 : 5 } : null;
+        leg.roll = t.checked ? { dteDays: 1, time: '15:15' } : null;
         render();
         changed();
       }
@@ -921,6 +982,7 @@
     WD,
     MONTHS,
     REASON,
+    regimeCards,
     api,
     runJob,
     on,
@@ -938,6 +1000,7 @@
     legLabel,
     legChips,
     timingLabel,
+    adjustLabel,
     condLabel,
     EXP_LABEL,
     createEditor,
@@ -960,7 +1023,7 @@
   // Keep the expiry calendar current while the page stays open (new weekly expiries get listed, old ones expire):
   // re-read it every 15 minutes and redraw only when it changed.
   setInterval(async () => {
-    if (!meta.loaded || document.hidden) return;
+    if (!meta.loaded || document.hidden || window.app?.marketClosed?.()) return;
     try {
       const m = await api('/api/bt/meta');
       if (!m.calendar || JSON.stringify(m.calendar) === JSON.stringify(meta.calendar)) return;

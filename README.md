@@ -60,7 +60,11 @@ The colour theme (Night, Day, Large) is picked at the top right.
   - Vol Δ shows volume added over the window picked in the chain header (1/3/5/15 min). LTP flashes when it ticks.
   - Strikes carrying a support (**S**, green) or resistance (**R**, red) level are tagged; filled tags are major levels. Hover for the source.
 - **Right half of the screen** shows one of two panes, picked with the switch above it: **Chart & levels** (below) or **Signals** (see *Signals*). New signals that arrive while the chart is showing are counted on the Signals button; the count turns red and blinks for a high-probability one.
-- **Nifty chart** (Chart & levels): candles of 1, 3, 5, 10, 15 minutes, 1 hour, 2 hours, day, week or month, with the support / resistance levels drawn across. Drag to move, wheel to zoom, scroll back to load older candles; **Candles / Line**, **S/R**, **Order flow** and **Δ / CVD** on/off, **Latest**. The hovered candle's open / high / low / close is shown at the top left; hovering a support / resistance line shows its details (major / minor, distance from Nifty, source). The small chart icon beside each strike in the chain (left = the call, right = the put) shows that option's candles (1 minute to a day, from Upstox, following its live price) in the same chart; S/R and order flow are Nifty's, so they step aside. The **Nifty 50** button above the chart brings Nifty back.
+- **Nifty chart** (Chart & levels): every trade (**Tick**) or candles of 1, 3, 5, 10, 15 minutes, 1 hour, 2 hours, day, week or month, with the support / resistance levels drawn across. Drag to move, wheel to zoom, scroll back to load older candles; **Candles / Line**, **S/R**, **Order flow** and **Δ / CVD** on/off, **Latest**. The hovered candle's open / high / low / close is shown at the top left; hovering a support / resistance line shows its details (major / minor, distance from Nifty, source). The levels are worked out afresh each day from the sessions before it; past the last of them (a new high or low) **dashed** levels are projected from the next round numbers (500s major, 100s minor) and the previous day's R3 / S3 pivots, following the live price. The small chart icon beside each strike in the chain (left = the call, right = the put) shows that option's candles (1 minute to a day, from Upstox, following its live price) with their volume in the same chart; S/R and order flow are Nifty's, so they step aside. The **Nifty 50** button above the chart brings Nifty back.
+  - **Nifty Fut**, beside Nifty 50 (also in the chart window and on Market Pulse), shows the near-month Nifty future: candles of 1 minute to a day with their volume, following its live price, and its trades on the Tick view. The contract is looked up once a day with Upstox's instrument search, so it moves on to the next month after expiry, and it is streamed all day whether or not the chart shows it. Its name is in the status line under the chart. S/R and order flow belong to Nifty spot, so they step aside here too. The chart remembers that it was showing the future.
+  - **Volume** (the future and options; Nifty is an index and has none): bars along the bottom of the chart, green when the candle closed up and red when down. The legend at the top left gives the hovered candle's volume in units and lots. The **Volume** button hides or shows them.
+  - **Tick**: every trade of today, evenly spaced (a tick chart, not a time axis), with each trade's quantity as its volume bar. The time axis and the legend show when each trade happened, the crosshair to the millisecond. For Nifty a tick is each change of the index (no volume). The server records the trades off the live feed for Nifty, the future, the options it streams (15 strikes either side of the money) and whatever the chart shows. It records them only while it runs: a restart starts the day over, and earlier days have no ticks. They are kept in memory only (up to 150,000 per instrument). Order flow and trend lines are per candle, so they are off on this view.
+  - **ƒx Indicators** is also in the chart on this screen (same menu and legend as in the window, remembered separately), and **New window** is there for every chart (Nifty, the future, an option; the window opens on the Nifty or the future, on the same timeframe).
   - **New window** opens the chart in its own window (`chart.html`) with the full tool set: **indicators** (SMA, EMA, Bollinger Bands, Supertrend on the price; RSI, MACD, ATR, Stochastic in their own panes; any parameters, several at once, ✕ in the legend removes one), chart types (candles, bars, Heikin Ashi, line, area), **drawings** (horizontal and trend lines; right-click one to remove it), log scale, PNG snapshot and full screen. Indicators and drawings are remembered.
   - History is read from the cached 1-minute Nifty files (`bt-cache/index`); today's candles come from the Upstox intraday endpoint (re-read every 30 s) and the last candle follows the live tick feed.
   - **Order flow** (a footprint, on by default on 1 to 120-minute candles): the candles are drawn thin, with the volume traded at each Nifty level beside them, **calls on the left and puts on the right**, and the candle's **Delta** and **Total** (in lots) underneath. A cell turns green when one side of it is 3:1 or more bought-calls / sold-puts (the market going up) and red for sold-calls / bought-puts; the busiest level of a candle is boxed. Nifty is an index with no volume, so the flow comes from the Nifty options within ±10 strikes of the money: each trade is classed as started by the buyer or the seller (at the ask / at the bid) and placed at the Nifty level at that moment. Delta = calls bought + puts sold − calls sold − puts bought. The chart zooms to the few candles that fit with readable numbers; zoom out and the cells shrink to colour only. Only days this app recorded have flow, so older candles show just the candle. Earlier days are read from the tape in the background (`ORDERFLOW_DAYS`, 10 by default) and cached in `events/_orderflow-cache/`.
@@ -234,6 +238,10 @@ Logging in to Kite (the session lasts until about 6 AM IST the next day and is s
 - **Kite Connect** (the official API; streaming needs the data add-on): put `KITE_API_KEY` and `KITE_API_SECRET` in `.env` and set the app's Redirect URL to `http://localhost:3000/kite/callback`. Then use **Login with Kite**. If you are already logged in to Kite in the browser, Kite usually sends you straight back. Tick **Auto-login** to do this by itself whenever the screen opens without a Kite login. `KITE_ACCESS_TOKEN` in `.env`, or **Use a token…**, takes an access token directly.
 - **Kite web session (enctoken)**, which is unofficial and undocumented, so Zerodha can change or block it: drag **Send Kite login here** to the bookmarks bar, then click it on kite.zerodha.com while logged in. It hands your web session to this app, which checks it with Kite before keeping it. You can also paste the enctoken and user ID under **Use a token…**, or set `KITE_ENCTOKEN` and `KITE_USER_ID` in `.env`.
 
+## Colours
+
+Calls (CE) are **green** and puts (PE) are **red** on every screen (chain, signals, order flow, order book, charts). Support / resistance levels keep their own colours: **S** green, **R** red. Up / down moves are green / red as before.
+
 ## Does an indicator actually help? (scorecard)
 
 ```
@@ -277,7 +285,7 @@ Each run writes `replays/<date>_<settings>.csv` in the same format as `predictio
 
 ## Where the live data comes from
 
-- **Tick feed (WebSocket):** Nifty plus 15 strikes either side of ATM (calls and puts) stream live from Upstox's Market Data Feed V3. Ticks are folded into a snapshot every 500 ms, and the page refreshes every 400 ms. Subscriptions follow ATM as it moves.
+- **Tick feed (WebSocket):** Nifty, the near-month Nifty future and 15 strikes either side of ATM (calls and puts) stream live from Upstox's Market Data Feed V3, plus any option the chart is showing. Ticks are folded into a snapshot every 500 ms, and the page refreshes every 400 ms. Subscriptions follow ATM as it moves.
 - **REST option chain:** gives the full strike list, previous OI and the strikes outside the streamed range. It refreshes every 15 s while the feed is live, or every `POLL_MS` (1.5 s) if the feed is down. If the feed drops, the app falls back to polling and reconnects on its own.
 
 The status at the top right says which one is in use. Set `FEED_STRIKES` in `.env` to stream more or fewer strikes.
@@ -325,9 +333,8 @@ Strategies are defined *relative to the market*, so one definition works on ever
   | % / points from spot | at that distance from spot |
   | Straddle width | at ATM ± (ATM straddle price × multiplier) |
 
-- **Stop-loss / target:** % of premium, ₹ points, or a Nifty move (% or points) against or in favour of the leg.
-- **Trailing stop:** for every X move in your favour, move the stop by Y.
-- **Re-entry** after a stop and/or target, up to N times:
+- **Target:** % of premium, ₹ points, or a Nifty move (% or points) in favour of the leg. Legs have no stop-loss of their own: the stop is on the whole strategy (below).
+- **Re-entry** after a target, up to N times:
   - immediately at the same strike,
   - when the price returns to the original entry,
   - immediately at a freshly selected strike.
@@ -335,7 +342,13 @@ Strategies are defined *relative to the market*, so one definition works on ever
 **Whole position**
 - **Exits:** overall ₹ stop-loss and target.
 - **Lock and trail:** "when MTM reaches ₹A, lock ₹B, then raise the lock ₹D for every ₹C more".
-- **When one leg's stop hits:** exit that leg only, or all legs. Optionally move the other legs' stop to cost.
+- **Stop-loss is judged on the whole strategy's loss, never a single leg** (Backtest, Compare and Bi-weekly screens): in ₹, % of capital or % of the entry premium. A strategy saved earlier with a leg stop in % of its premium gets a stop on the whole position at that % of the entry premium (the smallest if legs differed); leg stops on points, a Nifty move or S/R, their trailing and re-entry after a stop are dropped.
+
+**Adjustment on market move** (one rule per strategy, `strategy.adjust`)
+- **When:** Nifty moves X points or % from the entry (then from the last adjustment); Nifty comes within X points or % of a short strike (0 = touches it); or a short leg's premium reaches k × its entry price.
+- **Then:** *roll the tested side out* (the side Nifty moved towards: its shorts and their wings get the strikes their own rules pick now, e.g. back to 0.2 delta), *roll the untested side in* (sold again closer for more credit), or *re-centre every leg*.
+- At most N adjustments a trade, none in the last 30 minutes before the exit. Decided on a candle close, made at the next minute's open, in the same expiry; a wing set "from another leg" follows its short. A leg whose strike would not change is left alone, and if any new leg has no price the whole adjustment is skipped (a short never loses its wing). It is not a stop: it changes strikes, while the stop-loss still judges the whole strategy.
+- What held up over Oct 2024 – Oct 2026 (0.5 % slippage, ₹5 L): on a weekly iron condor (0.2-delta shorts, wings 300 points out) rolling the tested side out when a short doubles (*Weekly Iron Condor (0.2 delta), tested side rolled* in the library) made more in both years and cut the drawdown from −₹1.15 L to −₹50K; it was profitable with every short delta (0.15–0.25) and wing (200–500 points) tried, but best at exactly 2× and only when entered 4 trading days before expiry. Re-centring a weekly strangle when Nifty came within 100 points of a short strike also halved its drawdown. Strong trends still lose. No rule helped the intraday straddles, and none beat the bi-weekly hedge's own week-1 exit.
 
 **Filter:** India VIX range at entry.
 
@@ -349,7 +362,7 @@ Strategies are defined *relative to the market*, so one definition works on ever
 | Nifty move | Nifty is up / down / either way at least (or at most) X points or % from the open or previous close |
 | Day range | high − low since the open is at least / at most X points |
 
-**Signal-aware legs.** Strike *Anomaly strike* (the anomaly's flagged strike or its pair, ± n strikes) and *Support / resistance* (calls at the nearest resistance above, puts at the nearest support below, ± n strikes). Stop-loss *Nifty through S/R* exits a leg when Nifty closes through the level beyond it on the adverse side (± buffer); target *Nifty reaches S/R* exits when it reaches the level on the favourable side. Levels are always computed from sessions **before** the trade day (no look-ahead).
+**Signal-aware legs.** Strike *Anomaly strike* (the anomaly's flagged strike or its pair, ± n strikes) and *Support / resistance* (calls at the nearest resistance above, puts at the nearest support below, ± n strikes). Target *Nifty reaches S/R* exits a leg when Nifty reaches the level on the favourable side (± buffer). Levels are always computed from sessions **before** the trade day (no look-ahead).
 
 **Saving.**
 - **New** (Backtest screen) or **+ New strategy** (Strategies screen) starts a blank strategy.
@@ -364,24 +377,24 @@ Strategies are defined *relative to the market*, so one definition works on ever
 - **Costs:**
   - slippage % (applied against you on every fill)
   - brokerage per order
-  - STT, exchange, SEBI, stamp and GST charges
+  - STT, exchange, SEBI, stamp and GST charges, at the rates in force on the day of each order (`lib/costs.js`: STT 0.10 % from Oct 2024, 0.15 % from Apr 2026); a leg that expires before the exit places no closing order (a bought one in the money pays STT on its settlement value)
 - **Capital:** leave empty to use an estimated margin for ROI.
 
 **Scenarios (every run)**
-- **Nothing runs when the Backtest screen opens.** It opens on the **Summary** tab, built from the saved backtests (`bt-data/backtests.json`): the **top 5 of the Bi-weekly Hedge** and the **top 5 of the Bi-weekly Hedge Reverse** by % profit as defined (**Show all strategies** lists the rest), with a card for the best one (investment, net P&L, % profit, trades, winners vs losers, profit vs loss, drawdown, profit factor). Strategies whose short options are not fully covered carry an "unlimited risk" tag. Click a strategy to see its saved result in **Details** and **Adjustments** without running it again.
+- **Nothing runs when the Backtest screen opens.** It opens on the **Summary** tab, built from the saved backtests (`bt-data/backtests.json`): the **top 5 of the Bi-weekly Hedge** and the **top 5 of the Bi-weekly Hedge Reverse** by % profit as defined (**Show all strategies** lists the rest), with a card for the best one (investment, net P&L, % profit, trades, winners vs losers, profit vs loss, drawdown, profit factor). Strategies whose short options are not fully covered carry an "unlimited risk" tag. Under them, **Other strategies — top 5 variants** lists the five best take-profit × stop-loss × exit variants of the saved backtests (limited risk only, at most 2 per strategy; backtests saved before this list existed show up once they are run again). Click a strategy to see its saved result in **Details** and **Adjustments** without running it again.
 - **Run backtest** backtests the strategy in the editor with the settings in the bar and replaces its saved result; **Backtest all strategies** (Summary tab) does that for every strategy. Looking at a scenario or variation other than the stored one computes just that one.
-- Each run tests the strategy as defined plus every combination of **take profit** (none, 10 % … 90 % of the net credit; up to 200 % for debit positions), **overall stop-loss** (none, 50 / 100 / 200 % of the credit; 25 / 50 / 75 % of a debit) and **exit** (positional: expiry day or 1–3 trading days before; intraday: 11:00, 12:30, 14:00, 15:15). Entries, strikes, leg stops, rolls and filters stay as defined.
+- Each run tests the strategy as defined plus every combination of **take profit** (none, 10 % … 90 % of the net credit; up to 200 % for debit positions), **overall stop-loss** (none, 50 / 100 / 200 % of the credit; 25 / 50 / 75 % of a debit) and **exit** (positional: expiry day or 1–3 trading days before; intraday: 11:00, 12:30, 14:00, 15:15). Entries, strikes, leg targets, rolls, adjustments and filters stay as defined. **Every stop-loss judges the whole strategy's loss**, never a single leg (see *Building a strategy*).
 - The table lists them with the most profitable on top (click a column to sort; combinations with the same result share a row). Click a row: the KPIs, **Monthly / Breakdown / Suggestions / Trades** tabs and the equity curve below show that scenario. **Use in editor** copies its rules into the strategy ("% of premium" under Overall position).
 - **Suggestions** also has a *Reducing the max drawdown* card: when the deepest fall happened, and the tested scenarios and adjustment variations (once tested in the Adjustments tab) that had a smaller drawdown while staying profitable, each with a link to open it.
 - **Suggestions** analyses the losing trades of the selected scenario: which tested rule did better, losers that were in profit first, which side (calls / puts) lost, how much room a stop needs, thin-credit entries.
-- **Details / Adjustments tabs:** *Details* is everything above. *Adjustments* lists the strategy with one adjustment changed at a time (week-1 exit instead of the roll, roll timing, take profit, overall stop, leg stops and re-entry, entry filters, the reverse position; `bt/adjustments.js`), each backtested with the same settings and ranked by net P&L. Click a variation to open it in Details; **◂ As defined** goes back, **Use in editor** copies it into the editor.
+- **Details / Adjustments tabs:** *Details* is everything above. *Adjustments* lists the strategy with one adjustment changed at a time (week-1 exit instead of the roll, roll timing, take profit, overall stop, leg stops and re-entry, market-move adjustments (roll the tested side, roll the untested side, re-centre), entry filters, the reverse position; `bt/adjustments.js`), each backtested with the same settings and ranked by net P&L. Click a variation to open it in Details; **◂ As defined** goes back, **Use in editor** copies it into the editor.
 - **Investment and % profit:** the investment is the Capital in the settings bar (else the largest estimated margin of the trades). Net P&L is also shown as a % of it in the KPIs, both tables, the monthly grid, the breakdowns, each trade and the CSV.
 - Scans are cached in `bt-data/scenario-cache.json` (expired data never changes), so repeats are instant. The best row is picked on the same trades it is measured on: confirm it on another period.
 
 **How fills work**
 - Entries and timed exits fill at that minute's **open**.
 - Stops and targets are checked against each 1-minute candle's **high and low**. When both are hit in the same candle, the stop is assumed to come first (conservative). A candle that gaps through a level fills at its open.
-- Overall MTM rules are checked on candle closes.
+- Overall MTM rules and market-move adjustments are checked on candle closes; an adjustment fills at the next minute's open.
 - Minutes without trades carry the last price.
 - Legs whose expiry comes before the position's exit settle at their expiry close.
 
@@ -393,6 +406,7 @@ Strategies are defined *relative to the market*, so one definition works on ever
 | Equity curve | cumulative P&L with per-trade bars and a drawdown strip; click a bar to open that trade |
 | Monthly | year × month P&L heat-table |
 | Breakdown | by weekday, by days to expiry, how legs exited, and the P&L distribution |
+| By market regime (Breakdown) | trades, win rate, P&L and average per kind of market, to see whether a strategy holds up in all of them. What Nifty did while each trade was open: **trend up / down** (moved more than 1 % × √sessions held, entry to exit), **whipsaw** (no such move, but a high–low range above 1.8 % × √sessions) or **range**. And India VIX at entry: below 13, 13–16, above 16. Also on the Bi-weekly screen. Backtests saved before this get both from the cached Nifty and VIX candles when opened |
 | Trades | every trade with each leg's entry → exit; click a trade for its minute-by-minute P&L against Nifty and the full leg table. **Export CSV** saves all legs |
 | Skipped | days that matched the rules but couldn't trade, with the reason |
 
@@ -427,7 +441,7 @@ Ready-made strategies are grouped by outlook:
 
 | Group | Strategies |
 | --- | --- |
-| Neutral | 9:20 straddle (plain, with re-entry, SL-to-cost, MTM lock & trail, Nifty-move stop), ₹50 strangle, expiry-day straddle, intraday and weekly iron condors, iron butterfly, 0.2-delta weekly strangle, multi-week monthly iron condor, butterfly |
+| Neutral | 9:20 straddle (plain, MTM lock & trail), ₹50 strangle, expiry-day straddle, intraday and weekly iron condors, iron butterfly, 0.2-delta weekly strangle, weekly iron condor with the tested side rolled when a short doubles, multi-week monthly iron condor, butterfly |
 | Bullish / bearish | debit and credit spreads, long call / put, jade lizard, 1×2 ratio spreads |
 | Volatility | long straddle, long strangle, trailing straddle buy |
 | Calendar | call calendar, double calendar |
@@ -660,6 +674,7 @@ The same checks run in **GitHub Actions** (`.github/workflows/ci.yml`) and in **
 | --- | --- |
 | `server.js` | HTTP server, Upstox login, live chain, the contract list and REST chains everything else prices from |
 | `lib/upstox.js` | The one Upstox REST client and rate limiter (live calls and historical downloads share the limits); option-chain parser |
+| `lib/ticks.js`, `lib/optcandles.js` | Today's trades of the streamed instruments, in memory (the chart's Tick view); candles with volume of one option or future contract (the chart's option and Nifty Fut views) |
 | `lib/pricing.js` | Normal CDF, Black-Scholes-Merton, Black-76: used by the server and, as `/lib/pricing.js`, by the page |
 | `lib/costs.js` | Brokerage and taxes on option trades by date: used by the Arbitrage screen's history scans and, as `/lib/costs.js`, by its page |
 | `lib/time.js`, `lib/env.js` | IST dates and market hours; `.env` loader |
@@ -675,7 +690,7 @@ The same checks run in **GitHub Actions** (`.github/workflows/ci.yml`) and in **
 | `bt/metrics.js` | Performance statistics |
 | `bt/library.js` | Ready-made strategies |
 | `bt/index.js` | Backtest API: jobs, compare, scans, saved/edited strategies, live deploy, levels, Builder data |
-| `bt/levels.js` | Major / minor support and resistance |
+| `bt/levels.js` | Major / minor support and resistance, and the levels projected past the last swing level |
 | `bt/anomalies.js` | The scanners (no-arbitrage bounds and fair value), their quality gates and rejected signals, trading-time IV, suggested trades |
 | `bt/histchain.js` | Rebuilds a past chain at any minute from cached candles |
 | `bt/scan.js` | History scan on 1-minute candles: each signal checked against the worst prices of its minute and the next, settled at expiry |

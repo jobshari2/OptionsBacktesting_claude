@@ -1,7 +1,41 @@
+// Market regime of a trade: what Nifty did while it was open, from its move (entry to exit) and its range (highest
+// to lowest minute close in between), both as % of Nifty at entry. The thresholds grow with the square root of the
+// sessions the trade spanned, as a typical move does: a 4-session trade needs twice the move of an intraday one.
+const TREND_PCT = 1.0; // move beyond ±1.0 % × √sessions: trend up / down
+const WHIPSAW_PCT = 1.8; // otherwise a range beyond 1.8 % × √sessions: whipsaw (big swings, no net move); else range
+const VIX_LOW = 13; // India VIX at entry: below 13 low, 13–16 mid, above 16 high
+const VIX_HIGH = 16;
+
+function trendOf(t) {
+  if (!t.spotIn || t.spotOut == null || t.spotHi == null || t.spotLo == null) return null;
+  const k = Math.sqrt(Math.max(1, t.sessions || 1));
+  const move = ((t.spotOut - t.spotIn) / t.spotIn) * 100;
+  if (move > TREND_PCT * k) return 'up';
+  if (move < -TREND_PCT * k) return 'down';
+  return ((t.spotHi - t.spotLo) / t.spotIn) * 100 > WHIPSAW_PCT * k ? 'whipsaw' : 'range';
+}
+const vixBand = (vix) => (vix == null ? null : vix < VIX_LOW ? 'low' : vix > VIX_HIGH ? 'high' : 'mid');
+
+// Trades, P&L and winners per key (trades whose key is null are left out).
+function bucketBy(trades, key) {
+  const out = {};
+  for (const t of trades) {
+    const k = key(t);
+    if (k == null) continue;
+    const b = (out[k] ||= { n: 0, pnl: 0, wins: 0 });
+    b.n++;
+    b.pnl += t.net;
+    if (t.net > 0) b.wins++;
+  }
+  return out;
+}
+// The Breakdown tab's "by market regime" tables. Empty for trades saved before they carried spotHi / spotLo / vix.
+const regimeStats = (trades) => ({ trend: bucketBy(trades, trendOf), vix: bucketBy(trades, (t) => vixBand(t.vix)) });
+
 // Performance statistics for a list of backtest trades (net P&L after costs).
 function computeStats(trades, capitalOverride) {
   const n = trades.length;
-  const empty = { trades: 0, total: 0, equity: [], monthly: {}, yearly: {}, weekday: {}, dte: {}, reasons: {} };
+  const empty = { trades: 0, total: 0, equity: [], monthly: {}, yearly: {}, weekday: {}, dte: {}, regime: regimeStats([]), reasons: {} };
   if (!n) return empty;
   const net = trades.map((t) => t.net);
   const wins = net.filter((v) => v > 0);
@@ -66,17 +100,6 @@ function computeStats(trades, capitalOverride) {
 
   const capital = capitalOverride || Math.max(...trades.map((t) => t.margin || 0)) || null;
 
-  const bucket = (key) => {
-    const out = {};
-    for (const t of trades) {
-      const k = key(t);
-      const b = (out[k] ||= { n: 0, pnl: 0, wins: 0 });
-      b.n++;
-      b.pnl += t.net;
-      if (t.net > 0) b.wins++;
-    }
-    return out;
-  };
   const monthly = {};
   const yearly = {};
   for (const t of trades) {
@@ -125,10 +148,11 @@ function computeStats(trades, capitalOverride) {
     equity,
     monthly,
     yearly,
-    weekday: bucket((t) => t.weekday),
-    dte: bucket((t) => t.dte),
+    weekday: bucketBy(trades, (t) => t.weekday),
+    dte: bucketBy(trades, (t) => t.dte),
+    regime: regimeStats(trades),
     reasons,
   };
 }
 
-module.exports = { computeStats };
+module.exports = { computeStats, regimeStats, trendOf, vixBand };

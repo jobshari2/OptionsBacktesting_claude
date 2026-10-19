@@ -6,6 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const { istDate } = require('./lib/time');
+const { createSignalLog } = require('./pulse-signals');
 
 const MIN = 60_000;
 const SAMPLE_MS = 15_000;
@@ -26,7 +27,157 @@ const LEAN = {
   PE: { 'long-buildup': -1, 'short-buildup': 1, 'short-covering': -1, 'long-unwinding': 1 },
 };
 
-function createPulse({ dir, buildupStrikes = 5, oiWindowMin = 15, logError }) {
+const L = (n) => (Math.abs(n) >= 1e7 ? `${(n / 1e7).toFixed(2)} Cr` : `${(n / 1e5).toFixed(1)} L`);
+
+// "Trade idea" under the option writers & buyers table: what the writers/buyers are doing, whether a call (CE) or
+// put (PE) buy looks better for a quick up-move in the option's price, and which strike. A heuristic read of the same
+// data as the rest of the screen (trend, OI build-up, order flow) — not advice, and it says WAIT when they disagree.
+function buildPlay({
+  snap,
+  rows,
+  atmRow,
+  buildup,
+  ref,
+  tot,
+  oiLean,
+  trendDir,
+  accelerating,
+  stalling,
+  reversing,
+  flow,
+  votes,
+  volNow,
+  resistance,
+  support,
+  oiWindowMin,
+}) {
+  const spot = snap.spot;
+  // What is happening: the biggest option activity near ATM, in words.
+  const w = (side, c) => tot[side][c] || 0;
+  const happening = [];
+  if (ref) {
+    const items = [
+      ['call writers are adding (cap above)', w('CE', 'short-buildup'), -1],
+      ['put writers are adding (floor below)', w('PE', 'short-buildup'), 1],
+      ['call buyers are adding', w('CE', 'long-buildup'), 1],
+      ['put buyers are adding', w('PE', 'long-buildup'), -1],
+      ['call shorts are covering', w('CE', 'short-covering'), 1],
+      ['put shorts are covering', w('PE', 'short-covering'), -1],
+      ['call holders are exiting', w('CE', 'long-unwinding'), -1],
+      ['put holders are exiting', w('PE', 'long-unwinding'), 1],
+    ]
+      .filter(([, v]) => v > 0)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3);
+    if (items.length) happening.push(`Last ${oiWindowMin} min near ATM: ${items.map(([n, v]) => `${n} (${L(v)})`).join('; ')}.`);
+  }
+  if (resistance || support) {
+    happening.push(
+      [resistance && `Fresh call wall at ${resistance.strike}`, support && `fresh put floor at ${support.strike}`].filter(Boolean).join(', ') + '.',
+    );
+  }
+  if (!ref) return { action: 'WAIT', side: null, happening, reasons: [`Needs ${oiWindowMin} minutes of history before an idea can be given.`], pick: null };
+
+  // Direction score: trend, writer/buyer lean and order flow (about −4 … +4). Positive = buy calls.
+  let score = 0;
+  score += trendDir * (stalling ? 0.5 : accelerating ? 1.5 : 1);
+  score += (oiLean ?? 0) * 1.5;
+  if (flow) score += flow.m * 1.5;
+  const dir = Math.sign(score);
+  const side = dir > 0 ? 'CE' : 'PE';
+  const agree = votes.filter((v) => v.dir === dir).length;
+  const against = votes.filter((v) => v.dir === -dir).length;
+
+  const reasons = [];
+  let action = 'WAIT';
+  if (!dir || Math.abs(score) < 0.8 || against) {
+    reasons.push(against ? 'Trend, option writers and order flow disagree — no clean edge.' : 'No clear direction yet.');
+  } else {
+    action = Math.abs(score) >= 1.8 && agree >= 2 ? 'BUY' : 'WATCH';
+    if (action === 'WATCH') reasons.push('Only a partial agreement of trend, writers and order flow — wait for it to firm up.');
+  }
+  if (reversing && dir === trendDir) {
+    action = 'WAIT';
+    reasons.push('Price has just turned against the trend — the move may be over.');
+  }
+  // A fresh wall right in the way caps the move.
+  const wall = dir > 0 ? resistance : dir < 0 ? support : null;
+  if (wall && Math.abs(wall.strike - spot) <= 40 && action === 'BUY') {
+    action = 'WATCH';
+    reasons.push(
+      `Fresh ${dir > 0 ? 'call writing' : 'put writing'} at ${wall.strike} is only ${Math.abs(wall.strike - spot).toFixed(0)} pts away and can cap the move.`,
+    );
+  }
+
+  // Strike: ATM or one step either side, ranked by delta (ATM best), activity on that strike and spread.
+  const i = rows.indexOf(atmRow);
+  const key = side === 'CE' ? 'ce' : 'pe';
+  const itm = side === 'CE' ? -1 : 1; // row offset of the in-the-money neighbour
+  const cands = [
+    { off: itm, label: '1 step ITM', base: 1.6, delta: 0.6 },
+    { off: 0, label: 'ATM', base: 2, delta: 0.5 },
+    { off: -itm, label: '1 step OTM', base: 1.2, delta: 0.4 },
+  ];
+  let pick = null;
+  for (const c of cands) {
+    const r = rows[i + c.off];
+    const o = r?.[key];
+    if (!o || !(o.ltp > 0)) continue;
+    let s = c.base;
+    const why = [];
+    const b = buildup.find((x) => x.strike === r.strike)?.[side];
+    if (b?.cls === 'long-buildup') ((s += 1.5), why.push('fresh buyers here (OI up, price up)'));
+    else if (b?.cls === 'short-covering') ((s += 1.2), why.push('shorts covering here (price rising)'));
+    else if (b?.cls === 'short-buildup') ((s -= 2), why.push('writers are selling into it'));
+    else if (b?.cls === 'long-unwinding') ((s -= 1.5), why.push('holders are exiting'));
+    if (b && b.dp > 0) s += 0.5;
+    else if (b && b.dp < 0) s -= 0.5;
+    const spreadPct = o.bid && o.ask ? ((o.ask - o.bid) / ((o.ask + o.bid) / 2)) * 100 : null;
+    if (spreadPct != null) s -= spreadPct > 4 ? 2 : spreadPct > 2 ? 1 : 0;
+    if (o.ltp < 5) s -= 2;
+    if (!pick || s > pick.score)
+      pick = {
+        score: s,
+        strike: r.strike,
+        label: c.label,
+        delta: c.delta,
+        ltp: o.ltp,
+        bid: o.bid ?? null,
+        ask: o.ask ?? null,
+        spreadPct,
+        oi: o.oi,
+        vol: o.vol,
+        cls: b?.cls ?? null,
+        dp: b?.dp ?? null,
+        why,
+      };
+  }
+  if (pick) {
+    // Nifty exit levels from the recent 1-minute move size; premium targets use the delta of the chosen strike.
+    const stopPts = Math.max(12, Math.round((volNow ?? 5) * 3));
+    const targetPts = Math.round(stopPts * 1.5);
+    const sgn = dir || 1;
+    pick.niftyStop = spot - sgn * stopPts;
+    pick.niftyTarget = spot + sgn * targetPts;
+    pick.premiumTarget = pick.ltp + pick.delta * targetPts;
+    pick.premiumStop = Math.max(0.05, pick.ltp - pick.delta * stopPts);
+    if (wall && Math.abs(wall.strike - spot) < targetPts) pick.targetCapped = wall.strike;
+    if (pick.spreadPct != null && pick.spreadPct > 3)
+      reasons.push(`Wide bid-ask spread (${pick.spreadPct.toFixed(1)}%) — entry cost will eat into a quick move.`);
+  }
+  if (action === 'BUY' || action === 'WATCH') {
+    reasons.unshift(
+      `${agree} of ${votes.length || 0} signals point ${dir > 0 ? 'up' : 'down'}${flow ? '' : ' (order flow not available)'}: ${votes
+        .filter((v) => v.dir === dir)
+        .map((v) => v.what)
+        .join(', ')}.`,
+    );
+  }
+  return { action, side: action === 'WAIT' ? null : side, leanSide: dir ? side : null, score, happening, reasons, pick: action === 'WAIT' ? null : pick };
+}
+
+function createPulse({ dir, buildupStrikes = 5, oiWindowMin = 15, logError = () => {}, getLot, signalOpts = {} }) {
+  const sig = createSignalLog({ dir, logError, lot: getLot, ...signalOpts }); // paper trades of the trade idea, written to pulse-signals.jsonl
   const samples = []; // { t, spot, iv, d: { strike: [ceLtp, ceOi, peLtp, peOi] } }
   let dayHigh = null;
   let dayLow = null;
@@ -193,6 +344,26 @@ function createPulse({ dir, buildupStrikes = 5, oiWindowMin = 15, logError }) {
     const down = votes.filter((v) => v.dir < 0).length;
     const bias = votes.length === 0 ? 'neutral' : up && down ? 'mixed' : up ? 'bullish' : 'bearish';
 
+    const play = buildPlay({
+      snap,
+      rows,
+      atmRow,
+      buildup,
+      ref,
+      tot,
+      oiLean,
+      trendDir,
+      accelerating,
+      stalling,
+      reversing,
+      flow,
+      votes,
+      volNow,
+      resistance,
+      support,
+      oiWindowMin,
+    });
+
     // --- plain-language summary ---
     const pts = (n) => `${n > 0 ? '+' : ''}${n.toFixed(0)}`;
     const L = (n) => (Math.abs(n) >= 1e7 ? `${(n / 1e7).toFixed(2)} Cr` : `${(n / 1e5).toFixed(1)} L`);
@@ -287,6 +458,7 @@ function createPulse({ dir, buildupStrikes = 5, oiWindowMin = 15, logError }) {
       trend: { label: trend, dir: trendDir, chg, accelerating, stalling, reversing, dayHigh, dayLow },
       vol: { now: volNow, before: volBefore },
       oi: { windowMin: oiWindowMin, lean: oiLean, totals: tot, buildup, ready: Boolean(ref) },
+      play,
       levels: {
         maxCe: { strike: maxCe.strike, oi: maxCe.ce.oi },
         maxPe: { strike: maxPe.strike, oi: maxPe.pe.oi },
@@ -306,6 +478,7 @@ function createPulse({ dir, buildupStrikes = 5, oiWindowMin = 15, logError }) {
   }
 
   function log(p) {
+    if (!dir) return;
     try {
       const folder = path.join(dir, istDate(p.t));
       fs.mkdirSync(folder, { recursive: true });
@@ -353,9 +526,11 @@ function createPulse({ dir, buildupStrikes = 5, oiWindowMin = 15, logError }) {
           atmRow && atmRow.ce.iv != null && atmRow.pe.iv != null ? (atmRow.ce.iv + atmRow.pe.iv) / 2 : null,
           bookPressure(snap)?.bullShare ?? null,
         );
+        sig.manage(entry.t, snap);
         if (entry.t - lastComputeAt < COMPUTE_MS) return;
         lastComputeAt = entry.t;
         last = compute(snap, flowLive, signalsState);
+        if (last?.play) sig.consider(entry.t, last.play, snap, snap.spot);
         if (last && entry.t - lastLogAt >= LOG_MS) {
           lastLogAt = entry.t;
           log(last);
@@ -364,7 +539,8 @@ function createPulse({ dir, buildupStrikes = 5, oiWindowMin = 15, logError }) {
         logError('pulse', e);
       }
     },
-    state: () => last,
+    state: () => last && { ...last, trades: sig.snapshot() },
+    signalLog: sig,
     labels: CLASSES,
   };
 }

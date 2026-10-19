@@ -457,10 +457,13 @@
     <div class="muted small pad">Profitable months: <b>${vals.filter((v) => v > 0).length}</b> of ${vals.length}. Best month ${inrS(Math.max(...vals))} (${ofCap(Math.max(...vals))}), worst ${inrS(Math.min(...vals))} (${ofCap(Math.min(...vals))}). Percentages are of the investment, ${inr(s.capital)}.</div>`;
   }
 
-  function bucketTable(title, obj, label) {
-    const keys = Object.keys(obj)
-      .map(Number)
-      .sort((a, b) => a - b);
+  // order: the keys in the order to show them (default: numeric keys, ascending); foot: html under the table.
+  function bucketTable(title, obj, label, order, foot = '') {
+    const keys = order
+      ? order.filter((k) => obj[k])
+      : Object.keys(obj)
+          .map(Number)
+          .sort((a, b) => a - b);
     const max = Math.max(1, ...keys.map((k) => Math.abs(obj[k].pnl)));
     return `<div class="bd-card"><h4>${title}</h4><table class="grid-tbl bd-tbl"><thead><tr><th></th><th>Trades</th><th>Win %</th><th>P&amp;L</th><th>% profit</th><th>Avg</th><th class="barcol"></th></tr></thead><tbody>
       ${keys
@@ -469,7 +472,7 @@
           return `<tr><th>${label(k)}</th><td>${b.n}</td><td>${pct((b.wins / b.n) * 100, 0)}</td><td class="${cls(b.pnl)}">${inrS(b.pnl)}</td><td class="${cls(b.pnl)}">${ofCap(b.pnl)}</td><td class="${cls(b.pnl)}">${inrS(Math.round(b.pnl / b.n))}</td><td class="barcol"><div class="hbar ${b.pnl >= 0 ? 'p' : 'n'}" style="width:${((Math.abs(b.pnl) / max) * 100).toFixed(0)}%"></div></td></tr>`;
         })
         .join('')}
-    </tbody></table></div>`;
+    </tbody></table>${foot}</div>`;
   }
   function breakdownHtml() {
     const s = run.stats;
@@ -494,6 +497,7 @@
           .join('')}
       </tbody></table></div>
       ${bucketTable('By weekday (entry)', s.weekday, (k) => WD[k])}
+      ${BT.regimeCards(s.regime, bucketTable)}
       <div class="bd-card"><h4>How legs exited</h4><table class="grid-tbl bd-tbl"><tbody>
         ${reasons.map(([k, n]) => `<tr><th>${REASON[k] || k}</th><td>${n}</td><td>${pct((n / total) * 100, 0)}</td><td class="barcol"><div class="hbar" style="width:${((n / total) * 100).toFixed(0)}%"></div></td></tr>`).join('')}
       </tbody></table></div>

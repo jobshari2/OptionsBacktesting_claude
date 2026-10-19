@@ -4,15 +4,19 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { createData, addDays } = require('./data');
-const { runBacktest, normalizeStrategy } = require('./engine');
-const { computeStats } = require('./metrics');
+const { runBacktest: runRaw, normalizeStrategy, wholeStrategyStops, MIN_OF } = require('./engine');
+const { computeStats, regimeStats } = require('./metrics');
 const { LIBRARY } = require('./library');
 const { createHistChain } = require('./histchain');
-const { createLevels, nearest: nearestLevels } = require('./levels');
+const { createLevels, nearest: nearestLevels, extend: extendLevels } = require('./levels');
 const { runScan, trim: trimScan } = require('./scan');
 const { runTapeScan, tapeDays } = require('./tapescan');
 const { buildScenarios, applyScenario } = require('./scenarios');
 const { buildAdjustments } = require('./adjustments');
+
+// Stop-losses judge the whole strategy's loss, never a single leg (engine.wholeStrategyStops): a leg's "% of premium"
+// stop becomes a stop on the whole position at that % of the entry premium. The Bi-weekly screen follows the same rule.
+const runBacktest = (data, strategy, ...rest) => runRaw(data, wholeStrategyStops(strategy), ...rest);
 const { evaluate } = require('./conditions');
 const A = require('./anomalies');
 const { createResearch } = require('./research');
@@ -163,11 +167,15 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
     );
     return LIBRARY.map((l) =>
       edits.has(l.id)
-        ? { ...normalizeStrategy(edits.get(l.id)), id: l.id, edited: true, updatedAt: edits.get(l.id).updatedAt }
-        : { ...normalizeStrategy(l), id: l.id },
+        ? { ...wholeStrategyStops(edits.get(l.id)), id: l.id, edited: true, updatedAt: edits.get(l.id).updatedAt }
+        : { ...wholeStrategyStops(l), id: l.id },
     );
   }
-  const saved = () => readStore().filter((x) => !isLib(x.id));
+  // served with whole-strategy stops (an older save may still have leg stops), keeping its id and save time
+  const saved = () =>
+    readStore()
+      .filter((x) => !isLib(x.id))
+      .map((x) => ({ ...wholeStrategyStops(x), id: x.id, ...(x.updatedAt ? { updatedAt: x.updatedAt } : {}) }));
   const findStrategy = (id) => library().find((x) => x.id === id) || saved().find((x) => x.id === id);
 
   // ---------- support / resistance ----------
@@ -176,7 +184,21 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
   async function levelsFor(day) {
     const today = istToday();
     day = day && /^\d{4}-\d{2}-\d{2}$/.test(day) && day <= today ? day : today;
-    if (day === today && liveLv.day === day && Date.now() - liveLv.at < 10 * 60_000) return liveLv.lv;
+    // The swing levels of a day only change with the day (they use the sessions before it): computed once per day, re-read
+    // every 10 minutes for new data. They are then projected beyond their last level against the current spot (levels.js).
+    const withSpot = async (base) => {
+      let spot = data.spotDay(day)?.[0] ?? base.prev.c;
+      if (day === today) {
+        try {
+          const c = (await data.niftyIntraday()).filter((x) => x[0].slice(0, 10) === today).pop();
+          if (c) spot = c[4];
+        } catch {
+          /* demo / not logged in / holiday: the day's open */
+        }
+      }
+      return extendLevels({ ...base }, spot);
+    };
+    if (day === today && liveLv.day === day && Date.now() - liveLv.at < 10 * 60_000) return withSpot(liveLv.lv);
     let days;
     try {
       days = await data.loadIndex(addDays(day, -200), day);
@@ -188,9 +210,8 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
     const list = days.filter((d) => d < day).concat(day);
     const lv = levels.forDay(list, list.length - 1, data.spotDay);
     if (!lv) throw new Error('Not enough Nifty history for support/resistance');
-    const out = { ...lv, spot: data.spotDay(day)?.[0] ?? lv.prev.c };
-    if (day === today) liveLv = { at: Date.now(), day, lv: out };
-    return out;
+    if (day === today) liveLv = { at: Date.now(), day, lv };
+    return withSpot(lv);
   }
 
   // Nifty candles for the chart on the Chain screen and its pop-out window. History comes from the cached 1-minute
@@ -360,7 +381,7 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
   // headline numbers of each run are kept; the page re-runs the scenario it wants to look at in detail.
   // Expired data never changes, so a scan is kept (memory + bt-data/scenario-cache.json) until the strategy, the
   // settings or the last expired expiry change: the all-strategies overview and repeat runs are then instant.
-  const SCAN_VERSION = 8; // bump when the engine or the scenario grid changes what a scan returns
+  const SCAN_VERSION = 11; // bump when the engine or the scenario grid changes what a scan returns
   const scanFile = path.join(path.dirname(storeFile), 'scenario-cache.json');
   let scanCache = null;
   function scans() {
@@ -386,7 +407,7 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
   const scanKey = (strategy, opts, cal) =>
     crypto
       .createHash('sha1')
-      .update(JSON.stringify([SCAN_VERSION, normalizeStrategy(strategy), opts, cal.expired[cal.expired.length - 1]]))
+      .update(JSON.stringify([SCAN_VERSION, wholeStrategyStops(strategy), opts, cal.expired[cal.expired.length - 1]]))
       .digest('hex');
 
   // On cached data a backtest never waits for I/O, so a long series of them would keep the server from answering
@@ -495,6 +516,62 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
     };
     writeResults();
   }
+  // A backtest saved before trades carried Nifty's range and India VIX at entry: both are read back from the
+  // cached index candles when it is opened (in memory only), so its Breakdown tab shows the market regime too.
+  async function addRegime(view) {
+    const T = view?.trades;
+    if (!T?.length || view.stats?.regime) return;
+    const r2 = (x) => Math.round(x * 100) / 100;
+    try {
+      const from = T.reduce((a, t) => (t.entryDay < a ? t.entryDay : a), T[0].entryDay);
+      const to = T.reduce((a, t) => (t.exitDay > a ? t.exitDay : a), T[0].exitDay);
+      const days = await data.loadIndex(from, to, 'soft');
+      const at = new Map(days.map((d, i) => [d, i]));
+      for (const t of T) {
+        const e0 = MIN_OF(t.entryTime);
+        const v = t.vix == null ? data.vixDay(t.entryDay) : null;
+        if (v) t.vix = r2(v[e0 * 4]);
+        const i0 = at.get(t.entryDay);
+        const i1 = at.get(t.exitDay);
+        if (t.spotHi != null || i0 == null || i1 == null || t.spotOut == null) continue;
+        let hi = Math.max(t.spotIn, t.spotOut);
+        let lo = Math.min(t.spotIn, t.spotOut);
+        for (let i = i0; i <= i1; i++) {
+          const sp = data.spotDay(days[i]);
+          const m1 = i === i1 ? Math.min(MPD - 1, MIN_OF(t.exitTime)) : MPD - 1;
+          for (let m = i === i0 ? e0 : 0; m <= m1; m++) {
+            hi = Math.max(hi, sp[m * 4 + 3]);
+            lo = Math.min(lo, sp[m * 4 + 3]);
+          }
+        }
+        Object.assign(t, { spotHi: r2(hi), spotLo: r2(lo), sessions: i1 - i0 + 1 });
+      }
+      view.stats.regime = regimeStats(T);
+    } catch (e) {
+      logError('bt-regime', e);
+    }
+  }
+
+  // The five best different outcomes among a strategy's scenarios (the Summary tab's "top 5 variants"): headline numbers only.
+  const topVariants = (rows, n = 5) => {
+    const seen = new Set();
+    return rows
+      .filter((x) => x.stats.trades)
+      .sort((a, b) => b.stats.total - a.stats.total)
+      .filter((x) => {
+        const sig = [x.stats.trades, x.stats.total, x.stats.gross, x.stats.wins, x.stats.maxDD].join('|'); // a rule that never fired repeats the result
+        return !seen.has(sig) && seen.add(sig);
+      })
+      .slice(0, n)
+      .map((x) => ({
+        key: x.key,
+        own: Boolean(x.own),
+        tgt: x.tgt,
+        sl: x.sl,
+        exit: x.exit,
+        stats: Object.fromEntries(Object.entries(x.stats).filter(([, v]) => v == null || typeof v !== 'object')),
+      }));
+  };
   // What the Summary tab lists: the headline numbers only.
   const resultSummary = (e) => ({
     key: e.key,
@@ -508,6 +585,7 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
     tested: e.scan.scenarios.length,
     own: e.scan.scenarios[0],
     best: bestOf(e.scan.scenarios),
+    variants: topVariants(e.scan.scenarios.slice()),
     adjustments: e.adj ? e.adj.rows.length : 0,
   });
 
@@ -880,6 +958,7 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
       if (p === '/api/bt/results' && req.method !== 'POST') return sendJson(res, 200, { results: Object.values(savedResults()).map(resultSummary) });
       if (p === '/api/bt/result') {
         const e = savedResults()[url.searchParams.get('key')];
+        if (e) await addRegime(e.detail);
         return e ? sendJson(res, 200, e) : sendJson(res, 404, { error: 'No saved backtest for this strategy — run it' });
       }
       if (p === '/api/bt/results/delete' && req.method === 'POST') {

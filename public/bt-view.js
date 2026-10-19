@@ -350,7 +350,11 @@
     const el = $('btTop');
     if (!el) return;
     const tabs = [
-      ['summary', 'Summary', 'The top 5 of the bi-weekly hedge and of its reverse (as on the Bi-weekly screen), and the saved backtests'],
+      [
+        'summary',
+        'Summary',
+        'The top 5 of the bi-weekly hedge and of its reverse (as on the Bi-weekly screen), the best variants of the other strategies, and the saved backtests',
+      ],
       ['details', 'Details', 'Scenarios, months, trades and equity curve of one strategy'],
       [
         'adjust',
@@ -486,6 +490,32 @@
             .join('') || '<tr><td colspan="14" class="l muted">None backtested yet.</td></tr>'
         }</tbody></table></div>
       </div>`;
+    // The best variants (take profit / stop-loss / exit scenarios) of the other strategies, side by side: at most 2 per
+    // strategy so one of them does not fill the list, limited risk only like the bi-weekly top 5.
+    const variantRows = saved
+      .filter((r) => !unlimitedRisk(r.strategy))
+      .flatMap((r) => (r.variants || []).slice(0, 2).map((v) => ({ r, v })))
+      .sort((a, b) => b.v.stats.total - a.v.stats.total)
+      .slice(0, 5);
+    const variants = `<div class="panel scen-panel">
+        <div class="chart-head"><h3>Other strategies — top 5 variants</h3><span class="muted small">take profit × stop-loss (of the net premium, for the whole strategy) × exit scenarios of every saved backtest · limited risk only, highest net P&amp;L first · at most 2 per strategy · click a row to open the strategy</span></div>
+        <div class="tbl-wrap"><table class="grid-tbl cmp-tbl scen-tbl sum-tbl"><thead><tr><th>#</th><th class="l">Strategy</th><th class="l">Variant</th>${SUM_COLS.filter(
+          ([c]) => ['total', 'roi', 'trades', 'winRate', 'maxDD', 'profitFactor'].includes(c),
+        )
+          .map(([, l]) => `<th>${l}</th>`)
+          .join('')}</tr></thead><tbody>${
+          variantRows
+            .map(({ r, v }, i) => {
+              const st = v.stats;
+              return `<tr data-open="${esc(r.key)}"><td class="muted">${i + 1}</td>
+          <td class="l sum-name"><span class="cat-pill c-${esc(String(r.category || '').toLowerCase())}">${esc(r.category || '')}</span> <b>${esc(r.name)}</b></td>
+          <td class="l small">${v.own ? '<span class="cat-pill c-mine">as defined</span> ' : ''}${esc(scText(v, r.strategy, r.debit))}</td>
+          <td class="${cls(st.total)} b">${inrS(st.total)}</td><td class="${cls(st.total)} b">${pct(st.roi)}</td><td>${st.trades} <span class="muted">(${st.wins} W / ${st.losses} L)</span></td><td>${pct(st.winRate)}</td><td class="neg">${inr(st.maxDD)}</td><td>${num(st.profitFactor)}</td></tr>`;
+            })
+            .join('') ||
+          '<tr><td colspan="9" class="l muted">No limited-risk strategy has a variant with trades yet (backtests saved before this list existed need Run backtest once more).</td></tr>'
+        }</tbody></table></div>
+      </div>`;
     const hint = 'as each is defined · click a row to see it in Details and Adjustments (nothing is run again) · click a column to sort';
     const more =
       bwTop && saved.length
@@ -493,6 +523,7 @@
         : '';
     el.innerHTML = `${card}
       ${listAll ? table('All saved backtests', `${saved.length} strategies · ${hint}${bwTop ? '' : ' · the bi-weekly top 5 is shown here once the variations are backtested on the Bi-weekly screen'}`, saved) : bwTop}
+      ${variants}
       <div class="panel top-bar sum-foot">${more} ${all} <span class="muted small">Run backtest replaces a strategy's saved result.</span></div>`;
   }
 
@@ -945,10 +976,13 @@
     <div class="muted small pad">Profitable months: <b>${posMonths}</b> of ${vals.length}. Best month ${inrS(Math.max(...vals))} (${ofCap(Math.max(...vals))}), worst ${inrS(Math.min(...vals))} (${ofCap(Math.min(...vals))}). Percentages are of the investment, ${inr(st.capital)}.</div>`;
   }
 
-  function bucketTable(title, obj, label) {
-    const keys = Object.keys(obj)
-      .map(Number)
-      .sort((a, b) => a - b);
+  // order: the keys in the order to show them (default: numeric keys, ascending); foot: html under the table.
+  function bucketTable(title, obj, label, order, foot = '') {
+    const keys = order
+      ? order.filter((k) => obj[k])
+      : Object.keys(obj)
+          .map(Number)
+          .sort((a, b) => a - b);
     const max = Math.max(1, ...keys.map((k) => Math.abs(obj[k].pnl)));
     return `<div class="bd-card"><h4>${title}</h4><table class="grid-tbl bd-tbl"><thead><tr><th></th><th>Trades</th><th>Win %</th><th>P&amp;L</th><th>% profit</th><th>Avg</th><th class="barcol"></th></tr></thead><tbody>
       ${keys
@@ -958,7 +992,7 @@
           return `<tr><th>${label(k)}</th><td>${b.n}</td><td>${pct((b.wins / b.n) * 100, 0)}</td><td class="${cls(b.pnl)}">${inrS(b.pnl)}</td><td class="${cls(b.pnl)}">${ofCap(b.pnl)}</td><td class="${cls(b.pnl)}">${inrS(Math.round(b.pnl / b.n))}</td><td class="barcol"><div class="hbar ${b.pnl >= 0 ? 'p' : 'n'}" style="width:${w.toFixed(0)}%"></div></td></tr>`;
         })
         .join('')}
-    </tbody></table></div>`;
+    </tbody></table>${foot}</div>`;
   }
 
   function breakdownHtml() {
@@ -968,6 +1002,7 @@
     return `<div class="bd-grid">
       ${bucketTable('By weekday (entry)', st.weekday, (k) => WD[k])}
       ${bucketTable('By days to expiry (entry)', st.dte, (k) => (k === 0 ? 'Expiry' : k + 'd'))}
+      ${BT.regimeCards(st.regime, bucketTable)}
       <div class="bd-card"><h4>How legs exited</h4><table class="grid-tbl bd-tbl"><tbody>
         ${reasons.map(([k, n]) => `<tr><th>${REASON[k] || k}</th><td>${n}</td><td>${pct((n / total) * 100, 0)}</td><td class="barcol"><div class="hbar" style="width:${((n / total) * 100).toFixed(0)}%"></div></td></tr>`).join('')}
       </tbody></table></div>
@@ -1264,7 +1299,7 @@
     if (tradeSort === 'worst') idx.sort((a, b) => result.trades[a].net - result.trades[b].net);
     if (tradeSort === 'recent') idx.reverse();
     const legTxt = (x) =>
-      `<span class="lx ${x.action === 'B' ? 'buy' : 'sell'}" title="${esc(`${x.action === 'B' ? 'Buy' : 'Sell'} ${x.qty} × ${x.strike} ${x.type} (${x.expiry}) · ${x.entryDay} ${x.entryTime} @ ${x.entryPx} → ${x.exitDay} ${x.exitTime} @ ${x.exitPx} · ${REASON[x.reason] || x.reason} · ${inrS(x.pnl)}`)}>${x.action}${x.re ? '↻' : ''}${x.rolled ? '⟳' : ''} ${x.strike}${x.type} ${x.entryPx}→${x.exitPx}${x.reason === 'sl' ? ' <b class="neg">SL</b>' : x.reason === 'tgt' ? ' <b class="pos">TG</b>' : x.reason === 'roll' ? ' <b class="muted">⟳</b>' : x.reason === 'partial' ? ` <b class="pos" title="Partial booking: ${x.qty} closed">½</b>` : ''}</span>`;
+      `<span class="lx ${x.action === 'B' ? 'buy' : 'sell'}" title="${esc(`${x.action === 'B' ? 'Buy' : 'Sell'} ${x.qty} × ${x.strike} ${x.type} (${x.expiry}) · ${x.entryDay} ${x.entryTime} @ ${x.entryPx} → ${x.exitDay} ${x.exitTime} @ ${x.exitPx} · ${REASON[x.reason] || x.reason} · ${inrS(x.pnl)}`)}>${x.action}${x.re ? '↻' : ''}${x.rolled ? '⟳' : ''} ${x.strike}${x.type} ${x.entryPx}→${x.exitPx}${x.reason === 'sl' ? ' <b class="neg">SL</b>' : x.reason === 'tgt' ? ' <b class="pos">TG</b>' : x.reason === 'roll' ? ' <b class="muted">⟳</b>' : x.reason === 'adjust' ? ' <b class="muted" title="Adjusted: closed and opened again at a new strike">⇄</b>' : x.reason === 'partial' ? ` <b class="pos" title="Partial booking: ${x.qty} closed">½</b>` : ''}</span>`;
     el.innerHTML = `<div class="trade-tools">
         <div class="seg sm">${[
           ['all', 'All'],
@@ -1385,7 +1420,7 @@
       if (!initial) {
         const e = at(x.entryDay, x.entryTime);
         e.ops.push(op('open', x, fillOf(x, opts, false)));
-        e.reasons.add(x.rolled ? 'roll' : 're');
+        e.reasons.add(x.adj ? 'adjust' : x.rolled ? 'roll' : 're');
       }
       const e = at(x.exitDay, x.exitTime);
       e.ops.push(op('close', x, fillOf(x, opts, true)));
@@ -1419,9 +1454,13 @@
       sl: ['Leg stop-loss hit — exit that leg', "The leg's own stop-loss was touched."],
       tgt: ['Leg target hit — exit that leg', "The leg's own target was touched."],
       re: ['Re-entry', 'The strategy re-enters the leg that was closed.'],
+      adjust: [
+        'Adjustment — new strikes for one side',
+        `The market moved (${s.adjust ? BT.adjustLabel(s.adjust) : 'adjustment rule'}): close these legs and open them again at the strikes the strategy's rules pick now.`,
+      ],
       expiry: ['A leg expired', "This leg's expiry came before the position's exit: it is settled at its closing price."],
     };
-    const order = ['roll', 'mtm-tgt', 'mtm-sl', 'lock-trail', 'leg-sl-all', 'partial', 'sl', 'tgt', 're', 'expiry', 'exit-time'];
+    const order = ['roll', 'adjust', 'mtm-tgt', 'mtm-sl', 'lock-trail', 'leg-sl-all', 'partial', 'sl', 'tgt', 're', 'expiry', 'exit-time'];
     return [...steps.values()]
       .sort((a, b) => (a.day + a.time).localeCompare(b.day + b.time))
       .map((e) => {
