@@ -247,6 +247,7 @@ function render() {
   buildWindowButtons(d.windows);
   document.querySelectorAll('.win-label').forEach((el) => (el.textContent = state.win + 'm'));
 
+  window.atmCharts?.follow(d);
   window.BT?.chainArb?.(d); // before the chain: "Fit screen" measures the height this list leaves it
   let rows = visibleRows(d);
   renderChain(d, rows);
@@ -270,7 +271,7 @@ function render() {
 
 // The live-analysis screens (charts.js, flow-view.js, …) draw themselves from `state` on every refresh; each hook
 // returns at once unless its screen is the one showing.
-const SCREEN_HOOKS = ['onAppRender', 'onFlowRender', 'onPulseRender', 'onBookRender', 'onHedgeRender', 'onSignalTestRender'];
+const SCREEN_HOOKS = ['onAppRender', 'onFlowRender', 'onPulseRender', 'onIdeasRender', 'onBookRender', 'onHedgeRender', 'onSignalTestRender'];
 function runScreenHooks() {
   for (const h of SCREEN_HOOKS) window[h]?.();
 }
@@ -886,7 +887,7 @@ window.addEventListener('resize', () => {
 // Chain screen: the right column shows the Nifty chart with support / resistance or the signals; the panel under
 // the chain shows the spread arbitrage or the volume surge.
 const PANES = {
-  side: { seg: 'chSideSeg', key: 'sidePane', panes: { chart: ['niftyPanel', 'levelsPanel'], signals: ['signalsPanel'] } },
+  side: { seg: 'chSideSeg', key: 'sidePane', panes: { chart: ['niftyPanel', 'levelsPanel', 'atmPanel'], signals: ['signalsPanel'] } },
   bottom: { seg: 'chBottomSeg', key: 'bottomPane', panes: { arb: ['chArbPanel'], surge: ['surgePanel'] } },
 };
 function setPane(which, name) {
@@ -962,7 +963,7 @@ function setView(view) {
 }
 $('tabs').addEventListener('click', (e) => {
   const g = e.target.dataset.group;
-  if (g) setView(localGet('view.' + g) || GROUPS[g][0]);
+  if (g) setView(GROUPS[g].includes(localGet('view.' + g)) ? localGet('view.' + g) : GROUPS[g][0]);
 });
 $('subtabs').addEventListener('click', (e) => {
   if (e.target.dataset.view) setView(e.target.dataset.view);

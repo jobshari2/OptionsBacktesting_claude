@@ -1,6 +1,6 @@
 // "Feeds" tab: the same Nifty options streamed by Upstox and by Zerodha Kite, side by side. Shows where their prices
 // differ right now, every difference of the day (when, how long, which feed changed first and which one later), and
-// which feed is faster overall. Also the Kite login: Kite Connect redirect, a pasted token, or the enctoken of a Kite
+// which feed is faster overall. The Kite login controls are the shared KiteLogin component (kite-login.js; also in the top bar): Kite Connect redirect, a pasted token, or the enctoken of a Kite
 // web login sent by a bookmarklet. Data from /api/feedcmp/state (every 500 ms while the tab is open).
 (function () {
   const $ = (id) => document.getElementById(id);
@@ -86,18 +86,7 @@
     return j;
   }
 
-  // ---------- Kite login card ----------
-  function bookmarklet() {
-    const origin = location.origin;
-    const src = `(()=>{if(location.host!=='kite.zerodha.com'){alert('Open kite.zerodha.com, log in, then click this bookmark there.');return}
-const c={};document.cookie.split('; ').forEach(s=>{const i=s.indexOf('=');c[s.slice(0,i)]=decodeURIComponent(s.slice(i+1))});
-const e=c.enctoken;if(!e){alert('No enctoken cookie could be read here. Copy it from DevTools > Application > Cookies and paste it on the Feeds screen.');return}
-const u=c.user_id||prompt('Your Kite user ID');if(!u)return;const o=${JSON.stringify(origin)};
-const w=window.open(o+'/kite-link.html','kitelink','width=440,height=240');
-addEventListener('message',function h(ev){if(ev.origin!==o||ev.data!=='ready')return;removeEventListener('message',h);w.postMessage({enctoken:e,userId:u},o)})})()`;
-    return 'javascript:' + encodeURIComponent(src.replace(/\n/g, ''));
-  }
-
+  // ---------- Kite status lines (the login controls are the shared KiteLogin component, kite-login.js) ----------
   function renderKite(d) {
     const k = d.kite;
     const f = k.feed || {};
@@ -115,83 +104,16 @@ addEventListener('message',function h(ev){if(ev.origin!==o||ev.data!=='ready')re
 
     const html = `
       <div class="fd-status">${upLine}</div>
-      <div class="fd-status">${kiteLine}</div>
-      <div class="fd-actions">
-        ${k.apiKey ? `<a class="btn-sm" href="/kite/login" title="Kite Connect login. If you are already logged in to Kite in this browser, Kite usually sends you straight back.">Login with Kite</a>` : ''}
-        <button type="button" class="btn-sm ghost" id="fdTokBtn">${fs.tokenForm ? 'Hide token box' : 'Use a token…'}</button>
-        <a class="btn-sm ghost fd-bm" id="fdBm" title="Drag this to your bookmarks bar. Then, on kite.zerodha.com (logged in), click it: it hands this app your Kite web session (enctoken).">⇢ Send Kite login here</a>
-        ${k.loggedIn && !d.demo ? `<button type="button" class="btn-sm ghost danger" id="fdLogout">Log out of Kite here</button>` : ''}
-        <label class="mini" title="When this tab opens and Kite is not logged in, go through the Kite Connect login by itself (returns at once if you are already logged in to Kite in this browser)"><input type="checkbox" id="fdAuto" ${local('autoLogin', '0') === '1' ? 'checked' : ''} ${k.apiKey ? '' : 'disabled'}> Auto-login</label>
-      </div>
-      <form class="fd-token ${fs.tokenForm ? '' : 'hidden'}" id="fdTokForm" autocomplete="off">
-        <select id="fdTokMode">
-          <option value="connect">Kite Connect access token</option>
-          <option value="enctoken">Kite web enctoken (unofficial)</option>
-        </select>
-        <input class="txt fd-tok" type="password" id="fdTok" placeholder="token" autocomplete="off">
-        <input class="txt fd-uid" type="text" id="fdUid" placeholder="user ID (enctoken)">
-        <input class="txt fd-uid" type="text" id="fdKey" placeholder="api_key (blank = .env)">
-        <button type="submit" class="btn-sm">Save</button>
-        <span class="muted small" id="fdTokMsg"></span>
-      </form>`;
-    // Rebuild only when the text changes, so the token box keeps its typing and focus.
+      <div class="fd-status">${kiteLine}</div>`;
+    // Rebuild only when the text changes (the last-tick age changes every refresh and is updated in place).
     const key = html.replace(/last tick [\d.]+ s ago/g, '');
     const box = $('fdKite');
     if (box.dataset.key !== key || !box.innerHTML) {
-      const keepForm = box.querySelector('#fdTokForm');
-      const vals = keepForm ? ['fdTokMode', 'fdTok', 'fdUid', 'fdKey'].map((id) => $(id).value) : null;
       box.innerHTML = html;
       box.dataset.key = key;
-      if (vals) ['fdTokMode', 'fdTok', 'fdUid', 'fdKey'].forEach((id, i) => ($(id).value = vals[i]));
-      $('fdBm').href = bookmarklet();
-      bindKite();
-      tokModeChanged();
     } else {
       box.querySelectorAll('.fd-status').forEach((el, i) => (el.innerHTML = i ? kiteLine : upLine));
     }
-  }
-
-  function tokModeChanged() {
-    const enc = $('fdTokMode')?.value === 'enctoken';
-    $('fdUid')?.classList.toggle('hidden', !enc);
-    $('fdKey')?.classList.toggle('hidden', enc);
-  }
-
-  function bindKite() {
-    $('fdTokBtn').onclick = () => {
-      fs.tokenForm = !fs.tokenForm;
-      $('fdTokForm').classList.toggle('hidden', !fs.tokenForm);
-      $('fdTokBtn').textContent = fs.tokenForm ? 'Hide token box' : 'Use a token…';
-    };
-    $('fdBm').onclick = (e) => {
-      e.preventDefault();
-      alert('Drag this button to your bookmarks bar. Then open kite.zerodha.com (logged in) and click the bookmark there.');
-    };
-    $('fdTokMode').onchange = tokModeChanged;
-    $('fdAuto').onchange = (e) => save('autoLogin', e.target.checked ? '1' : '0');
-    if ($('fdLogout'))
-      $('fdLogout').onclick = async () => {
-        await post('/api/kite/logout').catch((e) => alert(e.message));
-        load();
-      };
-    $('fdTokForm').onsubmit = async (e) => {
-      e.preventDefault();
-      const mode = $('fdTokMode').value;
-      const body =
-        mode === 'enctoken'
-          ? { mode, enctoken: $('fdTok').value, userId: $('fdUid').value }
-          : { mode, accessToken: $('fdTok').value, apiKey: $('fdKey').value };
-      $('fdTokMsg').textContent = 'Checking with Kite…';
-      try {
-        const j = await post('/api/kite/session', body);
-        $('fdTok').value = '';
-        fs.tokenForm = false;
-        $('fdTokMsg').textContent = `Logged in as ${j.kite.userId || ''}`;
-        load();
-      } catch (err) {
-        $('fdTokMsg').textContent = err.message;
-      }
-    };
   }
 
   // Auto-login: once per 10 minutes at most, so a failing login can't loop.
@@ -795,10 +717,20 @@ addEventListener('message',function h(ev){if(ev.origin!==o||ev.data!=='ready')re
     load().then(schedule);
   });
 
-  // Back from the Kite Connect login (/kite/callback redirects to /?kite=ok): open this tab.
+  // The login controls are the shared ones; a login or logout anywhere reloads this screen.
+  window.KiteLogin?.mount($('fdLogin'), { status: false });
+  window.addEventListener('kitechange', () => window.app.state.view === 'feeds' && load());
+
+  // Back from the Kite Connect login (/kite/callback redirects to /?kite=ok): open the screen the login was started
+  // from (the top bar's Kite chip and the order dialog remember it), else this tab.
   if (new URLSearchParams(location.search).get('kite') === 'ok') {
     history.replaceState(null, '', '/');
-    window.app.setView('feeds');
+    let back = null;
+    try {
+      back = sessionStorage.getItem('oc.kite.back');
+      sessionStorage.removeItem('oc.kite.back');
+    } catch {}
+    window.app.setView(back || 'feeds');
   } else if (window.app.state.view === 'feeds') {
     loadDays();
     load().then(schedule);

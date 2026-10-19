@@ -659,6 +659,8 @@
     renderTop();
     render();
     if (warn.length) flash(warn.join(' · '));
+    // o.save: the sender asked for it to be saved as a trade at once (Live › Ideas), under this name
+    else if (o.save) await saveTrade(true, o.save);
   }
 
   // ---------- saved trades ----------
@@ -692,12 +694,13 @@
     refreshTrades();
   }
   // asNew: a separate copy instead of updating the trade this position was loaded from / saved as.
-  async function saveTrade(asNew) {
+  // saveAs: the name of a new trade, without asking for one.
+  async function saveTrade(asNew, saveAs) {
     const M = market();
     if (!S.legs.length || !M) return flash('Nothing to save: add a leg first');
     const cur = !asNew && trades.find((t) => t.id === S.tradeId);
-    let name = cur?.name;
-    if (!cur) {
+    let name = cur?.name || saveAs;
+    if (!name) {
       name = prompt(
         'Save this trade as',
         S.from?.strategy?.name
@@ -769,6 +772,14 @@
     }
     loadTrades();
   }
+  // Other screens open a saved trade here (Live › Ideas lists the live paper trades).
+  BT.on('open-trade', async (id) => {
+    if (!trades.some((t) => t.id === id)) {
+      await BT.loadMeta().catch(() => {});
+      await loadTrades();
+    }
+    openTrade(id);
+  });
   // Live paper trades at the current chain prices (open legs at LTP, closed ones at their exit).
   async function refreshTrades() {
     const live = trades.filter((t) => t.snap.src === 'live' && t.snap.legs.some((l) => l.open));

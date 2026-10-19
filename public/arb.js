@@ -263,6 +263,16 @@
   let shown = [];
   let drawn = '';
   let pressed = false; // a mouse button is down in the list: redrawing now would swallow the click
+  // Live › Ideas lists the same arbitrage with the same filters, width, price basis and lots: it changes these
+  // settings and calls sync() so this panel follows.
+  BT.arbChain = {
+    settings: C,
+    save,
+    sync() {
+      $('chArbLots').value = lots();
+      if (last) draw(last);
+    },
+  };
   BT.loadMeta()
     .then(() => last && draw(last))
     .catch(() => {}); // the Nifty lot size comes with the calendar

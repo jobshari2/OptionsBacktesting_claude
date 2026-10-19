@@ -256,6 +256,7 @@
           options ? '<span class="nc-opt hidden" data-r="optTab"><button class="btn-sm ghost on" data-r="optBtn"></button></span>' : ''
         }</span> <span class="nc-last" data-r="last"></span></h3>
         <div class="nc-tools">
+          <button class="btn-sm ghost" data-r="tfToggle" title="Show / hide the timeframes (Tick, 1m, 3m, 5m …). The button shows the one in use.">⏱ <span data-r="tfNow"></span></button>
           <span class="seg sm" data-r="tf">${TFS.map(([v, l]) => `<button data-tf="${v}" title="${TF_TITLE[v]}">${l}</button>`).join('')}</span>
           <select data-r="type" title="Chart type">${TYPES.filter(([v]) => full || v === 'candle' || v === 'line')
             .map(([v, l]) => `<option value="${v}">${l}</option>`)
@@ -302,6 +303,7 @@
     if (source && (tf === 'W' || tf === 'M')) tf = '5'; // no weekly / monthly history for a contract
     let type =
       TYPES.some(([v]) => v === get('type', 'candle')) && el.type.querySelector(`[value="${get('type', 'candle')}"]`) ? get('type', 'candle') : 'candle';
+    let hideTf = get('tfhide', '0') === '1'; // the timeframe buttons folded away (each chart remembers its own)
     let showLevels = get('sr', '1') === '1';
     let showFp = get('fp', flow0 ? '1' : '0') === '1'; // footprint beside the candles
     let showFlow = get('of', '0') === '1'; // Δ / CVD panes
@@ -1327,6 +1329,9 @@
     }
     function buttons() {
       el.tf.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.tf === tf));
+      el.tf.classList.toggle('hidden', hideTf);
+      el.tfToggle.classList.toggle('on', !hideTf);
+      el.tfNow.textContent = `${TFS.find(([v]) => v === tf)?.[1] ?? tf} ${hideTf ? '▸' : '◂'}`;
       el.type.value = type;
       el.type.disabled = isTick(); // ticks are always a line
       el.sr.classList.toggle('on', showLevels);
@@ -1385,7 +1390,13 @@
       status();
       load(true);
       window.chartShows?.(isOpt() ? { ...source } : null);
+      root.dispatchEvent(new CustomEvent('ncsource', { detail: isOpt() ? { ...source } : null }));
     }
+    el.tfToggle.addEventListener('click', () => {
+      hideTf = !hideTf;
+      set('tfhide', hideTf ? '1' : '0');
+      buttons();
+    });
     el.tf.addEventListener('click', (e) => {
       if (e.target.dataset.tf && e.target.dataset.tf !== tf) setTf(e.target.dataset.tf);
     });
@@ -1595,4 +1606,68 @@
   const pulsePanel = document.getElementById('pulseChart');
   if (pulsePanel && LC) mount(pulsePanel, { store: 'ncp.', tf0: '1', flow0: false });
   else if (pulsePanel) pulsePanel.innerHTML = MISSING;
+  // Live Ideas: the floating copy of it (ideas-view.js moves and resizes the panel around it).
+  const ideasPanel = document.getElementById('ideasChart');
+  if (ideasPanel && LC) window.ideasChart = mount(ideasPanel, { store: 'nci.', tf0: '1', flow0: false, options: true });
+  else if (ideasPanel) ideasPanel.innerHTML = MISSING;
+  // Chain screen: the ATM call and put as charts of their own under the Nifty chart (above Support & resistance). They follow the ATM (the strike
+  // nearest Nifty, on the expiry the chain shows) unless "Follow ATM" is off; the header collapses the whole block.
+  const atmCe = document.getElementById('atmCe');
+  const atmPe = document.getElementById('atmPe');
+  if (atmCe && atmPe) {
+    if (!LC) atmCe.innerHTML = atmPe.innerHTML = MISSING;
+    else {
+      const ce = mount(atmCe, { store: 'nca.c.', tf0: '1', flow0: false, options: true });
+      const pe = mount(atmPe, { store: 'nca.p.', tf0: '1', flow0: false, options: true });
+      const box = document.getElementById('atmPanel');
+      const follow = document.getElementById('atmFollow');
+      const keep = (k, d) => {
+        try {
+          return localStorage.getItem('oc.atm.' + k) ?? d;
+        } catch {
+          return d;
+        }
+      };
+      const save = (k, v) => {
+        try {
+          localStorage.setItem('oc.atm.' + k, v);
+        } catch {
+          /* storage unavailable */
+        }
+      };
+      let key = null; // expiry | strike the charts were last pointed at
+      const api = {
+        follow(d) {
+          if (!d?.atm || !d.expiry || box.classList.contains('collapsed') || !follow.checked) return;
+          const k = `${d.expiry}|${d.atm}`;
+          if (k === key) return;
+          key = k;
+          ce.showOption({ expiry: d.expiry, strike: d.atm, type: 'CE' });
+          pe.showOption({ expiry: d.expiry, strike: d.atm, type: 'PE' });
+          document.getElementById('atmInfo').textContent = `${d.atm} CE / PE · ${d.expiry}`;
+        },
+      };
+      const collapse = (on) => {
+        box.classList.toggle('collapsed', on);
+        document.getElementById('atmCaret').textContent = on ? '▸' : '▾';
+        save('collapsed', on ? '1' : '0');
+        if (!on) {
+          key = null; // pointed again at the current ATM, and drawn now that it is visible
+          api.follow(window.app?.state.data);
+          setTimeout(() => (ce.refresh(), pe.refresh()), 0);
+        }
+      };
+      document.getElementById('atmHead').addEventListener('click', (e) => {
+        if (!e.target.closest('label')) collapse(!box.classList.contains('collapsed'));
+      });
+      follow.checked = keep('follow', '1') === '1';
+      follow.addEventListener('change', () => {
+        save('follow', follow.checked ? '1' : '0');
+        key = null;
+        api.follow(window.app?.state.data);
+      });
+      window.atmCharts = api;
+      collapse(keep('collapsed', '0') === '1');
+    }
+  }
 })();

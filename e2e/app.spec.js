@@ -59,7 +59,7 @@ test('every screen opens without a script error', async ({ page }) => {
   const groups = await page
     .locator('#subtabs .sub-group')
     .evaluateAll((els) => els.map((g) => ({ group: g.dataset.group, views: [...g.querySelectorAll('button')].map((b) => b.dataset.view) })));
-  expect(groups.map((g) => g.group)).toEqual(['live', 'strat', 'port', 'data']);
+  expect(groups.map((g) => g.group)).toEqual(['live', 'strat', 'builder', 'trades', 'port', 'data']);
 
   for (const { group, views } of groups) {
     for (const view of views) {

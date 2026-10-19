@@ -1,7 +1,8 @@
 // The app reads market data from Upstox and never places, modifies or cancels an order there. This test fails if a
 // call to one of Upstox's order endpoints (or a write to the Upstox API) is ever added.
-// The one exception is Zerodha Kite: the Feeds screen's live trading (feedlive.js), switched on by hand, sends
-// orders through lib/kite.js. The last test keeps Kite orders to those two files.
+// The exception is Zerodha Kite, through lib/kite.js, from two places only: the Feeds screen's live trading
+// (feedlive.js), switched on by hand, and the Live Ideas screen's "Trade with Zerodha Kite" (kitebasket.js), which
+// sends a basket only after the confirmation dialog on the screen. The last tests keep Kite orders to those files.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
@@ -33,15 +34,27 @@ test('no order placement anywhere in the app', () => {
   assert.ok(!/method:\s*['"](POST|PUT|DELETE|PATCH)['"]/i.test(client), 'lib/upstox.js sends only GET requests');
 });
 
-test('Kite orders are sent only by lib/kite.js, and only the live trader uses them', () => {
+test('Kite orders are sent only by lib/kite.js, and only the live trader and the Ideas basket use them', () => {
   const orderEndpoint = /\/orders\/(regular|amo|co|iceberg|auction)|\/gtt\/triggers/i;
   const orderCall = /\b(placeOrder|cancelOrder)\s*\(/;
   for (const f of sources(ROOT)) {
     const rel = path.relative(ROOT, f).replace(/\\/g, '/');
     const text = fs.readFileSync(f, 'utf8');
     if (rel !== 'lib/kite.js') assert.ok(!orderEndpoint.test(text), `${rel} references a Kite order endpoint`);
-    if (rel !== 'lib/kite.js' && rel !== 'feedlive.js') assert.ok(!orderCall.test(text), `${rel} sends a Kite order`);
+    if (!['lib/kite.js', 'feedlive.js', 'kitebasket.js'].includes(rel)) assert.ok(!orderCall.test(text), `${rel} sends a Kite order`);
   }
   const live = fs.readFileSync(path.join(ROOT, 'feedlive.js'), 'utf8');
   assert.ok(/let on = false;/.test(live), 'live trading starts switched off');
+});
+
+test('the Ideas basket keeps its guards, and only the server and the Ideas screen reach it', () => {
+  const basket = fs.readFileSync(path.join(ROOT, 'kitebasket.js'), 'utf8');
+  assert.ok(/confirmed !== true/.test(basket), 'a basket must be confirmed');
+  assert.ok(/no BUY leg/.test(basket), 'an uncovered short is refused');
+  assert.ok(/req\.orderType === 'MARKET' \? 'MARKET' : 'LIMIT'/.test(basket), 'LIMIT unless the request asks for MARKET');
+  assert.ok(/KITE_ORDERS_ENCTOKEN/.test(basket), 'enctoken sessions need the explicit switch');
+  for (const f of sources(ROOT)) {
+    const rel = path.relative(ROOT, f).replace(/\\/g, '/');
+    if (!['server.js', 'public/ideas-view.js'].includes(rel)) assert.ok(!/api\/kite\/basket/.test(fs.readFileSync(f, 'utf8')), `${rel} calls the Ideas basket`);
+  }
 });

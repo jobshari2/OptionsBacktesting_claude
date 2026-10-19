@@ -583,6 +583,11 @@ function createFeedCompare({
     get kiteTicker() {
       return ticker;
     },
+    // Kite's tradingsymbol of a Nifty option (from Kite's instrument list), for the orders of Live Ideas.
+    async symbolFor(expiry, strike, type) {
+      const map = await kiteTokens(kite.get());
+      return map?.get(`${expiry}|${Number(strike)}|${type}`)?.symbol || null;
+    },
     restartKite() {
       kiteInst = null;
       kiteInstRetryAt = 0;

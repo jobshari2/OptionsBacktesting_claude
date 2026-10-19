@@ -23,6 +23,7 @@ const { createAuth, LOGIN_PAGE } = require('./lib/auth');
 const { createUpstox, parseChain } = require('./lib/upstox');
 const { createOptionCandles, respond, demoRows, OPT_TFS } = require('./lib/optcandles');
 const { createKiteSession, loginUrl: kiteLoginUrl, exchangeRequestToken, profile: kiteProfile } = require('./lib/kite');
+const { createKiteBasket } = require('./kitebasket');
 const { createFeedCompare } = require('./feedcmp');
 const { createTickStore } = require('./lib/ticks');
 
@@ -590,6 +591,22 @@ feedCmp = createFeedCompare({
   logError,
 });
 
+// The login as the screens see it: whether orders through an enctoken web session are allowed (KITE_ORDERS_ENCTOKEN=1).
+const kiteStatus = () => ({ ...kiteSession.status(), ordersEnctoken: env.KITE_ORDERS_ENCTOKEN === '1' });
+
+// Orders of Live Ideas: a trade idea's legs sent to Kite as one basket, after the screen's confirmation (kitebasket.js).
+const kiteBasket = createKiteBasket({
+  getAuth: kiteSession.get,
+  symbolFor: (expiry, strike, type) => feedCmp.symbolFor(expiry, strike, type),
+  getLot: () => contracts.lot,
+  allowEnctoken: env.KITE_ORDERS_ENCTOKEN === '1',
+  marketProtection: env.KITE_MARKET_PROTECTION || null, // sent with MARKET orders only
+  demo: DEMO,
+  isMarketOpen,
+  logFile: path.join(__dirname, 'logs', 'kite-baskets.jsonl'),
+  logError,
+});
+
 async function handleKite(req, res, url, p) {
   try {
     if (p === '/kite/login') {
@@ -612,7 +629,7 @@ async function handleKite(req, res, url, p) {
       res.writeHead(302, { Location: '/?kite=ok' });
       return res.end();
     }
-    if (p === '/api/kite/status') return sendJson(res, 200, kiteSession.status());
+    if (p === '/api/kite/status') return sendJson(res, 200, kiteStatus());
     // A pasted token, or the enctoken sent by the bookmarklet (kite-link.html): checked with Kite before it is kept.
     if (p === '/api/kite/session' && req.method === 'POST') {
       if (DEMO) throw new Error('Demo mode simulates the Kite feed; run the server without DEMO to log in to Kite.');
@@ -639,12 +656,17 @@ async function handleKite(req, res, url, p) {
       }
       kiteSession.set(auth, user);
       feedCmp.restartKite();
-      return sendJson(res, 200, { ok: true, kite: kiteSession.status() });
+      return sendJson(res, 200, { ok: true, kite: kiteStatus() });
+    }
+    // Live Ideas: what a basket would send (nothing is sent), and the basket itself (needs `confirmed: true`).
+    if ((p === '/api/kite/basket/preview' || p === '/api/kite/basket') && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req, 20_000)).toString('utf8') || '{}');
+      return sendJson(res, 200, p === '/api/kite/basket' ? await kiteBasket.place(b) : await kiteBasket.preview(b));
     }
     if (p === '/api/kite/logout' && req.method === 'POST') {
       kiteSession.clear();
       feedCmp.restartKite();
-      return sendJson(res, 200, { ok: true, kite: kiteSession.status() });
+      return sendJson(res, 200, { ok: true, kite: kiteStatus() });
     }
     return sendJson(res, 404, { error: 'Not found' });
   } catch (e) {

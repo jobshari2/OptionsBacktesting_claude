@@ -8,6 +8,8 @@
   <link rel="stylesheet" href="live.css" />
   <link rel="stylesheet" href="hedge.css" />
   <link rel="stylesheet" href="bt.css" />
+  <link rel="stylesheet" href="ideas.css" />
+  <link rel="stylesheet" href="kite.css" />
   <link rel="stylesheet" href="themes.css" />
   <script>try { document.documentElement.dataset.theme = localStorage.getItem("nifty-theme") || "night"; } catch (e) {}</script>
 </head>
@@ -16,7 +18,9 @@
     <div class="brand">NIFTY 50 <span id="source" class="source hidden"></span></div>
     <nav class="tabs" id="tabs">
       <button data-group="live" class="on" title="Live market: option chain, volume surge, flow, pulse, order book and the signals">Live</button>
-      <button data-group="strat" title="Option strategies: arbitrage scanner, library, backtests, builder and saved trades">Strategies</button>
+      <button data-group="strat" title="Option strategies: arbitrage scanner, library, backtests and comparison">Strategies</button>
+      <button data-group="builder" title="Strategy Builder: build and trade a position on a historical replay or the live chain, with payoff and adjustment suggestions">Builder</button>
+      <button data-group="trades" title="Trades saved from the Builder: live paper trades and replays; load one back into the Builder">Trades</button>
       <button data-group="port" title="Your portfolio: hedge it with Nifty options">Portfolio</button>
       <button data-group="data" title="Historical data availability and cache">Data</button>
     </nav>
@@ -43,6 +47,13 @@
       <button data-theme="day" title="Day: light background, normal size">☀ Day</button>
       <button data-theme="large" title="Large: highest contrast and ~20% bigger text for easy reading">A+ Large</button>
     </div>
+    <div class="kite-wrap">
+      <button id="kiteChip" class="kite-chip" type="button"><i class="fd-dot warn"></i>Kite</button>
+      <div id="kitePop" class="kite-pop hidden">
+        <div class="kite-pop-head"><b>Zerodha Kite</b><span class="muted small">one login for the Feeds screen and the Trade with Zerodha Kite buttons of Live Ideas</span></div>
+        <div id="kitePopLogin"></div>
+      </div>
+    </div>
     <button id="logoutBtn" class="logout hidden" type="button">Sign out</button>
     <div class="stat clock">
       <span class="label">Time (IST)</span>
@@ -59,9 +70,10 @@
   <nav class="subtabs" id="subtabs">
     <span class="sub-group" data-group="live">
       <button data-view="chain" title="Live option chain with support and resistance">Chain</button>
+      <button data-view="pulse" title="Market pulse: a plain-language read of trend, option writers and order flow">Pulse</button>
+      <button data-view="ideas" title="Live Ideas: every trade the live screens suggest (vertical spreads, Pulse buyers and writers, neutral), with max profit and loss; open or save one as a live paper trade">Live Ideas</button>
       <button data-view="charts" title="Surge charts: five views of the volume added per strike">Surge</button>
       <button data-view="flow" title="Volume flow predictions, live and replayed from a recorded day">Flow</button>
-      <button data-view="pulse" title="Market pulse: a plain-language read of trend, option writers and order flow">Pulse</button>
       <button data-view="book" title="Order book: bid / ask queues and how Nifty reacted">Book</button>
       <button data-view="sigtest" title="Test the signals on recorded days: hit rate per kind of signal">Signal test</button>
       <button data-view="feeds" title="Upstox vs Zerodha Kite: the same options tick by tick, where the prices differ, for how long and which feed moved first">Feeds</button>
@@ -72,7 +84,11 @@
       <button data-view="bt" title="Backtest a strategy on historical 1-minute option data">Backtest</button>
       <button data-view="bw" title="The bi-weekly hedge, its reverse and the two combined: every variation backtested over the whole history">Bi-weekly</button>
       <button data-view="cmp" title="Backtest several strategies on the same period and rank them">Compare</button>
+    </span>
+    <span class="sub-group" data-group="builder">
       <button data-view="sb" title="Build and trade a position on a historical replay or the live chain, with payoff and adjustment suggestions">Builder</button>
+    </span>
+    <span class="sub-group" data-group="trades">
       <button data-view="tr" title="Trades saved from the Builder: live paper trades and replays; load one back into the Builder">Trades</button>
     </span>
     <span class="sub-group" data-group="port">
@@ -170,6 +186,17 @@
     <div class="pane-switch"><span class="seg sm" id="chSideSeg"><button type="button" data-p="chart" title="Nifty chart with support and resistance">Chart &amp; levels</button><button type="button" data-p="signals" title="Volume and price signals on the nearest expiry, with their track record">Signals<span class="pane-badge hidden" id="sigBadge"></span></button></span></div>
     <!-- Nifty candlestick chart: filled by chain-chart.js (also used by chart.html, its pop-out window) -->
     <section class="panel nifty-panel" id="niftyPanel"></section>
+    <!-- the ATM call and put as charts of their own, under the Nifty chart and above Support & resistance: collapsible, following the ATM (chain-chart.js) -->
+    <section class="panel atm-panel" id="atmPanel">
+      <div class="panel-head" id="atmHead" title="Click the header to collapse / expand">
+        <h3><span id="atmCaret">▾</span> ATM option charts <span class="muted small" id="atmInfo"></span></h3>
+        <label class="mini" title="Move both charts to the new ATM call and put when Nifty moves to another strike (or the expiry changes). Off: they stay on the strikes they show."><input type="checkbox" id="atmFollow" checked> Follow ATM</label>
+      </div>
+      <div class="atm-body" id="atmBody">
+        <section class="panel nifty-panel atm-chart" id="atmCe"></section>
+        <section class="panel nifty-panel atm-chart" id="atmPe"></section>
+      </div>
+    </section>
     <section class="panel levels-panel" id="levelsPanel">
       <div class="panel-head" id="lvHead" title="Click the header to collapse / expand">
         <h3><span id="lvCaret">▾</span> <span class="seg sm" id="lvTabs"><button type="button" data-t="levels" title="Nearest support and resistance levels">Support &amp; resistance</button><button type="button" data-t="flow" title="What the order flow of the Nifty options says right now">Order flow<i class="of-dot hidden" id="ofDot"></i></button></span></h3>
@@ -402,6 +429,102 @@
     </div>
   </main>
 
+  <!-- ===== Trade ideas (ideas-view.js) ===== -->
+  <main id="ideas" class="ideas hidden">
+    <section class="panel id-top">
+      <div class="id-head">
+        <div class="id-titlebox">
+          <h2>Live Ideas</h2>
+          <div class="muted small">Every trade the live screens suggest right now, built and priced on the live option chain beside it, with the most it can make and lose at expiry. <b>Paper only</b>: open one in the Builder or save it as a live paper trade — no orders are sent.</div>
+        </div>
+        <div class="id-stats" id="idStats"></div>
+      </div>
+      <div class="id-bar">
+        <nav class="id-nav" id="idNav"></nav>
+        <div class="id-ctls"><button class="btn-sm ghost" id="idChartBtn" title="Show / hide the floating Nifty chart (top right of the window)">📈 Chart</button><span class="id-ctls" id="idCtl"></span></div>
+      </div>
+    </section>
+    <div class="id-asof muted small" id="idAsOf"></div>
+    <div class="id-main">
+      <!-- the live option chain every idea is built and priced on -->
+      <section class="panel id-chain">
+        <div class="id-chain-head">
+          <h3>Live option chain</h3>
+          <select id="idExp" title="Expiry of the chain (the same as the top bar's): every idea is built on it"></select>
+          <span class="seg sm" id="idChainW"></span>
+        </div>
+        <div class="id-chain-sel small" id="idChainSel"></div>
+        <div class="id-chain-wrap" id="idChainWrap">
+          <table class="id-ch">
+            <thead>
+              <tr class="grp"><th colspan="4" class="ce-t">CALLS</th><th></th><th colspan="4" class="pe-t">PUTS</th></tr>
+              <tr><th>OI</th><th>Bid</th><th>Ask</th><th>LTP</th><th class="k">Strike</th><th>LTP</th><th>Bid</th><th>Ask</th><th>OI</th></tr>
+            </thead>
+            <tbody id="idChainBody"></tbody>
+          </table>
+        </div>
+        <div class="id-chain-legend muted small"><span><b class="id-cb b">B</b> bought</span><span><b class="id-cb s">S</b> sold</span><span><i class="sw itm"></i>in the money</span><span>bars: open interest</span></div>
+      </section>
+      <div class="id-list">
+        <section class="panel id-sec" data-sec="best">
+          <div class="id-sec-head" tabindex="0" role="button" aria-expanded="true" title="Click the header to collapse / expand this section"><div><h3><span class="id-caret">▾</span><span class="id-ico mine">★</span>Best trades</h3><span class="muted small">The best of everything on this screen: arbitrage first, then the highest reward for the least risk, within your loss limit</span></div><span class="id-count"></span></div>
+          <div class="id-msg"></div><div class="id-grid"></div><div class="id-tbl tbl-wrap hidden"></div>
+        </section>
+        <section class="panel id-sec" data-sec="arb">
+          <div class="id-sec-head" tabindex="0" role="button" aria-expanded="true" title="Click the header to collapse / expand this section"><div><h3><span class="id-caret">▾</span><span class="id-ico arb">⚡</span>Vertical spread arbitrage</h3><span class="muted small">The same live scan, filters and lots as Live › Chain › Vertical spread arbitrage: pairs that break the no-arbitrage bounds, with their P&amp;L at expiry</span></div><span class="id-right"><span class="id-count"></span><label class="id-ctl" title="Lots you want to trade: a spread is marked ✔ when both legs can fill that many at the quoted price. Also the lots opened in the Builder or saved. Shared with the Chain screen.">Lots <input class="num xs" type="number" id="idArbLots" min="1" step="1"></label></span></div>
+          <div class="sb-arb id-arb" id="idArb"></div>
+          <div class="id-grid hidden" id="idArbGrid"></div>
+        </section>
+        <section class="panel id-sec" data-sec="arbx">
+          <div class="id-sec-head" tabindex="0" role="button" aria-expanded="true" title="Click the header to collapse / expand this section"><div><h3><span class="id-caret">▾</span><span class="id-ico arb">⚖</span>Other arbitrage</h3><span class="muted small">Butterfly, broken-wing butterfly, box and calendar arbitrages found on the live chain, priced at the bid / ask: held to expiry they cannot lose, before charges</span></div><span class="id-count"></span></div>
+          <div class="id-msg"></div><div class="id-grid"></div><div class="id-tbl tbl-wrap hidden"></div>
+        </section>
+        <section class="panel id-sec" data-sec="vert">
+          <div class="id-sec-head" tabindex="0" role="button" aria-expanded="true" title="Click the header to collapse / expand this section"><div><h3><span class="id-caret">▾</span><span class="id-ico vert">⇅</span>Vertical spreads</h3><span class="muted small">The debit verticals at the money, bullish and bearish (the one the Pulse leans towards is marked)</span></div><span class="id-count"></span></div>
+          <div class="id-msg"></div><div class="id-grid"></div><div class="id-tbl tbl-wrap hidden"></div>
+        </section>
+        <section class="panel id-sec" data-sec="pulse">
+          <div class="id-sec-head" tabindex="0" role="button" aria-expanded="true" title="Click the header to collapse / expand this section"><div><h3><span class="id-caret">▾</span><span class="id-ico buy">◉</span>Pulse trade idea</h3><span class="muted small">The trade idea of Pulse › Option writers &amp; buyers: what writers and buyers are doing, the option to buy for a quick move with its target and exit, and the Pulse's paper record</span></div><span class="id-count"></span></div>
+          <div class="id-pulse" id="idPulse"></div>
+        </section>
+        <section class="panel id-sec" data-sec="buy">
+          <div class="id-sec-head" tabindex="0" role="button" aria-expanded="true" title="Click the header to collapse / expand this section"><div><h3><span class="id-caret">▾</span><span class="id-ico buy">▲</span>Option buyers <span class="muted small">· Pulse</span></h3><span class="muted small">The Pulse trade idea: the call or put to buy for a quick move, with its target and exit, and the same view capped by a sold wing</span></div><span class="id-count"></span></div>
+          <div class="id-msg"></div><div class="id-grid"></div><div class="id-tbl tbl-wrap hidden"></div>
+        </section>
+        <section class="panel id-sec" data-sec="write">
+          <div class="id-sec-head" tabindex="0" role="button" aria-expanded="true" title="Click the header to collapse / expand this section"><div><h3><span class="id-caret">▾</span><span class="id-ico write">✎</span>Option writers <span class="muted small">· Pulse</span></h3><span class="muted small">Credit spreads sold where writers are adding open interest (fresh writing from the Pulse on the nearest expiry, else this chain's largest OI out of the money), always with the wing bought</span></div><span class="id-count"></span></div>
+          <div class="id-msg"></div><div class="id-grid"></div><div class="id-tbl tbl-wrap hidden"></div>
+        </section>
+        <section class="panel id-sec" data-sec="neutral">
+          <div class="id-sec-head" tabindex="0" role="button" aria-expanded="true" title="Click the header to collapse / expand this section"><div><h3><span class="id-caret">▾</span><span class="id-ico neutral">↔</span>Neutral</h3><span class="muted small">Range-bound structures around the money, defined risk on both sides</span></div><span class="id-count"></span></div>
+          <div class="id-msg"></div><div class="id-grid"></div><div class="id-tbl tbl-wrap hidden"></div>
+        </section>
+        <section class="panel id-sec" data-sec="misc">
+          <div class="id-sec-head" tabindex="0" role="button" aria-expanded="true" title="Click the header to collapse / expand this section"><div><h3><span class="id-caret">▾</span><span class="id-ico neutral">⋯</span>Miscellaneous</h3><span class="muted small">The best trade of each other defined-risk structure: spreads, condors, butterflies and broken-wing butterflies, ranked within your loss limit</span></div><span class="id-count"></span></div>
+          <div class="id-msg"></div><div class="id-grid"></div><div class="id-tbl tbl-wrap hidden"></div>
+        </section>
+        <section class="panel id-sec" data-sec="mine">
+          <div class="id-sec-head" tabindex="0" role="button" aria-expanded="true" title="Click the header to collapse / expand this section"><div><h3><span class="id-caret">▾</span><span class="id-ico mine">★</span>My paper trades</h3><span class="muted small">Live paper trades saved from the Builder, priced at the current chain</span></div><span class="id-right"><span class="id-count"></span><button class="btn-sm ghost" data-alltrades="1" title="The Trades tab: every saved trade, live and replay">All trades ▸</button></span></div>
+          <div class="id-mine-body"></div>
+        </section>
+      </div>
+    </div>
+    <!-- floating Nifty chart: the Market Pulse chart with the same tools (chain-chart.js); drag the bar to move, the corner to resize -->
+    <div class="id-float" id="idFloat">
+      <div class="id-float-bar" id="idFloatBar"><span class="muted small">⠿ Nifty chart · drag to move · drag the corner to resize</span><span><button class="icon" data-fl="min" title="Minimise / restore">▁</button><button class="icon" data-fl="close" title="Hide (bring it back with the Chart button)">✕</button></span></div>
+      <section class="panel nifty-panel" id="ideasChart"></section>
+    </div>
+    <!-- Trade with Zerodha Kite: the confirmation dialog (ideas-view.js); orders are sent by kitebasket.js on the server -->
+    <div id="kiteDlg" class="id-modal hidden">
+      <div class="id-modal-box" role="dialog" aria-modal="true" aria-label="Trade with Zerodha Kite">
+        <div class="id-modal-head"><div><h3>Trade with Zerodha Kite</h3><div class="muted small" id="kdSub"></div></div><button class="icon" data-kd="close" title="Close">✕</button></div>
+        <div id="kdLogin" class="kd-login"></div>
+        <div id="kdBody"></div>
+      </div>
+    </div>
+    <div class="id-disclaimer muted small">Max profit / loss are at expiry for the lots chosen, after an estimate of charges (₹20 an order, STT, exchange and SEBI fees, GST, stamp duty; in and out). Chance of profit is a lognormal model at the ATM IV, not a forecast. None of these ideas has a proven edge: the Pulse idea lost money after costs on the recorded days and arbitrage gaps are rarely fillable. Not investment advice.</div>
+  </main>
+
   <!-- ===== Order book ===== -->
   <main id="book" class="book hidden">
     <section class="panel book-tiles" id="bTiles"></section>
@@ -446,6 +569,7 @@
   <main id="feeds" class="feeds hidden">
     <section class="panel fd-top">
       <div class="fd-kite" id="fdKite"></div>
+      <div class="fd-kite" id="fdLogin"></div>
       <div class="fd-cfg">
         <label class="mini" title="Compare the two feeds (also while the page is closed, during market hours)"><input type="checkbox" id="fdOn"> Compare</label>
         <label class="mini">Expiry <select id="fdExpiry"></select></label>
@@ -859,6 +983,7 @@
   <script src="signals-backtest.js"></script>
   <script src="pulse-view.js"></script>
   <script src="book-view.js"></script>
+  <script src="kite-login.js"></script>
   <script src="feeds-view.js"></script>
   <script src="hedge-view.js"></script>
   <script src="hedge-backtest.js"></script>
@@ -876,6 +1001,7 @@
   <script src="an-view.js"></script>
   <script src="sb-adjust.js"></script>
   <script src="sb-view.js"></script>
+  <script src="ideas-view.js"></script>
   <script src="theme.js"></script>
 </body>
 </html>

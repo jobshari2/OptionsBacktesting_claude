@@ -284,3 +284,14 @@
 .fd-funds { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 6px 12px; font-size: 12px; border-top: 1px solid var(--line); }
 .fd-funds:empty { display: none; }
 .fd-funds-amt { color: var(--down); font-size: 20px; font-weight: 800; letter-spacing: .2px; margin-left: 2px; vertical-align: -2px; }
+/* Chain screen: the ATM call and put charts under the Nifty chart, above Support & resistance. The column scrolls when they do not fit. */
+.side { overflow-y: auto; }
+.side > #niftyPanel { min-height: 400px; } /* room for the candles under the toolbar and the legend; the column scrolls */
+.side > .levels-panel:not(.collapsed) { min-height: 240px; } /* the column scrolls instead of squeezing it */
+.atm-panel { flex: none; overflow: visible; }
+.atm-panel.collapsed .atm-body { display: none; }
+.atm-panel.collapsed .panel-head { border-bottom: 0; }
+#atmHead { cursor: pointer; user-select: none; }
+.atm-body { display: flex; flex-direction: row; gap: 8px; padding: 8px; }
+.atm-body .nifty-panel.atm-chart { flex: 1 1 0; min-width: 0; height: 300px; min-height: 300px; }
+.atm-body .nc-legend { display: none; }

@@ -1,0 +1,8 @@
+/* Zerodha Kite login chip in the top bar and its popover (kite-login.js) */
+.kite-wrap { position: relative; }
+.kite-chip { display: inline-flex; align-items: center; gap: 6px; background: var(--panel-2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.kite-chip:hover { border-color: var(--accent); }
+.kite-pop { position: absolute; right: 0; top: calc(100% + 8px); z-index: 50; width: 520px; max-width: 92vw; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; box-shadow: 0 8px 28px rgba(0, 0, 0, .35); display: flex; flex-direction: column; gap: 8px; }
+.kite-pop-head { display: flex; flex-direction: column; gap: 2px; }
+.kl { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+.kl .fd-actions { margin-top: 0; }
