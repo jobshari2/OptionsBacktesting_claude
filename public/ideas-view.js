@@ -60,7 +60,13 @@
   let trades = []; // saved live paper trades (/api/sb/trades)
   let tradesAt = 0;
   let drawnAt = 0;
-  let pressed = false; // a mouse button is down on the screen: redrawing now would swallow the click
+  // A mouse button is down on a control: redrawing now would swallow the click, so the screen waits. The wait ends by
+  // itself (PRESS_MS): a press whose release the page never sees (a native dropdown takes it, a touch scroll cancels
+  // it, the pointer is let go outside the window) must not freeze the prices.
+  const PRESS_MS = 1200;
+  let pressedAt = 0;
+  const isPressed = () => Date.now() - pressedAt < PRESS_MS;
+  let drawTimer = null; // one pending redraw, for an update that arrived while the screen had to wait
   let hoverId = null; // idea under the mouse: its legs are marked in the chain
   let selId = null; // idea clicked: marked until another is clicked
   let centredFor = null; // the chain scrolls to the money once per expiry
@@ -1222,7 +1228,19 @@
   }
   function draw(force) {
     if (state.view !== 'ideas') return;
-    if (!force && (pressed || Date.now() - drawnAt < 900)) return;
+    if (!force) {
+      // too soon after the last redraw, or a click in progress: paint the latest prices as soon as that is over
+      const wait = Math.max(drawnAt + 900 - Date.now(), isPressed() ? pressedAt + PRESS_MS - Date.now() : 0);
+      if (wait > 0) {
+        drawTimer ??= setTimeout(() => {
+          drawTimer = null;
+          draw(false);
+        }, wait + 20);
+        return;
+      }
+    }
+    clearTimeout(drawTimer);
+    drawTimer = null;
     drawnAt = Date.now();
     const p = state.pulse;
     M = marketOf(state.data);
@@ -1767,9 +1785,13 @@
 
   const root = $('ideas');
   root.addEventListener('pointerdown', (e) => {
-    if (e.target.closest('button, input, select')) pressed = true;
+    if (e.target.closest('button, input, select')) pressedAt = Date.now();
   });
-  window.addEventListener('pointerup', () => setTimeout(() => (pressed = false), 0));
+  // every way a press can end
+  const released = () => setTimeout(() => (pressedAt = 0), 0);
+  for (const ev of ['pointerup', 'pointercancel', 'dragend', 'blur']) window.addEventListener(ev, released);
+  root.addEventListener('change', released);
+  document.addEventListener('visibilitychange', released);
   // the idea under the mouse marks its legs in the chain
   root.addEventListener('mouseover', (e) => {
     const id = e.target.closest('.id-card, .id-ideas-tbl tr[data-id], .arb-row[data-id], .id-pulse-card[data-id]')?.dataset.id || null;
@@ -1811,7 +1833,7 @@
       }
       return;
     }
-    pressed = false;
+    pressedAt = 0;
     if (b.dataset.kite && I) return openKite(I);
     if (b.dataset.open && I) return toBuilder(I);
     if (b.dataset.save && I) {

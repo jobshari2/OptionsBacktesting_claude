@@ -4,6 +4,7 @@ A local web app for Nifty options on the Upstox API. Its screens are grouped in 
 
 - **Live:** the option chain with a Nifty chart and support / resistance, volume-surge and price signals with their track record, volume-flow predictions, a plain-language market pulse and the order book. Everything is recorded, so a day can be replayed and the signals tested on it.
 - **Strategies:** an arbitrage scanner, ready-made and your own strategies backtested on real 1-minute historical option prices, side-by-side comparison, live deployment, and a Builder to trade a position by hand on a historical replay or the live chain.
+- **Trading Ideas:** a strategy taken from its source (the covered call against NIFTYBEES), with its rules and adjustments, a backtest and a live paper trade.
 - **Portfolio:** hedge your holdings with Nifty options — the cheapest hedge for a loss limit you set, and a backtest of hedges back to 2008.
 - **Data:** what history Upstox provides and what is cached.
 
@@ -42,6 +43,7 @@ Pick a group in the top bar; its screens are in the row below. A group reopens o
 | | **Compare** | Backtest many strategies on the same days and rank them |
 | **Builder** | **Builder** | Manual / strategy trading on a historical replay or live (paper), payoff, P&L, adjustment suggestions |
 | **Trades** | **Trades** | Trades saved from the Builder (live paper trades and replays); load one back |
+| **Trading Ideas** | **Covered call** | NIFTYBEES held and pledged, a monthly call sold against it, a put butterfly as insurance and a weekly contra spread: **Strategy & rules** (the rules and every adjustment, with the thread's worked example), **Backtest** (every monthly cycle of the history, against buy and hold) and **Paper trade** (the same rules on the live chain, no orders) |
 | **Portfolio** | **Hedge** | Protect your holdings with Nifty options: planner and backtest |
 | **Data** | **Data** | What history Upstox provides, what's cached, downloading what is missing (by hand or automatically) |
 
@@ -585,6 +587,27 @@ Other screens hand positions to the Builder: a backtest trade (**▶ Replay**), 
 
 ---
 
+## Trading Ideas · Covered call
+
+A strategy read from three threads by Suresh Kumar (@Suresh_kumar047, Mar / May / Sep 2023), taken together as one set of rules (`bt/coveredcall.js`). The **Strategy & rules** tab explains them in full; in short:
+
+| Part | Rule (defaults) |
+| --- | --- |
+| Holding | NIFTYBEES worth one Nifty lot per lot covered (quantity = lot × Nifty ÷ NIFTYBEES price), pledged for margin, valued at NIFTYBEES's own price (1-minute history `NSE_EQ\|INF204KB14I2` cached under `bt-cache/index/`, live LTP in the paper trade; a day without it is modelled from Nifty and counted), never sold at a loss |
+| Monthly call | Sold at 09:30 the session after the monthly expiry, on the next monthly expiry: the 100-point strike under spot (in the money, as in the thread), or ATM / OTM |
+| Insurance | Put butterfly 1:2:1: bought 1.5 % under spot, 2 sold 4 % under, 1 bought as far below; or a put debit spread, or none |
+| Weekly contra spread | Every weekly series: iron condor while Nifty is between the lower trigger (1.5 % under the month's entry) and the call's breakeven (strike + premium); put credit spread above the breakeven; call credit spread below the trigger. 1.5 % OTM, 200-point wings, skipped under 5 points of credit |
+| Monthly expiry | Everything settles at intrinsic. Above the call strike the NIFTYBEES profit is booked (sold and bought back); below the month's entry the month's option profit buys more NIFTYBEES (whole units). The next month starts the next session |
+
+The threads' naked options and ratio spreads (unlimited risk) are replaced by spreads of the same direction; their daily expiries (2023) by the one weekly Nifty expiry left.
+
+Every result is shown **with NIFTYBEES** (options + the ETF's own gain or loss, booking and charges) and **without NIFTYBEES** (the options alone, the threads' "income"), beside buying and holding the same NIFTYBEES with no options; a toggle switches the charts between the two. **Payoff diagrams** at expiry (with NIFTYBEES, without it, and NIFTYBEES alone, with the entry, call breakeven, lower trigger and expiry marked) are on the Strategy & rules tab (the thread's example, editable, and the three weekly spreads), for every backtest month and each of its weekly spreads, and for the paper trade's open position and each closed month.
+
+- **Backtest** trades every monthly cycle of the chosen months on the cached 1-minute history (0.5 % slippage, ₹20 an order, taxes as in `lib/costs.js`, ETF charges) and compares it with holding the same NIFTYBEES without options: P&L with and without NIFTYBEES, % a year on its cost, drawdowns, months, the estimated margin (a short call ~12 % of notional, spreads their maximum loss; half of it cash, the rest from the 90 % of the pledged holding). Every month row lists its legs (call and insurance) with the price each was sold / bought at and where it settled; the weekly spreads' legs and prices are in the month's detail. Click a month for its payoff, legs, weekly spreads and events. **▶ Replay in Builder** (under each month's date, at the top of a month's detail, and **▶ Replay** on each weekly spread there) replays it in the Builder from its entry day and time at the backtest's fills and lot, with the weekly spreads opened and settled and the month settled at expiry as steps of the replay (options only: NIFTYBEES is not in the Builder, so its P&L is the month without NIFTYBEES, before costs). Contracts the cache lacks are downloaded when logged in to Upstox; without them a month runs with what is there (a missing call = holding only), listed under *Data notes*. The last run is kept in `bt-data/cc-backtest.json`.
+- **Paper trade** (`ccpaper.js`) follows the same rules on the live chain, checked by the server every 30 s while the market is open, whether or not the page is open: LTP fills with the strategy's slippage, settlement at intrinsic at 15:25 on expiry day (or at that day's close from the history cache if the server was off). Start, pause, resume, reset. State and log in `bt-data/cc-paper.json` (`cc-paper-demo.json` in demo mode), with the last marks, so the P&L and prices show after a restart or the close ("prices at …"); outside market hours an open position nobody has marked since the server started is marked once at the chain's last prices, and nothing is traded. The tab shows this month's own P&L beside the whole trade's. **It never places an order.**
+- **Trades screen › Trading Ideas paper trades** lists every month of the paper trade (strategy, month, status, entry, NIFTYBEES and each leg with entry → now / settled and its P&L, the weekly spreads, and the P&L without NIFTYBEES, of NIFTYBEES and with NIFTYBEES), the open month first; **▶ Open in Builder** puts its open legs in the Builder at their paper entry prices.
+- **Suggestions now** (Paper trade tab, `bt/ccsuggest.js`, refreshed every 15 s) reads the live chain and says what to do where you are: before a start, the NIFTYBEES quantity, call and insurance to buy; during a month, hold, a missing insurance, the roll preview in its last week; and this week's contra spread for where Nifty is. For the **current and next monthly expiry** it ranks the 100-point calls from 2 % under to 3.5 % over spot (time value, income if Nifty is unchanged and its yearly rate, breakeven, how far down NIFTYBEES + call lose nothing, maximum with NIFTYBEES, chance of being capped) and the butterflies / debit spreads (debit, maximum pay, pay ÷ cost, where it pays and the chance it does); for the week, every short distance (1–2.5 % OTM) × wing (100–300 points) with credit, maximum loss, credit ÷ loss and the chance of expiring worthless. Tags mark the rule's pick, the most time value and the best ratio (weekly: among spreads with at least 65 % chance and the minimum credit); click rows to see their payoff (the selected insurance has its own payoff beside its table: its legs alone, with its strikes marked). **Add / watch in Builder ▸** on an insurance row (or beside the selected call + insurance) opens those legs in the Builder as a live paper position at the prices shown, to follow their P&L and payoff and adjust them. Chances come from the options' own implied volatility: the market's estimate, not an edge.
+
 ## Part 3 · Portfolio
 
 ## Hedge (protect your portfolio with Nifty options)
@@ -700,6 +723,7 @@ The same checks run in **GitHub Actions** (`.github/workflows/ci.yml`) and in **
 | `bt/tapescan.js` | History scan on the recorded bid and ask: each signal followed second by second |
 | `bt/conditions.js` | Signal entry conditions (anomaly, S/R, move, range) |
 | `bt/biweekly.js`, `public/bw-view.js` | The Bi-weekly screen: variations of the hedge, of its reverse, and of the two as one position |
+| `bt/coveredcall.js`, `ccpaper.js`, `public/cc-view.js` | Trading Ideas › Covered call: the rules and the backtest; the live paper trade; the screen |
 | `bt/research.js` | Online adjustment research (Claude + web search) |
 | `anomaly-live.js` | Live scanner: opportunities, rejected signals, scanner health, parity by strike, daily log |
 | `public/app.js` | The page: screens and groups, option chain, signals pane, volume surge, support / resistance |

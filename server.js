@@ -24,6 +24,9 @@ const { createUpstox, parseChain } = require('./lib/upstox');
 const { createOptionCandles, respond, demoRows, OPT_TFS } = require('./lib/optcandles');
 const { createKiteSession, loginUrl: kiteLoginUrl, exchangeRequestToken, profile: kiteProfile } = require('./lib/kite');
 const { createKiteBasket } = require('./kitebasket');
+const { createCcPaper } = require('./ccpaper');
+const { runCoveredCall, DEFAULTS: CC_DEFAULTS } = require('./bt/coveredcall');
+const { suggest: ccSuggest } = require('./bt/ccsuggest');
 const { createFeedCompare } = require('./feedcmp');
 const { createTickStore } = require('./lib/ticks');
 
@@ -607,6 +610,134 @@ const kiteBasket = createKiteBasket({
   logError,
 });
 
+// Trading Ideas › Covered call: the backtest on the cached history (a job the page polls; the last result is kept in
+// bt-data/cc-backtest.json) and the live paper trade (ccpaper.js), checked every 30 s. Paper only: no orders.
+const CC_BT_FILE = path.join(__dirname, 'bt-data', 'cc-backtest.json');
+// NIFTYBEES's LTP, read at most every 20 s (the paper trade and the suggestions share it); null in demo mode.
+let ccBees = { at: 0, px: null };
+async function ccBeesPrice() {
+  if (DEMO) return null; // the demo models NIFTYBEES from its synthetic Nifty
+  if (Date.now() - ccBees.at < 20_000) return ccBees.px;
+  const d = await upstox('/market-quote/ltp', { instrument_key: backtester.data.BEES });
+  ccBees = { at: Date.now(), px: Object.values(d || {})[0]?.last_price || null };
+  return ccBees.px;
+}
+const ccPaper = createCcPaper({
+  file: path.join(__dirname, 'bt-data', DEMO ? 'cc-paper-demo.json' : 'cc-paper.json'),
+  demo: DEMO,
+  isMarketOpen,
+  getExpiries,
+  getChain: (expiry) => restChain(expiry, 30_000),
+  closeOf: async (day) => {
+    await backtester.data.loadIndex(day, day);
+    const a = backtester.data.spotDay(day);
+    return a ? a[a.length - 1] : null;
+  },
+  beesCloseOf: async (day) => {
+    await backtester.data.loadSeries(backtester.data.BEES, day, day);
+    const a = backtester.data.seriesDay(backtester.data.BEES, day);
+    return a ? a[a.length - 1] : null;
+  },
+  beesPrice: ccBeesPrice,
+  getLot: () => contracts.lot,
+  logError,
+});
+setInterval(() => {
+  if (DEMO || token) ccPaper.tick();
+}, 30_000);
+const ccJobs = new Map();
+
+async function handleCc(req, res, url, p) {
+  lastClientAt = Date.now();
+  try {
+    if (p === '/api/cc/meta') {
+      const cal = await backtester.data.expiryCalendar().catch(() => null);
+      const monthly = cal ? [...cal.monthly].filter((e) => cal.expiredSet.has(e)).sort() : [];
+      return sendJson(res, 200, { defaults: CC_DEFAULTS, lot: contracts.lot || CC_DEFAULTS.lotSize, monthly, indexStart: backtester.data.indexStart() });
+    }
+    if (p === '/api/cc/backtest' && req.method !== 'POST') {
+      let saved = null;
+      try {
+        saved = JSON.parse(fs.readFileSync(CC_BT_FILE, 'utf8'));
+      } catch {}
+      return sendJson(res, 200, { saved });
+    }
+    if (p === '/api/cc/backtest' && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req, 50_000)).toString('utf8') || '{}');
+      const id = Math.random().toString(36).slice(2, 10);
+      const job = { id, status: 'running', progress: { phase: 'Starting', done: 0, total: 0 }, startedAt: Date.now() };
+      ccJobs.set(id, job);
+      while (ccJobs.size > 6) ccJobs.delete(ccJobs.keys().next().value);
+      runCoveredCall(backtester.data, b.params || {}, { from: b.from, to: b.to }, { onProgress: (x) => (job.progress = x), stopped: () => Boolean(job.stop) })
+        .then((r) => {
+          job.result = { at: Date.now(), result: r };
+          job.status = 'done';
+          fs.mkdirSync(path.dirname(CC_BT_FILE), { recursive: true });
+          fs.writeFileSync(CC_BT_FILE + '.tmp', JSON.stringify(job.result));
+          fs.renameSync(CC_BT_FILE + '.tmp', CC_BT_FILE);
+        })
+        .catch((e) => {
+          job.status = 'error';
+          job.error = e.message;
+          logError('cc-backtest', e);
+        });
+      return sendJson(res, 200, { id, status: job.status });
+    }
+    if (p === '/api/cc/job') {
+      const job = ccJobs.get(url.searchParams.get('id'));
+      if (!job) return sendJson(res, 404, { error: 'Job not found (the server may have restarted): run it again' });
+      return sendJson(res, 200, {
+        id: job.id,
+        status: job.status,
+        progress: job.progress,
+        error: job.error,
+        result: job.status === 'done' ? job.result : undefined,
+      });
+    }
+    if (p === '/api/cc/job/stop' && req.method === 'POST') {
+      const job = ccJobs.get(JSON.parse((await readBody(req, 2_000)).toString('utf8') || '{}').id);
+      if (job) job.stop = true;
+      return sendJson(res, 200, { ok: Boolean(job) });
+    }
+    if (p === '/api/cc/paper') return sendJson(res, 200, ccPaper.state());
+    // Suggestions on the live chain: the current and next monthly expiry and this week's contra spread.
+    if (p === '/api/cc/suggest' && req.method === 'POST') {
+      if (!DEMO && !token) throw new Error('Log in to Upstox first: the suggestions read the live chain');
+      const b = JSON.parse((await readBody(req, 50_000)).toString('utf8') || '{}');
+      const expiries = await getExpiries();
+      const today = istDate();
+      const monthly = [...new Map(expiries.map((e) => [e.slice(0, 7), e])).values()].filter((e) => e >= today).slice(0, 2);
+      const weekly = expiries.find((e) => e > today);
+      const chains = new Map();
+      for (const e of new Set([expiries[0], ...monthly, weekly].filter(Boolean))) chains.set(e, await restChain(e, 30_000));
+      const spot = chains.get(expiries[0])?.spot;
+      if (!spot) throw new Error('No Nifty price on the live chain yet');
+      const bees = await ccBeesPrice().catch(() => null);
+      const paper = ccPaper.state().paper;
+      // a running paper trade is judged with its own parameters
+      const params = paper ? paper.params : { ...(b.params || {}), lotSize: contracts.lot };
+      return sendJson(res, 200, { ...ccSuggest({ today, spot, bees, chains, expiries, params, paper }), marketOpen: DEMO || isMarketOpen(), demo: DEMO });
+    }
+    if (p.startsWith('/api/cc/paper/') && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req, 50_000)).toString('utf8') || '{}');
+      if (p === '/api/cc/paper/start') {
+        if (!DEMO && !token) throw new Error('Log in to Upstox first: the paper trade follows the live chain');
+        await ccPaper.start(b.params || {});
+      } else if (p === '/api/cc/paper/pause') ccPaper.pause();
+      else if (p === '/api/cc/paper/resume') await ccPaper.resume();
+      else if (p === '/api/cc/paper/reset') {
+        if (b.confirm !== true) throw new Error('Resetting deletes the paper trade: it needs confirmation');
+        ccPaper.reset();
+      } else return sendJson(res, 404, { error: 'Not found' });
+      return sendJson(res, 200, ccPaper.state());
+    }
+    return sendJson(res, 404, { error: 'Not found' });
+  } catch (e) {
+    logError('cc', e);
+    return sendJson(res, 400, { error: e.message });
+  }
+}
+
 async function handleKite(req, res, url, p) {
   try {
     if (p === '/kite/login') {
@@ -852,6 +983,8 @@ const server = http.createServer(async (req, res) => {
   if (p.startsWith('/api/bt/') || p.startsWith('/api/sb/')) return backtester.handle(req, res, url, sendJson);
 
   if (p.startsWith('/api/hedge/')) return handleHedge(req, res, p);
+
+  if (p.startsWith('/api/cc/')) return handleCc(req, res, url, p);
 
   if (p === '/kite/login' || p === '/kite/callback' || p.startsWith('/api/kite/')) return handleKite(req, res, url, p);
 

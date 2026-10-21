@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="bt.css" />
   <link rel="stylesheet" href="ideas.css" />
   <link rel="stylesheet" href="kite.css" />
+  <link rel="stylesheet" href="cc.css" />
   <link rel="stylesheet" href="themes.css" />
   <script>try { document.documentElement.dataset.theme = localStorage.getItem("nifty-theme") || "night"; } catch (e) {}</script>
 </head>
@@ -21,6 +22,7 @@
       <button data-group="strat" title="Option strategies: arbitrage scanner, library, backtests and comparison">Strategies</button>
       <button data-group="builder" title="Strategy Builder: build and trade a position on a historical replay or the live chain, with payoff and adjustment suggestions">Builder</button>
       <button data-group="trades" title="Trades saved from the Builder: live paper trades and replays; load one back into the Builder">Trades</button>
+      <button data-group="tideas" title="Trading ideas: a strategy from its source, its rules and adjustments, a backtest and a live paper trade">Trading Ideas</button>
       <button data-group="port" title="Your portfolio: hedge it with Nifty options">Portfolio</button>
       <button data-group="data" title="Historical data availability and cache">Data</button>
     </nav>
@@ -90,6 +92,9 @@
     </span>
     <span class="sub-group" data-group="trades">
       <button data-view="tr" title="Trades saved from the Builder: live paper trades and replays; load one back into the Builder">Trades</button>
+    </span>
+    <span class="sub-group" data-group="tideas">
+      <button data-view="cc" title="Covered call against NIFTYBEES: rules, backtest and live paper trade">Covered call</button>
     </span>
     <span class="sub-group" data-group="port">
       <button data-view="hedge" title="Hedge your portfolio with Nifty options: planner and backtest">Hedge</button>
@@ -901,6 +906,7 @@
 
   <!-- ===== Saved trades (from the Builder) ===== -->
   <main id="tr" class="sb-screen hidden">
+    <section class="panel sb-trades cc-trades" id="ccTrades"></section>
     <section class="panel sb-trades" id="sbTrades"></section>
   </main>
 
@@ -969,6 +975,15 @@
     <aside class="panel lib-deploy" id="libDeploy"></aside>
   </main>
 
+  <!-- ===== Trading Ideas: covered call ===== -->
+  <main id="cc" class="bt-screen bw-screen cc-screen hidden">
+    <aside class="panel bw-menu" id="ccMenu"></aside>
+    <section class="bt-main">
+      <div class="panel cc-tabs-panel"><div class="seg" id="ccTabs"></div></div>
+      <div id="ccBody" class="bt-results"></div>
+    </section>
+  </main>
+
   <!-- ===== Data ===== -->
   <main id="data" class="data-screen hidden">
     <div id="dataBody" class="data-grid"></div>
@@ -1002,6 +1017,7 @@
   <script src="sb-adjust.js"></script>
   <script src="sb-view.js"></script>
   <script src="ideas-view.js"></script>
+  <script src="cc-view.js"></script>
   <script src="theme.js"></script>
 </body>
 </html>

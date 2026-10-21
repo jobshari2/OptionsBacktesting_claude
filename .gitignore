@@ -16,6 +16,9 @@ bt-data/biweekly.json
 bt-data/paper-trades.json
 bt-data/data-sync.json
 bt-data/feedcmp-config-demo.json
+bt-data/cc-backtest.json
+bt-data/cc-paper.json
+bt-data/cc-paper-demo.json
 
 # written by the CI scripts (npm run test:ci, npm run test:e2e)
 reports/

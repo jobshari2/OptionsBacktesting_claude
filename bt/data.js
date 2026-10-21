@@ -11,6 +11,7 @@ const { istDate: istToday } = require('../lib/time');
 
 const NIFTY = 'NSE_INDEX|Nifty 50';
 const VIX = 'NSE_INDEX|India VIX';
+const BEES = 'NSE_EQ|INF204KB14I2'; // NIFTYBEES, the Nifty ETF the covered call holds
 const MPD = 375; // minutes per trading day, 09:15 .. 15:29
 const OPEN_MIN = 9 * 60 + 15;
 const CHUNK_DAYS = 28; // span of one option-candle request
@@ -133,6 +134,12 @@ function createData({ getToken, upstox = createUpstox({ getToken }), cacheDir, l
     return days.sort();
   }
   const spotDay = (day) => indexMem.get(`${NIFTY}|${day.slice(0, 7)}`)?.get(day) || null;
+  // Another instrument's 1-minute candles (NIFTYBEES), kept like the index: months that can't be had (not cached,
+  // offline, demo) are left out, so callers fall back to a model for them.
+  async function loadSeries(key, from, to) {
+    await Promise.all(monthsBetween(from, to).map((m) => indexMonth(key, m).catch(() => null)));
+  }
+  const seriesDay = (key, day) => indexMem.get(`${key}|${day.slice(0, 7)}`)?.get(day) || null;
   const vixDay = (day) => indexMem.get(`${VIX}|${day.slice(0, 7)}`)?.get(day) || null;
   // First day of the earliest month of Nifty history in the cache folder, or null when nothing is cached yet.
   function indexStart() {
@@ -467,8 +474,11 @@ function createData({ getToken, upstox = createUpstox({ getToken }), cacheDir, l
   return {
     MPD,
     NIFTY,
+    BEES,
     loadIndex,
     spotDay,
+    loadSeries,
+    seriesDay,
     vixDay,
     indexStart,
     niftyIntraday,
@@ -489,4 +499,4 @@ function createData({ getToken, upstox = createUpstox({ getToken }), cacheDir, l
   };
 }
 
-module.exports = { createData, MPD, OPEN_MIN, addDays };
+module.exports = { createData, MPD, OPEN_MIN, addDays, BEES };
