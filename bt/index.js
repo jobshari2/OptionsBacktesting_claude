@@ -21,6 +21,7 @@ const { evaluate } = require('./conditions');
 const A = require('./anomalies');
 const { createResearch } = require('./research');
 const { createBiweekly } = require('./biweekly');
+const { createBackspread } = require('./backspread');
 const { createSync } = require('./sync');
 const { MPD } = require('./data');
 const { istDate: istToday } = require('../lib/time');
@@ -747,6 +748,7 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
 
   // ---------- the Bi-weekly screen ----------
   const bw = createBiweekly({ data, ext, dir: path.dirname(storeFile), startJob, settle, breathe, findStrategy, library, logError });
+  const bsp = createBackspread({ data, ext, startJob, settle });
 
   // ---------- live deployment on the current chain ----------
   // The REST chain of a live expiry, at most 15 s old (fetched and cached by the server, shared with its screens).
@@ -967,6 +969,7 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
         return sendJson(res, 200, { ok: true });
       }
       if (p.startsWith('/api/bt/bw/')) return await bw.handle(req, res, p, sendJson, readJson);
+      if (p.startsWith('/api/bt/bs/')) return await bsp.handle(req, res, p, sendJson, readJson);
       if (p === '/api/bt/overview' && req.method === 'POST') return sendJson(res, 200, await settle(startOverview((await readJson(req)).opts || {})));
       if (p === '/api/bt/compare' && req.method === 'POST') {
         const b = await readJson(req, 2_000_000);

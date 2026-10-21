@@ -163,6 +163,8 @@
         return `at ${st.lv && st.lv !== 'any' ? st.lv + ' ' : ''}S/R${v ? ' +' + v : ''}`;
       case 'leg':
         return `leg ${(st.ref ?? 0) + 1} ${v >= 0 ? '+' : '−'}${Math.abs(v)}`;
+      case 'pick':
+        return `picked: ${{ m: 'centre', lo: 'low wing', hi: 'high wing', k1: 'back spread sold', k2: 'back spread bought' }[st.role] || st.role}`;
       default:
         return '?';
     }

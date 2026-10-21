@@ -163,7 +163,10 @@ function suggest({ today, spot, bees = null, chains, expiries, params, paper = n
   const qtyBees = Math.round((units * spot) / bees);
   const ruleIns = (c) => c.kind === p.ins.kind && c.upperPct === p.ins.upperPct && c.bodyPct === p.ins.bodyPct;
 
-  const months = monthly.slice(0, 2).map((E, i) => {
+  // a paper month open: that month (held) and the one after it (the roll); else the current and the next month
+  const heldAt = paper?.cycle ? monthly.indexOf(paper.cycle.expiry) : -1;
+  const from = Math.max(0, heldAt);
+  const months = monthly.slice(from, from + 2).map((E, i) => {
     const chain = chains.get(E);
     const dte = daysBetween(today, E);
     const iv = atmIv(chain, spot);
@@ -177,7 +180,7 @@ function suggest({ today, spot, bees = null, chains, expiries, params, paper = n
     const insBest = ins.filter((c) => c.payRatio).reduce((b, c) => (!b || c.payRatio > b.payRatio ? c : b), null);
     for (const c of ins) c.tags = [c === insRule ? 'rule' : null, c === insBest ? 'best' : null].filter(Boolean);
     return {
-      label: i === 0 ? 'Current month' : 'Next month',
+      label: heldAt >= 0 ? (i === 0 ? 'Held month' : 'Next month (roll)') : i === 0 ? 'Current month' : 'Next month',
       expiry: E,
       dte,
       iv: r2(iv * 100),

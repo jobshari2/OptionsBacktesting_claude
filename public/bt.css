@@ -639,3 +639,18 @@ body.nc-window { height: 100vh; padding: 8px; }
 .nc-opt .btn-sm.ce.on { border-color: var(--ce); color: var(--ce); }
 .nc-opt .btn-sm.pe.on { border-color: var(--pe); color: var(--pe); }
 .nc-opt-mode [data-nifty-only] { display: none !important; }
+
+/* ---------- Strategies › Back spread (bs-view.js) ---------- */
+.bs-screen { grid-template-columns: minmax(0, 1fr); }
+.bs-sel { padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; }
+.bs-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.bs-row .lbl { color: var(--muted); font-size: 12px; min-width: 96px; }
+.bs-row label.lbl { min-width: 0; display: inline-flex; align-items: center; gap: 6px; }
+.bs-sum, .bs-detail { padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; }
+.bs-sum-head { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; }
+.bs-tbl tbody tr { cursor: pointer; }
+.bs-tbl tbody tr.sel td { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.bs-tbl .id-sort { background: none; border: 0; color: inherit; font: inherit; text-transform: inherit; cursor: pointer; padding: 0; }
+.bs-tbl .id-sort.on { color: var(--text); }
+.bs-eq { height: 220px; position: relative; }
+.bs-trades { max-height: 420px; overflow: auto; }

@@ -85,6 +85,7 @@
       <button data-view="lib" title="Ready-made and saved strategies; deploy one on the live chain">Strategies</button>
       <button data-view="bt" title="Backtest a strategy on historical 1-minute option data">Backtest</button>
       <button data-view="bw" title="The bi-weekly hedge, its reverse and the two combined: every variation backtested over the whole history">Bi-weekly</button>
+      <button data-view="bs" title="Back spread + 2 butterflies (Live › Ideas): every strike window, side and entry day backtested, the best strikes picked at each entry">Back spread</button>
       <button data-view="cmp" title="Backtest several strategies on the same period and rank them">Compare</button>
     </span>
     <span class="sub-group" data-group="builder">
@@ -502,6 +503,10 @@
         </section>
         <section class="panel id-sec" data-sec="neutral">
           <div class="id-sec-head" tabindex="0" role="button" aria-expanded="true" title="Click the header to collapse / expand this section"><div><h3><span class="id-caret">▾</span><span class="id-ico neutral">↔</span>Neutral</h3><span class="muted small">Range-bound structures around the money, defined risk on both sides</span></div><span class="id-count"></span></div>
+          <div class="id-msg"></div><div class="id-grid"></div><div class="id-tbl tbl-wrap hidden"></div>
+        </section>
+        <section class="panel id-sec" data-sec="back">
+          <div class="id-sec-head" tabindex="0" role="button" aria-expanded="true" title="Click the header to collapse / expand this section"><div><h3><span class="id-caret">▾</span><span class="id-ico back">⤢</span>Back spreads</h3><span class="muted small">Call and put 1×2 back spreads with 2 butterflies over their loss stretch: every trade with all its strikes within the window picked, tradable at bid / ask, best first</span></div><span class="id-count"></span></div>
           <div class="id-msg"></div><div class="id-grid"></div><div class="id-tbl tbl-wrap hidden"></div>
         </section>
         <section class="panel id-sec" data-sec="misc">
@@ -946,6 +951,15 @@
     </section>
   </main>
 
+  <!-- ===== Back spread + 2 butterflies (bs-view.js, bt/backspread.js) ===== -->
+  <main id="bs" class="bt-screen bs-screen hidden">
+    <section class="bt-main">
+      <div class="panel bt-settings" id="bsSettings"></div>
+      <div class="panel bs-sel" id="bsSel"></div>
+      <div id="bsResults" class="bt-results"></div>
+    </section>
+  </main>
+
   <!-- ===== Compare ===== -->
   <main id="cmp" class="bt-screen hidden">
     <aside class="panel bt-edit">
@@ -1004,12 +1018,14 @@
   <script src="hedge-backtest.js"></script>
   <script src="/lib/pricing.js"></script>
   <script src="/lib/costs.js"></script>
+  <script src="/lib/backspread.js"></script>
   <script src="bt-common.js"></script>
   <script src="arb.js"></script>
   <script src="chain-chart.js"></script>
   <script src="payoff.js"></script>
   <script src="bt-view.js"></script>
   <script src="bw-view.js"></script>
+  <script src="bs-view.js"></script>
   <script src="cmp-view.js"></script>
   <script src="lib-view.js"></script>
   <script src="data-view.js"></script>

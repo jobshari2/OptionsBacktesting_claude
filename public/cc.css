@@ -112,3 +112,6 @@
 .cc-legs-tbl tr:not(.cc-grp) th { padding-left: 16px; }
 .cc-grp-l { font-size: 10px; text-transform: uppercase; letter-spacing: .3px; color: var(--muted); margin-top: 4px; }
 .cc-grp-l:first-child { margin-top: 0; }
+.cc-alt { margin: 4px 0 6px; }
+.cc-alt summary { cursor: pointer; margin-bottom: 4px; }
+.cc-tag.t-held { color: var(--atm); border-color: var(--atm); }

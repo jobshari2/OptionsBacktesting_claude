@@ -285,3 +285,17 @@ test('paper trade: after a restart outside market hours the last marks show, it 
   );
   assert.equal(JSON.stringify(after.paper.cycle), legsBefore, 'nothing opened or closed outside market hours');
 });
+
+test('suggestions: a held paper month is shown with the month after it (the roll), not the calendar month before it', () => {
+  const today = '2026-10-21';
+  const expiries = ['2026-10-27', '2026-11-03', '2026-11-24', '2026-12-29'];
+  const paper = { cycle: { expiry: '2026-11-24', call: { strike: 24900 }, callBE: 25300, lower: 24600, ins: [{}, {}, {}], weeks: [] } };
+  const s = suggest({ today, spot: 25030, bees: 280, chains: suggChains(25030, expiries), expiries, params: { lotSize: 65 }, paper });
+  assert.deepEqual(
+    s.months.map((m) => [m.label, m.expiry]),
+    [
+      ['Held month', '2026-11-24'],
+      ['Next month (roll)', '2026-12-29'],
+    ],
+  );
+});

@@ -706,7 +706,8 @@ async function handleCc(req, res, url, p) {
       const b = JSON.parse((await readBody(req, 50_000)).toString('utf8') || '{}');
       const expiries = await getExpiries();
       const today = istDate();
-      const monthly = [...new Map(expiries.map((e) => [e.slice(0, 7), e])).values()].filter((e) => e >= today).slice(0, 2);
+      // the current and next month, and one more for the roll after a held paper month
+      const monthly = [...new Map(expiries.map((e) => [e.slice(0, 7), e])).values()].filter((e) => e >= today).slice(0, 3);
       const weekly = expiries.find((e) => e > today);
       const chains = new Map();
       for (const e of new Set([expiries[0], ...monthly, weekly].filter(Boolean))) chains.set(e, await restChain(e, 30_000));
@@ -1246,9 +1247,9 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
-  // Option pricing (public/bt-common.js) and trading charges (public/an-view.js) shared with the page: the files
-  // the server itself prices with.
-  if (p === '/lib/pricing.js' || p === '/lib/costs.js') {
+  // Option pricing (public/bt-common.js), trading charges (public/an-view.js) and the back spread picker
+  // (public/ideas-view.js) shared with the page: the files the server itself uses.
+  if (p === '/lib/pricing.js' || p === '/lib/costs.js' || p === '/lib/backspread.js') {
     return fs.readFile(path.join(__dirname, p.slice(1)), (err, buf) => {
       if (err) return sendJson(res, 404, { error: 'Not found' });
       res.writeHead(200, { 'Content-Type': 'text/javascript' });

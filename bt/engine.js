@@ -31,6 +31,12 @@
 //    nearer one applies.
 //  - entry.noOverlap: one position at a time (a trade whose entry falls before the previous exit is skipped).
 //
+// Picked strikes (strategy.pick, lib/backspread.js): { kind: 'backfly', side, win, widths, form, rank }. At entry every
+// back spread + 2 butterflies whose strikes all lie within ATM ± win strikes is priced at that minute's open, and the
+// best by rank (smallest worst-case loss after slippage and brokerage, chance of profit, or peak ÷ loss) gives the
+// strikes of the legs whose strike is { by: 'pick', role } (m, lo, hi, k1, k2). Only candidates whose every option
+// really traded in the pick.fresh minutes up to entry (default 15) count. None: no trade.
+//
 // Adjustments on market movement (strategy.adjust), checked on every candle close like the overall MTM rules:
 //  - on 'move': Nifty has moved `value` points (unit 'pts') or % (unit 'pct') from the position's centre (spot at entry,
 //    then at the last adjustment); the side Nifty moved towards is the tested one (up = calls).
@@ -46,6 +52,7 @@ const Costs = require('../lib/costs');
 const { normCondition, evaluate } = require('./conditions');
 const A = require('./anomalies');
 const { nearest: nearestLevels } = require('./levels');
+const BS = require('../lib/backspread');
 
 const { RATE, ncdf, bsm } = require('../lib/pricing'); // RATE: risk-free rate for implied vol / delta
 const MIN_OF = (t) => {
@@ -86,7 +93,7 @@ const yearsTo = (expiry, day, m) => Math.max(1e-6, (Date.parse(expiry + 'T15:30:
 const ACTIONS = new Set(['B', 'S']);
 const TYPES = new Set(['CE', 'PE']);
 const EXPIRIES = new Set(['cur', 'next', 'mcur', 'mnext']);
-const STRIKE_BY = new Set(['atm', 'premium', 'delta', 'pct', 'pts', 'straddle', 'signal', 'sr', 'leg']);
+const STRIKE_BY = new Set(['atm', 'premium', 'delta', 'pct', 'pts', 'straddle', 'signal', 'sr', 'leg', 'pick']);
 const LEVEL = new Set(['none', 'pct', 'pts', 'upct', 'upts', 'srb']);
 const LV = new Set(['any', 'major', 'minor']);
 
@@ -113,6 +120,20 @@ function normAdjust(a) {
   };
 }
 
+function normPick(p) {
+  if (p?.kind !== 'backfly') return null;
+  const widths = (Array.isArray(p.widths) ? p.widths.map(Number) : BS.WIDTHS).filter((w) => BS.WIDTHS.includes(w));
+  return {
+    kind: 'backfly',
+    side: p.side === 'CE' ? 'CE' : 'PE',
+    win: Math.max(1, Math.min(40, Math.round(Number(p.win) || 10))),
+    widths: widths.length ? widths : BS.WIDTHS,
+    form: p.form === 'iron' ? 'iron' : 'same',
+    rank: BS.RANKS[p.rank] ? p.rank : 'loss',
+    fresh: Math.max(0, Math.min(120, Math.round(Number(p.fresh ?? 15) || 0))), // minutes; 0 = no check
+  };
+}
+
 function normalizeStrategy(s) {
   const legs = (Array.isArray(s?.legs) ? s.legs : []).slice(0, 12).map((l) => ({
     action: ACTIONS.has(l.action) ? l.action : 'S',
@@ -126,6 +147,7 @@ function normalizeStrategy(s) {
       ...(l.strike?.by === 'signal' ? { ref: l.strike.ref === 'ref' ? 'ref' : 'hit' } : {}),
       ...(l.strike?.by === 'sr' ? { lv: LV.has(l.strike.lv) ? l.strike.lv : 'any' } : {}),
       ...(l.strike?.by === 'leg' ? { ref: Math.max(0, Math.min(11, Math.round(Number(l.strike.ref) || 0))) } : {}),
+      ...(l.strike?.by === 'pick' ? { role: BS.ROLES.includes(l.strike.role) ? l.strike.role : 'm' } : {}),
     },
     sl: normLevel(l.sl),
     tgt: normLevel(l.tgt),
@@ -188,6 +210,7 @@ function normalizeStrategy(s) {
       partialFloor: r.partialFloor === '' || r.partialFloor == null || isNaN(Number(r.partialFloor)) ? null : Number(r.partialFloor),
     },
     adjust: normAdjust(s?.adjust),
+    pick: normPick(s?.pick),
     filters: {
       vixMin: num(s?.filters?.vixMin),
       vixMax: num(s?.filters?.vixMax),
@@ -210,6 +233,8 @@ function normalizeOpts(o, cal) {
     to,
     expiries: Array.isArray(o?.expiries) && o.expiries.length ? new Set(o.expiries) : null,
     slippage: Math.max(0, Math.min(5, Number(o?.slippage) || 0)) / 100,
+    // least slippage per fill in ₹ (one tick = 0.05): a % of a ₹2 option is far less than any real spread
+    minSlip: Math.max(0, Math.min(5, Number(o?.minSlip) || 0)),
     brokerage: Math.max(0, Number(o?.brokerage ?? 20) || 0),
     taxes: o?.taxes !== false,
     lotMode: o?.lotMode === 'historical' ? 'historical' : 'fixed',
@@ -352,6 +377,9 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
         const base = sx.legStrikes?.[spec.ref];
         return base == null ? ks[ai] : ks[nearest(base + spec.value)];
       }
+      // The strike the back spread picker chose for this role at entry (strategy.pick).
+      case 'pick':
+        return sx.pick?.[spec.role] ?? null;
       case 'pct':
         return ks[nearest(spot * (1 + (otm * spec.value) / 100))];
       case 'pts':
@@ -415,7 +443,63 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
     }
   }
 
-  const fill = (px, buy) => (buy ? px * (1 + opts.slippage) : px * (1 - opts.slippage));
+  // The back spread + 2 butterflies (lib/backspread.js) whose strikes all lie within ATM ± win and that ranks best,
+  // priced at the open of minute m, costs per unit (slippage on every fill in and out, brokerage per order) included.
+  async function pickStrikes(P, expiry, day, m, spot) {
+    if (!expiry || !cal.expiredSet.has(expiry)) return null;
+    const info = await data.contracts(expiry);
+    const ks = info.strikes;
+    let ai = 0;
+    for (let i = 1; i < ks.length; i++) if (Math.abs(ks[i] - spot) < Math.abs(ks[ai] - spot)) ai = i;
+    const T = yearsTo(expiry, day, m);
+    const memo = new Map();
+    const px = async (k, t) => {
+      const key = k + t;
+      if (!memo.has(key)) {
+        const p = await priceAt(expiry, k, t, day, m).catch(() => null);
+        memo.set(key, p == null ? null : Math.max(p, t === 'CE' ? spot - k : k * Math.exp(-RATE * T) - spot));
+      }
+      return memo.get(key);
+    };
+    // tradable: the option traded (a real candle, not one carried forward) in the last P.fresh minutes up to entry
+    const fresh = new Map();
+    const traded = async (k, t) => {
+      const key = k + t;
+      if (!fresh.has(key)) {
+        let ok = false;
+        try {
+          const c = data.optionCached(expiry, k, t, day) || (await data.option(expiry, k, t, day));
+          const raw = data.optionRaw(c, day);
+          for (let i = Math.max(0, m - P.fresh); raw && i <= m && !ok; i++) ok = raw[i * 4] > 0;
+        } catch {
+          /* not downloadable: not tradable */
+        }
+        fresh.set(key, ok);
+      }
+      return fresh.get(key);
+    };
+    const atmPx = await px(ks[ai], P.side);
+    const iv = atmPx ? impliedVol(atmPx, spot, ks[ai], T, P.side === 'CE') : null;
+    const lot = await lotOf(expiry);
+    let best = null;
+    for (const g of BS.geometries(ks, ai, P.side, P.win, P.widths)) {
+      const L = BS.legsOf(g, P.side, P.form);
+      for (const l of L) l.px = await px(l.k, l.type);
+      if (L.some((l) => !(l.px > 0))) continue;
+      if (P.fresh) {
+        let ok = true;
+        for (const l of L) if (ok) ok = await traded(l.k, l.type);
+        if (!ok) continue;
+      }
+      const cost = 2 * L.reduce((s, l) => s + l.n * slip(l.px), 0) + (2 * L.length * opts.brokerage) / lot;
+      const e = BS.evaluate(L, { spot, iv, T, cost });
+      if (!best || BS.better(P.rank)(e, best.e) < 0) best = { g, e };
+    }
+    return best ? { ...best.g } : null;
+  }
+
+  const slip = (px) => Math.max(px * opts.slippage, opts.minSlip);
+  const fill = (px, buy) => (buy ? px + slip(px) : Math.max(0, px - slip(px)));
   // Brokerage and charges of one leg's round trip, at the rates in force on the day of each side (lib/costs.js: STT
   // changes with the budgets). A leg settled at expiry places no closing order: a bought option that expires in the
   // money pays STT on its settlement value instead, and an option that expires worthless pays nothing more.
@@ -459,6 +543,7 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
       const expiry = expOverride || legExpiry(def.expiry, tl[0]);
       if (!expiry || !cal.expiredSet.has(expiry)) throw new Skip(`expiry ${expiry || '?'} has no data yet`);
       if (strike == null) strike = await selectStrike(def.strike, def.type, expiry, day, m, spot, sx);
+      if (strike == null) throw new Skip(`no ${def.type} strike for leg ${li + 1}`);
       const c = await data.option(expiry, strike, def.type, tl[0]);
       const a = data.optionDay(c, day);
       const px =
@@ -546,6 +631,10 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
 
     let legs;
     try {
+      if (strat.pick) {
+        sx.pick = await pickStrikes(strat.pick, legExpiry('cur', tl[0]), tl[0], e0, spotIn);
+        if (!sx.pick) throw new Skip(`no back spread fully priced within ATM ± ${strat.pick.win}`);
+      }
       const out = new Array(strat.legs.length);
       sx.legStrikes = [];
       await Promise.all(

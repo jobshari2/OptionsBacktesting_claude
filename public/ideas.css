@@ -34,6 +34,8 @@
 .id-ico.buy { color: var(--up); }
 .id-ico.write { color: var(--atm); }
 .id-ico.mine { color: var(--atm); }
+.id-ico.back { color: var(--up); }
+.id-secctl { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 0 0 8px; }
 .id-count { color: var(--muted); font-size: 12px; white-space: nowrap; padding-top: 3px; }
 .id-right { display: inline-flex; align-items: center; gap: 10px; }
 .id-msg:empty { display: none; }
@@ -86,6 +88,8 @@
 .id-spark .dn { fill: var(--down); fill-opacity: .2; }
 .id-spark .pay { fill: none; stroke: var(--text); stroke-width: 1.6; stroke-linejoin: round; }
 .id-spark .zero { stroke: var(--muted); stroke-width: .6; stroke-dasharray: 2 2; vector-effect: non-scaling-stroke; }
+.id-spark .ghost { fill: none; stroke: var(--muted); stroke-width: 1; stroke-dasharray: 4 3; opacity: .8; }
+.id-spark .ghost.g1 { stroke: var(--accent); stroke-dasharray: 1 2.5; stroke-linecap: round; stroke-width: 1.4; }
 .id-spark .spot { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 3 2; vector-effect: non-scaling-stroke; }
 .id-kpis { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
 .id-kpi { display: flex; flex-direction: column; gap: 1px; padding: 5px 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 7px; min-width: 0; }

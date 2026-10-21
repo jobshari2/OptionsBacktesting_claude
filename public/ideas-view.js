@@ -9,6 +9,9 @@
 //                     nearest expiry), else at this chain's largest call OI above Nifty and put OI below, and the
 //                     iron condor of the two
 //   Neutral           iron butterfly at the money and iron condor outside the move the ATM straddle prices in
+//   Back spreads      1×2 call and put back spreads with 2 butterflies whose wings span the back spread's loss
+//                     stretch (lib/backspread.js): every trade with all legs within ATM ± the window picked, priced at
+//                     bid / ask, best first by the rank picked
 //   My paper trades   the live paper trades saved from the Builder, at the current chain prices
 // Best trades at the top ranks everything on the screen: arbitrage first, then reward-to-risk × chance of profit among
 // defined-risk trades within a loss limit. Other arbitrages checks butterfly, broken-wing butterfly, box and calendar
@@ -28,6 +31,7 @@
     ['buy', 'Option buyers'],
     ['write', 'Option writers'],
     ['neutral', 'Neutral'],
+    ['back', 'Back spreads'],
     ['misc', 'Miscellaneous'],
     ['mine', 'My paper trades'],
   ];
@@ -45,6 +49,9 @@
     sort: null,
     collapsed: {},
     riskCap: 2,
+    bsWin: 10,
+    bsRank: 'loss',
+    bsAll: false,
     ...stored,
   };
   if (stored.basisV !== 2) Object.assign(C, { basis: 'ltp', basisV: 2 }); // Prices were bid / ask by default before: LTP now
@@ -120,7 +127,7 @@
     const d = M.ks.indexOf(k) - M.ai;
     return d === 0 ? 'ATM' : `ATM${d > 0 ? '+' : '−'}${Math.abs(d)}`;
   };
-  const legs = (M, list) => list.map(([act, type, k]) => ({ act, type, k, px: k == null ? null : fill(M, act, k, type) }));
+  const legs = (M, list) => list.map(([act, type, k, n]) => ({ act, type, k, ...(n > 1 ? { n } : {}), px: k == null ? null : fill(M, act, k, type) }));
   const nearestExpiry = () => $('expiry').options[0]?.value || null;
 
   // ---------- payoff at expiry ----------
@@ -155,7 +162,8 @@
       if (idea.once) for (const l of L) if (l.act === 'B') charges += window.Costs.exercise(intr(l.type, l.k, M.spot) * qty * (l.n || 1));
     }
     const net = sell - buy; // + credit received, − debit paid
-    const maxP = slope > 0 ? Infinity : hi * qty;
+    // a put back spread's gain grows until Nifty reaches zero: open-ended, like a call's
+    const maxP = slope > 0 || idea.openDown ? Infinity : hi * qty;
     const maxL = slope < 0 ? -Infinity : lo * qty;
     // chance of finishing above / below each breakeven, lognormal at the ATM IV
     let pop = null;
@@ -178,7 +186,7 @@
     const netMaxL = maxL - charges;
     const rr = maxP !== Infinity && maxL < 0 && maxP > 0 ? netMaxP / -netMaxL : null;
     const risk = maxL > -Infinity && C.capital > 0 ? (Math.max(0, -netMaxL) / C.capital) * 100 : null;
-    return { qty, maxP, maxL, bes, charges, net, pop, netMaxP, netMaxL, rr, risk, once: !!idea.once };
+    return { qty, maxP, maxL, bes, charges, net, pop, netMaxP, netMaxL, rr, risk, once: !!idea.once, openDown: !!idea.openDown };
   }
   // A calendar (near call sold, later call bought) has no single-expiry payoff: at the near expiry the later call is
   // worth at least its intrinsic value, so the credit is the least it keeps; the most depends on that call's value then.
@@ -415,6 +423,120 @@
         );
       }
     }
+    return out;
+  }
+
+  // ---------- back spreads, hedged with butterflies ----------
+  // The back spread + 2 butterflies of lib/backspread.js (the same picker the backtest uses): every width and centre
+  // whose legs all lie within the strike window picked here (ATM ± 5, 10, 15...) is priced on this chain, in both forms
+  // (iron or single-type butterflies, the same payoff; the one that loses less after charges is kept), and listed best
+  // first by the rank picked. Tradable only: every leg filled at the touch (buy at the ask, sell at the bid) with a
+  // two-sided quote no wider than QSPREAD points; when the book is empty (market closed) the last traded prices are
+  // used instead, and the section says so.
+  const BS = window.BackSpread;
+  const BS_SHOW = 5; // per side, unless "All" is picked
+  function backSpreads(M) {
+    const out = [];
+    if (!BS) {
+      out.empty = 'The back spread picker (/lib/backspread.js) did not load: reload the page.';
+      return out;
+    }
+    const win = BS.WINDOWS.includes(C.bsWin) ? C.bsWin : 10;
+    const rank = BS.RANKS[C.bsRank] ? C.bsRank : 'loss';
+    const pts = (x) => `${x >= 0 ? '+' : '−'}${Math.abs(x).toFixed(1)} pts`;
+    // the touch when the chain has a book, else the last trades
+    const book = M.ks.some((k) => M.quote(k, 'CE')?.bid > 0 && M.quote(k, 'CE')?.ask > 0);
+    const price = (act, k, t) => (book ? strict(M, act, k, t) : M.px(k, t) > 0 ? { px: M.px(k, t), qty: null } : null);
+    const peakOf = (I) => BS.pay(I.legs, I.g.m) * I.E.qty - I.E.charges;
+    const lossOf = (I) => Math.max(1, -I.E.netMaxL);
+    const key = { loss: (I) => I.E.netMaxL, pop: (I) => I.E.pop ?? 0, peak: (I) => peakOf(I) / lossOf(I) }[rank];
+    let fits = 0;
+    let untradable = 0;
+    const lists = [];
+    for (const t of ['PE', 'CE']) {
+      const word = t === 'CE' ? 'call' : 'put';
+      const found = [];
+      for (const g of BS.geometries(M.ks, M.ai, t, win)) {
+        fits++;
+        let pick = null;
+        for (const form of BS.FORMS) {
+          let fit = Infinity;
+          const L = BS.legsOf(g, t, form).map((l) => {
+            const f = price(l.act, l.k, l.type);
+            if (f?.qty != null) fit = Math.min(fit, Math.floor(f.qty / (l.n * M.lot)));
+            return { act: l.act, type: l.type, k: l.k, n: l.n, role: l.role, px: f?.px ?? null };
+          });
+          if (L.some((l) => !(l.px > 0))) continue;
+          const I = idea('back', M, {
+            key: `bs${form}${g.W}${t}`,
+            title: `${t === 'CE' ? 'Call' : 'Put'} back spread ${g.k1}/${g.k2} + 2 ${form === 'iron' ? 'iron' : word} butterflies ${g.m}`,
+            tags: [],
+            legs: L,
+            openDown: t === 'PE',
+            note: `${word} back spread ${g.k1}/${g.k2} + 2× ${form === 'iron' ? 'iron' : word} butterfly ${g.lo}/${g.m}/${g.hi}`,
+          });
+          if (!I.ok || !I.E || I.E.maxL === -Infinity) continue;
+          Object.assign(I, { g, form, fit: fit === Infinity ? null : fit });
+          if (!pick || I.E.netMaxL > pick.E.netMaxL) pick = I;
+        }
+        if (!pick) untradable++;
+        else if (peakOf(pick) > 0) found.push(pick);
+      }
+      found.sort((a, b) => key(b) - key(a) || b.E.netMaxL - a.E.netMaxL);
+      for (const I of C.bsAll ? found : found.slice(0, BS_SHOW)) {
+        const { E, g, form } = I;
+        const bs = I.legs.filter((l) => l.role === 'k1' || l.role === 'k2');
+        const fly = I.legs.filter((l) => l.role !== 'k1' && l.role !== 'k2');
+        const worst = Math.min(...[g.lo, g.k2, g.m, g.k1, g.hi].map((x) => BS.pay(I.legs, x)));
+        I.ghosts = [
+          { legs: bs, cls: 'g0' },
+          { legs: fly, cls: 'g1' },
+        ];
+        I.tags = [
+          [E.net >= 0 ? 'Credit' : 'Debit', E.net >= 0 ? 'credit' : 'debit'],
+          t === 'CE' ? ['Bullish', 'bull'] : ['Bearish', 'bear'],
+          [`Peak ${pts(BS.pay(I.legs, g.m))} at ${g.m}`, 'ok'],
+          [form === 'iron' ? 'Iron butterflies' : `All ${word}s`, 'na'],
+          ...(book ? [fitTag(I.fit)] : [['LTP: not checked for fills', 'warn']]),
+        ];
+        I.sub =
+          `Width ${g.W}, centre ${g.m} (${Math.abs(g.m - M.spot).toFixed(0)} pts ${t === 'CE' ? 'above' : 'below'} Nifty), every leg within ATM ±${win}. ` +
+          `Back spread: sell the ${g.k1} ${word}, buy 2× ${g.k2} (alone: ${pts(BS.pay(bs, g.k2))} at ${g.k2}). ` +
+          (form === 'iron'
+            ? `Hedge: 2 iron butterflies at ${g.m}, wings ${g.lo} put and ${g.hi} call`
+            : `Hedge: 2 ${word} butterflies ${g.lo}/${g.m}/${g.hi} (buy 2 at each wing, sell 4 at ${g.m}; the same payoff as iron butterflies, cheaper to trade)`) +
+          `. Together: ${pts(BS.pay(I.legs, g.m))} at ${g.m}, worst ${pts(worst)}, ${t === 'CE' ? 'growing without limit above' : 'growing the further Nifty falls below'} ${t === 'CE' ? g.hi : g.lo}. Dashed: the back spread alone; dotted: the 2 butterflies.`;
+        lists.push(I);
+      }
+    }
+    out.push(...lists.sort((a, b) => key(b) - key(a) || b.E.netMaxL - a.E.netMaxL));
+    if (out.length) out[0].hl = true;
+    const seg = (attr, cur, items) =>
+      `<span class="seg sm">${items.map(([v, l, tip]) => `<button data-${attr}="${v}" class="${String(cur) === String(v) ? 'on' : ''}"${tip ? ` title="${esc(tip)}"` : ''}>${l}</button>`).join('')}</span>`;
+    out.ctl =
+      `<span class="id-ctl" title="Every leg's strike must lie within this many strikes of the ATM strike">Strikes within ${seg(
+        'bswin',
+        win,
+        BS.WINDOWS.map((w) => [w, `ATM ±${w}`]),
+      )}</span>` +
+      `<span class="id-ctl" title="How the trades found are ordered">Rank by ${seg(
+        'bsrank',
+        rank,
+        Object.entries(BS.RANKS).map(([k, [l, tip]]) => [k, l, tip]),
+      )}</span>` +
+      `<span class="id-ctl" title="The best ${BS_SHOW} of each side, or every trade that fits the window">Show ${seg('bsall', C.bsAll ? 1 : 0, [
+        [0, `Best ${BS_SHOW}`],
+        [1, 'All'],
+      ])}</span>` +
+      `<button class="btn-sm ghost" data-bsbt="1" title="Backtest this selection on Strategies › Back spread: at every past entry the best strikes within ATM ±${win} are picked the same way">Backtest ATM ±${win} ▸</button>`;
+    out.info =
+      `${fits * 2} combinations fit ATM ±${win} (widths ${BS.WIDTHS.join(' / ')}, every centre from the money to the edge of the window, iron and single-type butterflies)` +
+      (untradable ? `; ${untradable} left out because a leg has no ${book ? `two-sided quote within ${QSPREAD} pts` : 'price'}` : '') +
+      `. ${book ? 'Priced at the touch: buy at the ask, sell at the bid.' : 'No bid / ask on this chain (market closed?): priced at the last trades, which may not be fillable.'} Ranked by ${BS.RANKS[rank][0].toLowerCase()}. Payoff shapes from the live prices, not a forecast: no proven edge.`;
+    if (!out.length)
+      out.empty = fits
+        ? `None of the ${fits * 2} combinations within ATM ±${win} is fully tradable and in profit at its centre right now: widen the window.`
+        : `No back spread with its butterflies fits within ATM ±${win} on this chain: widen the window.`;
     return out;
   }
 
@@ -883,7 +1005,7 @@
     if (!E) return null;
     const unlimited = E.maxP === Infinity;
     return {
-      maxP: { v: E.maxP == null ? '—' : unlimited ? 'Unlimited' : money(E.netMaxP), c: E.maxP == null ? '' : unlimited || E.netMaxP > 0 ? 'pos' : 'neg' },
+      maxP: { v: E.maxP == null ? '—' : unlimited ? (E.openDown ? 'Open-ended' : 'Unlimited') : money(E.netMaxP), c: E.maxP == null ? '' : unlimited || E.netMaxP > 0 ? 'pos' : 'neg' },
       maxL: { v: E.maxL === -Infinity ? 'Unlimited' : money(E.netMaxL), c: E.netMaxL >= 0 ? 'pos' : 'neg', label: E.netMaxL >= 0 ? 'Worst case' : 'Max loss' },
       net: { v: inr(Math.abs(E.net)), label: E.net >= 0 ? 'Credit' : 'Debit' },
       be: E.bes.length ? E.bes.map((x) => x.toFixed(0)).join(' – ') : '—',
@@ -893,21 +1015,25 @@
     };
   }
   const tipMax = (E, which) =>
-    `At expiry, after ≈ ${inr(E.charges)} charges (${E.once ? 'on entry, held to expiry' : 'in and out'}). Before charges: ${which === 'P' ? (E.maxP == null ? 'depends on the later call' : E.maxP === Infinity ? 'unlimited' : inr(E.maxP)) : inr(E.maxL)}`;
+    `At expiry, after ≈ ${inr(E.charges)} charges (${E.once ? 'on entry, held to expiry' : 'in and out'}). Before charges: ${which === 'P' ? (E.maxP == null ? 'depends on the later call' : E.maxP === Infinity ? (E.openDown ? 'grows the further Nifty falls' : 'unlimited') : inr(E.maxP)) : inr(E.maxL)}`;
   const tipPop = (M) => `Model estimate at expiry: lognormal Nifty at the ATM IV (${M.iv ? M.iv.toFixed(1) : '—'}). Not a forecast.`;
   const missingTxt = (I) =>
     `Not priced right now: ${I.missing.map((l) => (l.k == null ? 'no strike that far out' : `${l.k} ${l.type} has no ${C.basis === 'ba' ? 'bid/ask' : 'price'}`)).join(', ')}.`;
 
   // ---------- cards ----------
-  // Payoff at expiry, green above zero and red below, with Nifty now marked.
+  // Payoff at expiry, green above zero and red below, with Nifty now marked. An idea built from parts (I.ghosts) also
+  // draws each part's payoff faintly, on the same scale.
   function spark(I, M) {
     const L = I.legs;
-    const ks = L.map((l) => l.k);
+    const G = I.ghosts || [];
+    const ks = [...L, ...G.flatMap((g) => g.legs)].map((l) => l.k);
     const span = Math.max(C.wing * 2, (Math.max(...ks) - Math.min(...ks)) * 0.9, M.step * 6);
     const x0 = Math.min(Math.min(...ks), M.spot) - span / 2;
     const x1 = Math.max(Math.max(...ks), M.spot) + span / 2;
-    const pts = [x0, ...[...new Set(ks)].sort((a, b) => a - b), x1].map((x) => [x, unitPay(L, x)]);
-    const ys = pts.map((p) => p[1]);
+    const xs = [x0, ...[...new Set(ks)].sort((a, b) => a - b), x1];
+    const pts = xs.map((x) => [x, unitPay(L, x)]);
+    const gpts = G.map((g) => xs.map((x) => [x, unitPay(g.legs, x)]));
+    const ys = [...pts, ...gpts.flat()].map((p) => p[1]);
     let y0 = Math.min(0, ...ys);
     let y1 = Math.max(0, ...ys);
     if (y1 - y0 < 1e-9) ((y0 -= 1), (y1 += 1));
@@ -926,6 +1052,7 @@
       <polygon points="${area}" class="up" clip-path="url(#${cid}u)"/><polygon points="${area}" class="dn" clip-path="url(#${cid}d)"/>
       <line x1="0" x2="${W}" y1="${zero}" y2="${zero}" class="zero"/>
       <line x1="${spot}" x2="${spot}" y1="0" y2="${H}" class="spot"/>
+      ${gpts.map((g, i) => `<polyline points="${g.map(([x, y]) => `${sx(x).toFixed(1)},${sy(y).toFixed(1)}`).join(' ')}" class="ghost ${G[i].cls || ''}" vector-effect="non-scaling-stroke"/>`).join('')}
       <polyline points="${line}" class="pay" vector-effect="non-scaling-stroke"/>
     </svg>`;
   }
@@ -1202,7 +1329,7 @@
       <div class="id-stat"><span>ATM</span><b>${M?.atm ?? '—'}</b></div>
       <div class="id-stat"><span>ATM IV</span><b>${M?.iv ? M.iv.toFixed(1) : '—'}</b></div>
       <div class="id-stat"><span>Pulse</span><b><span class="bias-pill ${esc(bias)}">${esc(p ? bias : 'collecting')}</span></b></div>
-      <div class="id-stat"><span>Ideas</span><b>${counts.vert + counts.buy + counts.write + counts.neutral + counts.arbx + counts.misc}</b></div>`;
+      <div class="id-stat"><span>Ideas</span><b>${counts.vert + counts.buy + counts.write + counts.neutral + counts.back + counts.arbx + counts.misc}</b></div>`;
     $('idNav').innerHTML = [['all', 'All', null], ...SECTIONS.map(([k, t]) => [k, t, counts[k]])]
       .map(([k, t, n]) => `<button data-show="${k}" class="${C.show === k ? 'on' : ''}">${t}${n == null ? '' : ` <span class="id-n">${n}</span>`}</button>`)
       .join('');
@@ -1246,8 +1373,8 @@
     M = marketOf(state.data);
     const cands = M ? candidates(M) : [];
     const lists = M
-      ? { vert: verticals(M, p), buy: buyers(M, p), write: writers(M, p), neutral: neutral(M), arbx: arbitrages(M), misc: misc(cands) }
-      : { vert: [], buy: [], write: [], neutral: [], arbx: [], misc: [] };
+      ? { vert: verticals(M, p), buy: buyers(M, p), write: writers(M, p), neutral: neutral(M), back: backSpreads(M), arbx: arbitrages(M), misc: misc(cands) }
+      : { vert: [], buy: [], write: [], neutral: [], back: [], arbx: [], misc: [] };
     if (!M) for (const l of Object.values(lists)) l.empty = 'Waiting for the live option chain…';
     ideas = new Map(Object.values(lists).flatMap((l) => l.map((I) => [I.id, I])));
     const arbN = drawArb();
@@ -1270,6 +1397,7 @@
       buy: lists.buy.length,
       write: lists.write.length,
       neutral: lists.neutral.length,
+      back: lists.back.length,
       mine: trades.length,
     };
     renderTop(p, counts);
@@ -1300,6 +1428,7 @@
       }
       const L = lists[k];
       const msg = [
+        L.ctl && `<div class="id-secctl">${L.ctl}</div>`,
         L.info && `<div class="id-note">${esc(L.info)}</div>`,
         L.empty && `<div class="id-empty">${esc(L.empty)}</div>`,
         L.warn && `<div class="id-warn">⚠ ${esc(L.warn)}</div>`,
@@ -1870,6 +1999,13 @@
     } else if (b.dataset.show) C.show = b.dataset.show;
     else if (b.dataset.layout) C.view = b.dataset.layout;
     else if (b.dataset.wing) C.wing = Number(b.dataset.wing);
+    else if (b.dataset.bsrank) C.bsRank = b.dataset.bsrank;
+    else if (b.dataset.bswin) C.bsWin = Number(b.dataset.bswin);
+    else if (b.dataset.bsall) C.bsAll = b.dataset.bsall === '1';
+    else if (b.dataset.bsbt) {
+      BT.emit('bs-preset', { wins: [BS.WINDOWS.includes(C.bsWin) ? C.bsWin : 10], rank: C.bsRank || 'loss' });
+      return window.app.setView('bs');
+    }
     else if (b.dataset.basis) C.basis = b.dataset.basis;
     else if (b.dataset.chainw) {
       C.chainW = Number(b.dataset.chainw);

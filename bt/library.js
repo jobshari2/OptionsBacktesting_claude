@@ -61,6 +61,36 @@ function biweekly(id, name, desc, o = {}) {
   };
 }
 
+// Back spread + 2 butterflies (Live › Ideas › Back spreads): a 1×2 back spread `w` pts wide, centred `off` pts from
+// spot the way it gains (puts below, calls above), and 2 butterflies over centre ± 1.5 w, whose wings sit exactly where
+// the back spread's loss stretch ends. In profit around the centre and on a big move past it, a small loss elsewhere.
+// form 'iron': the butterflies as iron butterflies (2 straddles sold at the centre, a put and a call bought as wings);
+// 'same': all puts (or all calls), the same payoff at expiry with every leg out of the money, so cheaper to trade.
+// lots: units of the whole structure (1 = sell 1, buy 2 back spread + 2 butterflies). Held to expiry.
+function backFly(id, side, name, desc, o = {}) {
+  const w = o.w || 100;
+  const n = o.lots || 1;
+  const d = side === 'CE' ? 1 : -1;
+  const other = side === 'CE' ? 'PE' : 'CE';
+  const fromCentre = (action, type, value, lots) => leg(action, type, { by: 'leg', ref: 0, value }, { lots: lots * n });
+  return {
+    id,
+    category: 'Back spread',
+    name,
+    desc,
+    ...positional(o.dte ?? 2, '09:20', 0, '15:20'),
+    legs: [
+      leg('S', side, { by: 'pts', value: o.off ?? 3 * w }, { lots: 2 * n }), // the centre
+      ...(o.form === 'iron'
+        ? [fromCentre('S', other, 0, 2), fromCentre('B', 'PE', -1.5 * w, 2), fromCentre('B', 'CE', 1.5 * w, 2)]
+        : [fromCentre('S', side, 0, 2), fromCentre('B', side, -1.5 * w, 2), fromCentre('B', side, 1.5 * w, 2)]),
+      fromCentre('S', side, (-d * w) / 2, 1), // back spread: sell 1 nearer the money...
+      fromCentre('B', side, (d * w) / 2, 2), // ...buy 2 a width further out
+    ],
+    risk: o.risk || {},
+  };
+}
+
 const LIBRARY = [
   // ---- Bi-weekly hedge (Advanced Bi-Weekly Option Strategy playbook): first in every list ----
   // Enter the day after a weekly expiry (start of a new series). Sell a ~₹105 call and a ~₹120 put in the 2-week
@@ -401,6 +431,32 @@ const LIBRARY = [
     ...positional(2, '09:30', 0, '15:20'),
     legs: [leg('B', 'CE', atm(-2)), leg('S', 'CE', atm(), { lots: 2 }), leg('B', 'CE', atm(2))],
   },
+
+  // ---- Back spread + 2 butterflies (Live › Ideas › Back spreads) ----
+  // Figures: Oct 2024 – Oct 2026 weekly expiries, 0.5% slippage, ₹20 an order, lot 65, capital ₹5 L. The near put
+  // version was the best of 128 variants tried (both sides, widths 100 / 200, centres 1–4 widths out, entry 0–4 days
+  // before expiry, iron or single-type butterflies): only centres one width below spot on the put side made money.
+  backFly(
+    'lib-backfly-put-shot',
+    'PE',
+    'Put back spread + 2 iron butterflies (centre 300 below)',
+    'Bearish, defined risk. 2 days before expiry: sell 1 put and buy 2 puts 100 lower, centred 300 pts below Nifty, and 2 iron butterflies at that centre with wings 150 either side. In profit if Nifty falls into the butterflies or crashes, a small loss otherwise. 1 unit, held to expiry: −₹1.84 L, 24% winners, worst trade −₹18K. Nifty rarely travels 300 pts in 2 days, so the small loss of most weeks outweighs the rare wins.',
+    { w: 100, off: 300, dte: 2, form: 'iron' },
+  ),
+  backFly(
+    'lib-backfly-call-shot',
+    'CE',
+    'Call back spread + 2 iron butterflies (centre 300 above)',
+    'Bullish mirror image: sell 1 call and buy 2 calls 100 higher, centred 300 pts above Nifty, and 2 iron butterflies there with wings 150 either side; 2 days before expiry, held to expiry. 1 unit: −₹2.64 L, 18% winners, worst trade −₹13K. Every call-side variant tried lost money.',
+    { w: 100, off: 300, dte: 2, form: 'iron' },
+  ),
+  backFly(
+    'lib-backfly-put-near',
+    'PE',
+    'Put back spread + 2 put butterflies (centre 200 below)',
+    'Bearish-neutral, defined risk. 4 days before expiry: sell 1 put and buy 2 puts 200 lower, centred 200 pts below Nifty, and 2 put butterflies at that centre with wings 300 either side (all puts). Nifty sits inside the butterflies at entry, so it earns if Nifty stays put or falls, and loses up to ~₹15K a unit if Nifty rallies. 2 units, stop at 4% of capital: +₹5.03 L (+₹1.38 L / +₹2.73 L / +₹0.92 L by year), drawdown −₹97K, worst trade −₹25K, 15 of 25 months up, margin ≈ ₹83K (up to ₹2.1 L). Best of 128 variants: expect less going forward.',
+    { w: 200, off: 200, dte: 4, lots: 2, risk: { unit: 'pct', sl: 4 } },
+  ),
 ];
 
 // One signal strategy per arbitrage / fair-value type, direction and (where the legs differ) option side: enter when
@@ -441,4 +497,4 @@ function arbitrageStrategies() {
 }
 LIBRARY.push(...arbitrageStrategies());
 
-module.exports = { LIBRARY, biweekly };
+module.exports = { LIBRARY, biweekly, backFly };
