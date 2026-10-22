@@ -52,6 +52,7 @@
     bsWin: 10,
     bsRank: 'loss',
     bsAll: false,
+    bsForm: 'best',
     ...stored,
   };
   if (stored.basisV !== 2) Object.assign(C, { basis: 'ltp', basisV: 2 }); // Prices were bid / ask by default before: LTP now
@@ -435,6 +436,7 @@
   // used instead, and the section says so.
   const BS = window.BackSpread;
   const BS_SHOW = 5; // per side, unless "All" is picked
+  const BS_FORMS = { best: 'Best of both', same: 'Butterfly (all PE / all CE)', iron: 'Iron fly (CE + PE)' };
   function backSpreads(M) {
     const out = [];
     if (!BS) {
@@ -443,6 +445,10 @@
     }
     const win = BS.WINDOWS.includes(C.bsWin) ? C.bsWin : 10;
     const rank = BS.RANKS[C.bsRank] ? C.bsRank : 'loss';
+    // butterfly: single-type butterflies (all puts / all calls); iron fly: iron butterflies (CE and PE strikes);
+    // best: both priced, the one that loses less after charges kept
+    const formSel = BS_FORMS[C.bsForm] ? C.bsForm : 'best';
+    const forms = formSel === 'best' ? BS.FORMS : [formSel];
     const pts = (x) => `${x >= 0 ? '+' : '−'}${Math.abs(x).toFixed(1)} pts`;
     // the touch when the chain has a book, else the last trades
     const book = M.ks.some((k) => M.quote(k, 'CE')?.bid > 0 && M.quote(k, 'CE')?.ask > 0);
@@ -459,7 +465,7 @@
       for (const g of BS.geometries(M.ks, M.ai, t, win)) {
         fits++;
         let pick = null;
-        for (const form of BS.FORMS) {
+        for (const form of forms) {
           let fit = Infinity;
           const L = BS.legsOf(g, t, form).map((l) => {
             const f = price(l.act, l.k, l.type);
@@ -524,18 +530,23 @@
         rank,
         Object.entries(BS.RANKS).map(([k, [l, tip]]) => [k, l, tip]),
       )}</span>` +
+      `<span class="id-ctl" title="Butterfly: all puts (put side) or all calls (call side). Iron fly: straddle sold at the centre, a put and a call bought as wings (CE and PE strikes). Both pay the same at expiry. Best of both: each priced, the one that loses less after charges kept.">Butterflies ${seg(
+        'bsform',
+        formSel,
+        Object.entries(BS_FORMS).map(([k, l]) => [k, l]),
+      )}</span>` +
       `<span class="id-ctl" title="The best ${BS_SHOW} of each side, or every trade that fits the window">Show ${seg('bsall', C.bsAll ? 1 : 0, [
         [0, `Best ${BS_SHOW}`],
         [1, 'All'],
       ])}</span>` +
       `<button class="btn-sm ghost" data-bsbt="1" title="Backtest this selection on Strategies › Back spread: at every past entry the best strikes within ATM ±${win} are picked the same way">Backtest ATM ±${win} ▸</button>`;
     out.info =
-      `${fits * 2} combinations fit ATM ±${win} (widths ${BS.WIDTHS.join(' / ')}, every centre from the money to the edge of the window, iron and single-type butterflies)` +
+      `${fits * forms.length} combinations fit ATM ±${win} (widths ${BS.WIDTHS.join(' / ')}, every centre from the money to the edge of the window, ${formSel === 'best' ? 'iron and single-type butterflies, the cheaper kept' : formSel === 'iron' ? 'iron flies only' : 'single-type butterflies only'})` +
       (untradable ? `; ${untradable} left out because a leg has no ${book ? `two-sided quote within ${QSPREAD} pts` : 'price'}` : '') +
       `. ${book ? 'Priced at the touch: buy at the ask, sell at the bid.' : 'No bid / ask on this chain (market closed?): priced at the last trades, which may not be fillable.'} Ranked by ${BS.RANKS[rank][0].toLowerCase()}. Payoff shapes from the live prices, not a forecast: no proven edge.`;
     if (!out.length)
       out.empty = fits
-        ? `None of the ${fits * 2} combinations within ATM ±${win} is fully tradable and in profit at its centre right now: widen the window.`
+        ? `None of the ${fits * forms.length} combinations within ATM ±${win} is fully tradable and in profit at its centre right now: widen the window.`
         : `No back spread with its butterflies fits within ATM ±${win} on this chain: widen the window.`;
     return out;
   }
@@ -2002,8 +2013,13 @@
     else if (b.dataset.bsrank) C.bsRank = b.dataset.bsrank;
     else if (b.dataset.bswin) C.bsWin = Number(b.dataset.bswin);
     else if (b.dataset.bsall) C.bsAll = b.dataset.bsall === '1';
+    else if (b.dataset.bsform) C.bsForm = b.dataset.bsform;
     else if (b.dataset.bsbt) {
-      BT.emit('bs-preset', { wins: [BS.WINDOWS.includes(C.bsWin) ? C.bsWin : 10], rank: C.bsRank || 'loss' });
+      BT.emit('bs-preset', {
+        wins: [BS.WINDOWS.includes(C.bsWin) ? C.bsWin : 10],
+        rank: C.bsRank || 'loss',
+        forms: C.bsForm === 'iron' || C.bsForm === 'same' ? [C.bsForm] : ['same', 'iron'],
+      });
       return window.app.setView('bs');
     }
     else if (b.dataset.basis) C.basis = b.dataset.basis;

@@ -1,6 +1,8 @@
 // Strategies › Back spread: the back spread + 2 butterflies of Live › Ideas › Back spreads, backtested for every
-// selection at once. Each row is one side (put = bearish, call = bullish), one strike window (every leg within ATM ±
-// win strikes) and one entry day (trading days before the weekly expiry, 09:20), held to expiry (15:20). At every
+// selection at once. Each row is one side (put = bearish, call = bullish), one butterfly form (butterfly = all puts /
+// all calls, iron fly = CE and PE strikes), one strike window (every leg within ATM ±
+// win strikes), one expiry cycle (weekly or monthly) and one entry: the start of the expiry's series (the trading day
+// after the previous expiry of that cycle) or n trading days before it, 09:20, held to expiry (15:20). At every
 // entry the engine picks the best strikes inside the window from that minute's prices (strategy.pick,
 // lib/backspread.js), so each trade can use a different width and centre. Only options that traded in the 15 minutes
 // up to entry are picked, and every fill pays at least a tick of slippage. Nothing is saved: the result is the job's.
@@ -15,19 +17,31 @@ const FORM = { same: '2 single-type butterflies', iron: '2 iron butterflies' };
 // Realistic fills: every option picked must have traded in the FRESH minutes up to entry (not a price carried forward),
 // and every fill pays at least one tick (₹0.05) of slippage, however cheap the option.
 const FRESH = 15;
+// Entries: the start of the series, or trading days before expiry. 5 days or more only fit a monthly cycle: a weekly
+// series is about 5 trading days long, so "this week" legs would trade the expiry before.
+const ENTRIES = ['start', 0, 1, 2, 3, 4, 5, 10, 15];
+const WEEKLY_MAX_DTE = 4;
 const MIN_SLIP = 0.05;
 
 // The strategy of one selection; units = lots of the whole structure (sell 1 / buy 2 back spread + 2 butterflies).
-function strategyOf({ side, win, widths, form, rank, dte, units = 1, sl = 0 }) {
+const entryName = (dte) => (dte === 'start' ? 'expiry start' : dte === 0 ? 'expiry day' : `${dte}d before expiry`);
+function strategyOf({ side, win, widths, form, rank, dte, expiry = 'weekly', units = 1, sl = 0 }) {
   return {
-    name: `${SIDES[side]} + ${FORM[form]} · ATM ±${win} · ${dte}d before expiry`,
+    name: `${SIDES[side]} + ${FORM[form]} · ATM ±${win} · ${expiry} · ${entryName(dte)}`,
     desc: `Back spread + 2 butterflies, every leg within ATM ± ${win} strikes, the best strikes picked at entry by ${BS.RANKS[rank][0].toLowerCase()} (widths ${widths.join(' / ')}).`,
     category: 'Back spread',
     mode: 'positional',
-    expiry: 'weekly',
-    entry: { time: '09:20', dteDays: dte },
+    expiry,
+    // expiry start: the trading day after the previous expiry of the cycle (engine entry.after = 1)
+    entry: dte === 'start' ? { time: '09:20', dteDays: 0, after: 1 } : { time: '09:20', dteDays: dte },
     exit: { time: '15:20', dteDays: 0 },
-    legs: BS.roles(side, form).map((r) => ({ action: r.act, type: r.type, lots: r.n * units, expiry: 'cur', strike: { by: 'pick', role: r.role } })),
+    legs: BS.roles(side, form).map((r) => ({
+      action: r.act,
+      type: r.type,
+      lots: r.n * units,
+      expiry: expiry === 'monthly' ? 'mcur' : 'cur',
+      strike: { by: 'pick', role: r.role },
+    })),
     pick: { kind: 'backfly', side, win, widths, form, rank, fresh: FRESH },
     risk: sl > 0 ? { unit: 'pct', sl } : {},
   };
@@ -43,8 +57,13 @@ function cleanSel(b) {
     sides: pickList(b?.sides, ['PE', 'CE'], ['PE', 'CE']),
     wins: pickList((b?.wins || []).map(Number), BS.WINDOWS, [5, 10, 15, 20]).sort((a, b) => a - b),
     widths: pickList((b?.widths || []).map(Number), BS.WIDTHS, BS.WIDTHS).sort((a, b) => a - b),
-    dtes: pickList((b?.dtes || []).map(Number), [0, 1, 2, 3, 4], [2]).sort((a, b) => a - b),
-    form: b?.form === 'iron' ? 'iron' : 'same',
+    expiries: pickList(b?.expiries, ['weekly', 'monthly'], ['weekly']),
+    dtes: pickList(
+      (b?.dtes || []).map((x) => (x === 'start' ? x : Number(x))),
+      ENTRIES,
+      [2],
+    ).sort((a, b) => ENTRIES.indexOf(a) - ENTRIES.indexOf(b)),
+    forms: pickList(b?.forms || (b?.form ? [b.form] : []), BS.FORMS, ['same']),
     rank: BS.RANKS[b?.rank] ? b.rank : 'loss',
     units: Math.max(1, Math.min(20, Math.round(Number(b?.units) || 1))),
     sl: Math.max(0, Math.min(50, Number(b?.sl) || 0)),
@@ -87,12 +106,16 @@ function createBackspread({ data, ext, startJob, settle }) {
       const sel = cleanSel(b.sel);
       const rows = [];
       const combos = [];
-      for (const side of sel.sides) for (const win of sel.wins) for (const dte of sel.dtes) combos.push({ side, win, dte });
+      for (const expiry of sel.expiries)
+        for (const form of sel.forms)
+          for (const side of sel.sides)
+            for (const win of sel.wins)
+              for (const dte of sel.dtes) if (expiry === 'monthly' || dte === 'start' || dte <= WEEKLY_MAX_DTE) combos.push({ expiry, form, side, win, dte });
       let optsN = null;
       for (const [i, c] of combos.entries()) {
         if (job.stop) break;
         const s = strategyOf({ ...sel, ...c });
-        const label = `${i + 1}/${combos.length} · ${c.side === 'PE' ? 'Put' : 'Call'} ATM ±${c.win}, ${c.dte}d · `;
+        const label = `${i + 1}/${combos.length} · ${c.expiry} · ${c.form === 'iron' ? 'Iron fly' : 'Butterfly'} · ${c.side === 'PE' ? 'Put' : 'Call'} ATM ±${c.win}, ${entryName(c.dte)} · `;
         try {
           const r = await runBacktest(
             data,
@@ -105,10 +128,10 @@ function createBackspread({ data, ext, startJob, settle }) {
           );
           optsN = r.opts;
           const st = computeStats(r.trades, r.opts.capital);
-          const roles = BS.roles(c.side, sel.form).map((x) => x.role);
+          const roles = BS.roles(c.side, c.form).map((x) => x.role);
           const trades = r.trades.map((t) => tradeRow({ ...t, roles }, c.side));
           rows.push({
-            key: `${c.side}-${c.win}-${c.dte}`,
+            key: `${c.expiry}-${c.form}-${c.side}-${c.win}-${c.dte}`,
             ...c,
             name: s.name,
             strategy: s,
@@ -121,7 +144,7 @@ function createBackspread({ data, ext, startJob, settle }) {
           });
         } catch (e) {
           if (e.cancelled) break;
-          rows.push({ key: `${c.side}-${c.win}-${c.dte}`, ...c, name: s.name, error: e.message });
+          rows.push({ key: `${c.expiry}-${c.form}-${c.side}-${c.win}-${c.dte}`, ...c, name: s.name, error: e.message });
         }
       }
       if (!rows.some((r) => !r.error)) throw new Error(rows.find((r) => r.error)?.error || 'Nothing could be backtested');
@@ -138,4 +161,4 @@ function createBackspread({ data, ext, startJob, settle }) {
   return { handle };
 }
 
-module.exports = { createBackspread, strategyOf, cleanSel };
+module.exports = { createBackspread, strategyOf, cleanSel, ENTRIES, WEEKLY_MAX_DTE };

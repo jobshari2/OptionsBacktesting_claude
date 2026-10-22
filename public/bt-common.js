@@ -223,7 +223,7 @@
       return `Intraday ${s.entry.time}–${s.exit.time} · ${days}${dte} · ${s.expiry}${s.adjust ? ' · adjust: ' + adjustLabel(s.adjust) : ''}`;
     }
     const enter = s.entry.after
-      ? `enter the day after the expiry ${s.entry.after} week${s.entry.after > 1 ? 's' : ''} before`
+      ? `enter the day after the expiry ${s.entry.after} ${s.expiry === 'monthly' ? 'month' : 'week'}${s.entry.after > 1 ? 's' : ''} before`
       : `enter ${s.entry.dteDays}d before`;
     return `Positional · ${enter} ${s.expiry} expiry ${s.entry.time} → exit ${s.exit.dteDays ? s.exit.dteDays + 'd before' : 'expiry day'} ${s.exit.time}${s.entry.noOverlap ? ' · one at a time' : ''}${s.adjust ? ' · adjust: ' + adjustLabel(s.adjust) : ''}`;
   }
@@ -447,7 +447,7 @@
             ])}</div>
             ${
               s.entry.after
-                ? `<div class="ed-row wrap"><span class="lbl">Enter</span><span class="muted">the trading day after the expiry</span>${numIn('entry.after', s.entry.after, 'min="1" max="6" step="1"')}<span class="muted">weeks before this one, at</span><input type="time" data-path="entry.time" value="${s.entry.time}" step="60"></div>`
+                ? `<div class="ed-row wrap"><span class="lbl">Enter</span><span class="muted">the trading day after the expiry</span>${numIn('entry.after', s.entry.after, 'min="1" max="6" step="1"')}<span class="muted">${s.expiry === 'monthly' ? 'monthly expiries' : 'weeks'} before this one (1 = the start of this expiry's own series), at</span><input type="time" data-path="entry.time" value="${s.entry.time}" step="60"></div>`
                 : `<div class="ed-row"><span class="lbl">Enter</span>${numIn('entry.dteDays', s.entry.dteDays, 'min="0" max="40" step="1"')}<span class="muted">trading days before expiry at</span><input type="time" data-path="entry.time" value="${s.entry.time}" step="60"></div>`
             }
             <div class="ed-row"><span class="lbl">Exit</span>${numIn('exit.dteDays', s.exit.dteDays, 'min="0" max="40" step="1"')}<span class="muted">days before expiry (0 = expiry day) at</span><input type="time" data-path="exit.time" value="${s.exit.time}" step="60"></div>

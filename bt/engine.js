@@ -16,8 +16,9 @@
 // stop out when Nifty closes through the level beyond it ("srb").
 //
 // Multi-expiry hedging (e.g. the bi-weekly hedge in library.js):
-//  - entry.after = n: positional entry on the trading day after the expiry n weekly series before the trade's
-//    expiry (the start of a new series, whatever the weekday or holidays), instead of n trading days before it.
+//  - entry.after = n: positional entry on the trading day after the expiry n series before the trade's expiry (the
+//    start of a new series, whatever the weekday or holidays), instead of n trading days before it. Series are weekly
+//    expiries for a weekly cycle and monthly expiries for a monthly one.
 //  - strike { by: 'leg', ref, value }: another leg's strike ± points (e.g. a wing exactly 100 above the short call).
 //  - leg.roll { dteDays, time }: that many trading days before the leg's own expiry, at that time, the leg is closed
 //    and the same strike is opened in the next weekly expiry (e.g. a near-week hedge rolled into the main expiry).
@@ -323,8 +324,9 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
       const i = dayIdx.get(ref);
       let entryDay;
       if (after) {
-        // the trading day after the expiry `after` weekly series earlier: the start of a new series
-        const prev = cal.all[cal.all.indexOf(ref) - after];
+        // the trading day after the expiry `after` series earlier: the start of a new series (weekly series for a
+        // weekly cycle, monthly series for a monthly one: after = 1 enters the day after the previous monthly expiry)
+        const prev = refList[refList.indexOf(ref) - after];
         if (!prev || !dayIdx.has(prev)) continue;
         entryDay = days[dayIdx.get(prev) + 1];
       } else entryDay = days[i - strat.entry.dteDays];
@@ -632,7 +634,7 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
     let legs;
     try {
       if (strat.pick) {
-        sx.pick = await pickStrikes(strat.pick, legExpiry('cur', tl[0]), tl[0], e0, spotIn);
+        sx.pick = await pickStrikes(strat.pick, legExpiry(strat.legs[0].expiry, tl[0]), tl[0], e0, spotIn); // the legs' own expiry
         if (!sx.pick) throw new Skip(`no back spread fully priced within ATM ± ${strat.pick.win}`);
       }
       const out = new Array(strat.legs.length);

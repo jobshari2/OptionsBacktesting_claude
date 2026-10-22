@@ -1,15 +1,25 @@
 // Strategies › Back spread: the back spread + 2 butterflies of Live › Ideas › Back spreads, backtested for every
 // selection at once (bt/backspread.js). Pick the sides, the strike windows (every leg within ATM ± 5, 10, 15...), the
-// widths allowed, the butterflies' form, how the best strikes are ranked, the entry days and the size; each side ×
-// window × entry day is one row. At every past entry the engine picks the best strikes inside the window from that
+// widths allowed, the butterfly forms (butterfly = all puts / all calls, iron fly = CE and PE strikes; pick both to
+// compare), how the best strikes are ranked, the expiry cycle (weekly / monthly), the entries (the start of the
+// expiry's series, or n days before expiry) and the size; each expiry × form × side × window × entry is one row. At every past entry the engine picks the best strikes inside the window from that
 // minute's prices (lib/backspread.js, the picker Live › Ideas uses), so a row's trades can differ in width and centre.
 // Click a row for its equity curve and every trade with the strikes picked. Results are not saved.
 (() => {
   const { $, esc, inrS, kinr, dayShort } = BT;
   const BS = window.BackSpread;
-  const DTES = [0, 1, 2, 3, 4];
-  const DEF = { sides: ['PE', 'CE'], wins: [5, 10, 15, 20], widths: [100, 200, 300, 400], dtes: [2], form: 'same', rank: 'loss', units: 1, sl: 0 };
+  // entries: the start of the expiry's series, or trading days before expiry (5 or more: monthly only, see bt/backspread.js)
+  const ENTRIES = ['start', 0, 1, 2, 3, 4, 5, 10, 15];
+  const WEEKLY_MAX_DTE = 4;
+  const entryName = (d, long) => (d === 'start' ? 'expiry start' : d === 0 ? 'expiry day' : `${d}d before${long ? ' expiry' : ''}`);
+  const runs = () =>
+    sel.forms.length * sel.sides.length * sel.wins.length * sel.expiries.reduce((n, e) => n + sel.dtes.filter((d) => e === 'monthly' || d === 'start' || d <= WEEKLY_MAX_DTE).length, 0);
+  const DEF = { sides: ['PE', 'CE'], wins: [5, 10, 15, 20], widths: [100, 200, 300, 400], dtes: [2], expiries: ['weekly'], forms: ['same'], rank: 'loss', units: 1, sl: 0 };
   let sel = { ...DEF, ...BT.store.get('bs-sel', {}) };
+  if (!Array.isArray(sel.forms) || !sel.forms.length) sel.forms = [sel.form === 'iron' ? 'iron' : 'same']; // saved before forms
+  if (!Array.isArray(sel.expiries) || !sel.expiries.length) sel.expiries = ['weekly'];
+  delete sel.form;
+  const FORM_NAME = { same: 'Butterfly', iron: 'Iron fly' };
   let settings = null;
   let res = null; // { at, sel, opts, rows, stopped }
   let cur = null; // key of the row shown below the table
@@ -53,7 +63,7 @@
       .join('')}</span>`;
   }
   function renderSel() {
-    const n = sel.sides.length * sel.wins.length * sel.dtes.length;
+    const n = runs();
     $('bsSel').innerHTML = `
       <div class="bs-row"><span class="lbl" title="Put = bearish (the back spread gains on a fall), call = bullish">Side</span>${chips(
         'side',
@@ -73,19 +83,26 @@
         BS.WIDTHS.map((w) => [w, `${w} pts`]),
         sel.widths,
       )}</div>
-      <div class="bs-row"><span class="lbl" title="Trading days before the weekly expiry to enter (09:20); every trade is held to expiry (15:20)">Enter</span>${chips(
+      <div class="bs-row"><span class="lbl" title="Weekly: the nearest weekly expiry. Monthly: the current monthly expiry. Pick both to compare.">Expiry</span>${chips(
+        'exp',
+        [
+          ['weekly', 'Weekly'],
+          ['monthly', 'Monthly'],
+        ],
+        sel.expiries,
+      )}</div>
+      <div class="bs-row"><span class="lbl" title="When to enter (09:20); every trade is held to its expiry (15:20). Expiry start: the first trading day of the series, the day after the previous weekly (or monthly) expiry. 5d and more: monthly only, a weekly series is about 5 trading days long.">Enter</span>${chips(
         'dte',
-        DTES.map((d) => [d, d === 0 ? 'Expiry day' : `${d}d before`]),
+        ENTRIES.map((d) => [d, d === 'start' ? 'Expiry start' : d === 0 ? 'Expiry day' : `${d}d before`, d !== 'start' && d > WEEKLY_MAX_DTE ? 'Monthly only' : '']),
         sel.dtes,
       )}</div>
-      <div class="bs-row"><span class="lbl" title="Both forms pay the same at expiry. Single-type butterflies trade only puts (or only calls), with no deep in-the-money option: lower slippage and STT.">Butterflies</span>${chips(
+      <div class="bs-row"><span class="lbl" title="Butterfly: all puts (put side) or all calls (call side), no deep in-the-money option. Iron fly: a straddle sold at the centre with a put and a call bought as wings (CE and PE strikes). Both pay the same at expiry; pick both to compare them, each its own row.">Butterflies</span>${chips(
         'form',
         [
-          ['same', 'All puts / all calls'],
-          ['iron', 'Iron'],
+          ['same', 'Butterfly (all PE / all CE)'],
+          ['iron', 'Iron fly (CE + PE)'],
         ],
-        sel.form,
-        false,
+        sel.forms,
       )}
         <span class="lbl" title="How the picker chooses the strikes at each entry">Best strikes by</span>${chips(
           'rank',
@@ -95,7 +112,7 @@
         )}</div>
       <div class="bs-row"><label class="lbl" title="Units of the whole structure per trade: 1 = sell 1 / buy 2 back spread + 2 butterflies (11 lots of options for single-type butterflies)">Units <input class="num xs" type="number" min="1" max="20" step="1" id="bsUnits" value="${sel.units}"></label>
         <label class="lbl" title="Stop on the whole position's loss, as % of the capital in the settings bar (0 = none, held to expiry)">Stop at <input class="num xs" type="number" min="0" max="50" step="0.5" id="bsSl" value="${sel.sl}"> % of capital</label>
-        <span class="muted small">${n} backtest${n === 1 ? '' : 's'} (side × window × entry day)</span></div>`;
+        <span class="muted small">${n} backtest${n === 1 ? '' : 's'} (expiry × form × side × window × entry)</span></div>`;
   }
   $('bsSel').addEventListener('click', (e) => {
     const b = e.target.closest('button');
@@ -104,8 +121,9 @@
     if (d.side) sel.sides = toggle(sel.sides, d.side);
     else if (d.win) sel.wins = toggle(sel.wins, Number(d.win)).sort((a, b) => a - b);
     else if (d.width) sel.widths = toggle(sel.widths, Number(d.width)).sort((a, b) => a - b);
-    else if (d.dte) sel.dtes = toggle(sel.dtes, Number(d.dte)).sort((a, b) => a - b);
-    else if (d.form) sel.form = d.form;
+    else if (d.dte) sel.dtes = toggle(sel.dtes, d.dte === 'start' ? 'start' : Number(d.dte)).sort((a, b) => ENTRIES.indexOf(a) - ENTRIES.indexOf(b));
+    else if (d.exp) sel.expiries = toggle(sel.expiries, d.exp);
+    else if (d.form) sel.forms = toggle(sel.forms, d.form);
     else if (d.rank) sel.rank = d.rank;
     else return;
     saveSel();
@@ -173,7 +191,7 @@
       .map((r) => {
         const s = r.stats;
         return `<tr data-row="${esc(r.key)}" class="${r.key === cur ? 'sel' : ''}">
-          <td class="l"><b>${sideName(r.side)}</b> · ATM ±${r.win} · ${r.dte === 0 ? 'expiry day' : `${r.dte}d before`}</td>
+          <td class="l"><b>${sideName(r.side)}</b> · ${FORM_NAME[r.form] || ''} · ATM ±${r.win} · ${r.expiry || 'weekly'} · ${entryName(r.dte)}</td>
           <td>${r.trades.length}${r.skipped ? ` <span class="muted small" title="${esc(r.skipReasons.join('\n'))}">(${r.skipped} skipped)</span>` : ''}</td>
           <td><b>${pn(s.total)}</b></td><td>${(s.winRate ?? 0).toFixed(0)}%</td><td>${pn(s.maxLoss)}</td><td>${pn(s.maxDD)}</td>
           <td>${s.profitFactor == null ? '—' : s.profitFactor.toFixed(2)}</td><td>${BT.inr(median(r.trades.map((t) => t.margin || 0)))}</td>
@@ -186,9 +204,9 @@
       ${note ? `<div class="panel empty err">${esc(note)}</div>` : ''}
       <div class="panel bs-sum">
         <div class="bs-sum-head"><b>${ok.length} backtest${ok.length === 1 ? '' : 's'}</b>
-          <span class="muted small">${esc(o.from || '')} → ${esc(o.to || '')} · ${res.sel.units} unit${res.sel.units === 1 ? '' : 's'} · ${res.sel.form === 'iron' ? 'iron butterflies' : 'single-type butterflies'} · widths ${res.sel.widths.join(' / ')} · best strikes by ${BS.RANKS[res.sel.rank][0].toLowerCase()} · ${res.sel.sl ? `stop ${res.sel.sl}% of capital` : 'held to expiry'} · slippage ${((o.slippage || 0) * 100).toFixed(2)}%, at least ₹${(o.minSlip || 0).toFixed(2)} a fill · only options traded in the 15 min before entry${res.stopped ? ' · <b>stopped early</b>' : ''}</span></div>
+          <span class="muted small">${esc(o.from || '')} → ${esc(o.to || '')} · ${res.sel.units} unit${res.sel.units === 1 ? '' : 's'} · ${(res.sel.forms || []).map((x) => FORM_NAME[x].toLowerCase()).join(' + ')} · widths ${res.sel.widths.join(' / ')} · best strikes by ${BS.RANKS[res.sel.rank][0].toLowerCase()} · ${res.sel.sl ? `stop ${res.sel.sl}% of capital` : 'held to expiry'} · slippage ${((o.slippage || 0) * 100).toFixed(2)}%, at least ₹${(o.minSlip || 0).toFixed(2)} a fill · only options traded in the 15 min before entry${res.stopped ? ' · <b>stopped early</b>' : ''}</span></div>
         <div class="tbl-wrap"><table class="grid-tbl bs-tbl"><thead>${head}</thead><tbody>${body}</tbody></table></div>
-        ${errs.length ? `<div class="muted small">Not run: ${errs.map((r) => `${sideName(r.side)} ±${r.win} ${r.dte}d (${esc(r.error)})`).join('; ')}</div>` : ''}
+        ${errs.length ? `<div class="muted small">Not run: ${errs.map((r) => `${sideName(r.side)} ${FORM_NAME[r.form] || ''} ±${r.win} ${r.expiry} ${entryName(r.dte)} (${esc(r.error)})`).join('; ')}</div>` : ''}
         <div class="muted small">Click a row for its equity curve and every trade with the strikes picked. Each row is the best of its own picks; picking the best row afterwards is a choice made with hindsight: expect less going forward.</div>
       </div>
       <div id="bsDetail"></div>`;
@@ -202,7 +220,7 @@
     for (const t of r.trades) ws[t.W] = (ws[t.W] || 0) + 1;
     const offs = r.trades.map((t) => t.off).filter((x) => x != null);
     el.innerHTML = `<div class="panel bs-detail">
-      <div class="bs-sum-head"><b>${sideName(r.side)} · ATM ±${r.win} · ${r.dte === 0 ? 'expiry day' : `${r.dte}d before expiry`}</b>
+      <div class="bs-sum-head"><b>${sideName(r.side)} · ${FORM_NAME[r.form] || ''} · ATM ±${r.win} · ${r.expiry || 'weekly'} · ${entryName(r.dte, true)}</b>
         <span class="muted small">widths picked: ${Object.entries(ws)
           .map(([w, n]) => `${w} pts × ${n}`)
           .join(', ')} · centre ${offs.length ? `${Math.round(median(offs))} pts from Nifty (median)` : '—'}</span></div>
@@ -262,6 +280,7 @@
   BT.on('bs-preset', (p) => {
     if (p.wins) sel.wins = p.wins;
     if (p.rank && BS.RANKS[p.rank]) sel.rank = p.rank;
+    if (Array.isArray(p.forms) && p.forms.length) sel.forms = p.forms;
     saveSel();
     if (settings && settings !== true) renderSel();
   });
