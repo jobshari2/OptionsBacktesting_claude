@@ -557,7 +557,7 @@
             ? `Open interest ${r.oiChg < 0 ? 'fell' : 'rose'} ${f1(Math.abs(r.oiChg), 1)} %: ${r.flow === 'Short covering' ? '<b>short covering</b> — option writers buying back their shorts, which pushes the price up fast' : r.flow === 'Long build-up' ? '<b>long build-up</b> — new buyers opening positions' : 'little change, so the buying and selling was mostly between existing holders'}.`
             : '') +
           (r.volLead != null
-            ? ` The first volume burst (5× usual in a minute) came ${r.volLead >= 0 ? r.volLead + ' min before' : -r.volLead + ' min after'} the +50 % mark.`
+            ? ` The first volume burst (a minute at 5× the previous 15 minutes' pace) came ${r.volLead >= 0 ? r.volLead + ' min before' : -r.volLead + ' min after'} the +50 % mark.`
             : ''),
       );
     else lines.push('<span class="muted">Volume and open interest for this contract have not been downloaded (Fetch volume &amp; OI, top right).</span>');
@@ -822,7 +822,10 @@
     const tags = by((r) => r.tags.map((t) => (t.startsWith('Macro') ? 'Macro news day' : t.startsWith('Volume') ? 'Volume ≥ 5× usual' : t)));
     const flows = by((r) => r.flow);
     const withVol = list.filter((r) => r.volLead != null);
-    const led = withVol.filter((r) => r.volLead > 0).length;
+    const noBurst = list.filter((r) => r.span === 'intraday' && r.volMult != null && r.volLead == null).length;
+    const led = withVol.filter((r) => r.volLead > 2).length;
+    const tied = withVol.filter((r) => Math.abs(r.volLead) <= 2).length;
+    const share = (n) => f1((n / Math.max(1, withVol.length)) * 100, 0) + ' %';
     const macro = by((r) => r.tags.filter((t) => t.startsWith('Macro')).map((t) => `${r.day}|${t.slice(7)}`));
     const split = DTE_B.map(([, l, f]) => {
       const g = list.filter((r) => f(r.dte) && r.byMove != null);
@@ -839,7 +842,7 @@
         <div class="panel sr-sec"><h3>Main driver</h3><table class="grid-tbl">${thead}<tbody>${drivers.map(row).join('')}</tbody></table></div>
         <div class="panel sr-sec"><h3>Who traded <span class="muted small">open interest from the low to the peak · ${list.filter((r) => r.flow).length} of ${list.length} with volume / OI</span></h3>
           ${flows.length ? `<table class="grid-tbl">${thead}<tbody>${flows.map(row).join('')}</tbody></table>` : '<p class="muted">No volume / OI downloaded yet: Fetch volume &amp; OI (top right).</p>'}
-          ${withVol.length ? `<p class="small">Volume burst (5× usual in a minute) <b>before</b> the +50 % mark in <b>${f1((led / withVol.length) * 100, 0)} %</b> of ${withVol.length} intraday surges; median lead ${f1(median(withVol.map((r) => r.volLead)), 0)} min. ${led / withVol.length > 0.5 ? 'Heavy buying usually shows up a little before the price takes off — the radar watches for it.' : 'The price usually moves first and the volume follows: volume is a confirmation, not an early warning.'}</p>` : ''}</div>
+          ${withVol.length ? `<p class="small">Did the orders come first? A <i>burst</i> is a minute trading 5× the session's pace of the previous 15 minutes. Of ${(withVol.length + noBurst).toLocaleString('en-IN')} intraday surges with volume, ${noBurst.toLocaleString('en-IN')} had no burst at all; of the rest, the first burst came <b>more than 2 min before</b> the +50 % mark in ${share(led)} (median ${f1(median(withVol.filter((r) => r.volLead > 2).map((r) => r.volLead)), 0)} min before — often an unrelated earlier spike), <b>with it</b> (±2 min) in ${share(tied)} and <b>after it</b> in ${share(withVol.length - led - tied)}. ${led / withVol.length > 0.6 ? 'Volume tends to lead: worth watching on the radar.' : 'No reliable lead: about half the time volume arrives with or after the price, and the earlier bursts are often far ahead of it, so volume confirms a surge more than it warns of one.'}</p>` : ''}</div>
         <div class="panel sr-sec"><h3>Tags <span class="muted small">a surge can carry several</span></h3><div class="sr-chart"><canvas id="srTags"></canvas></div></div>
         <div class="panel sr-sec"><h3>Nifty move vs. IV, by days to expiry <span class="muted small">average share of the gain</span></h3><div class="sr-chart"><canvas id="srSplit"></canvas></div></div>
       </div>

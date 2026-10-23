@@ -299,3 +299,92 @@ test('suggestions: a held paper month is shown with the month after it (the roll
     ],
   );
 });
+
+test('roll up (optional): over the breakeven the call is bought back and a higher one sold; its P&L stays in the month', async () => {
+  const off = await CC.runCoveredCall(synth({ path: (i) => 23000 + i * 25 }), { ovl: { on: false } });
+  assert.ok(
+    off.cycles.every((c) => c.rolls.length === 0),
+    'off by default (the threads hold the call)',
+  );
+  const on = await CC.runCoveredCall(synth({ path: (i) => 23000 + i * 25 }), { ovl: { on: false }, roll: { upPct: 0, maxUp: 2 } });
+  const c = on.cycles.find((x) => x.rolls.length);
+  assert.ok(c, 'a rising month rolls');
+  assert.ok(c.rolls.length <= 2);
+  for (const r of c.rolls) assert.ok(r.to.strike > r.from.strike);
+  assert.equal(c.call.strike, c.rolls[c.rolls.length - 1].to.strike, 'the month ends on the last call sold');
+  assert.ok(on.events.some((e) => e.kind === 'roll'));
+});
+
+test('paper trade: roll up when switched on and Nifty is over the breakeven', async () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccpaper-roll-')), 'cc-paper.json');
+  const today = istDate();
+  const expiries = [6, 13, 20, 27, 34, 41, 48].map((n) => addDays(today, n));
+  let spot = 25030;
+  const chainAt = () => {
+    const rows = [];
+    for (let k = 22000; k <= 28000; k += 50) {
+      const tv = 200 * Math.exp(-Math.abs(k - spot) / 800);
+      rows.push({ strike: k, ce: { ltp: CC.intrinsic('CE', k, spot) + tv }, pe: { ltp: CC.intrinsic('PE', k, spot) + tv } });
+    }
+    return { spot, rows };
+  };
+  const p = createCcPaper({
+    file,
+    demo: true,
+    isMarketOpen: () => true,
+    getExpiries: async () => expiries,
+    getChain: async () => chainAt(),
+    closeOf: async () => spot,
+    beesPrice: async () => 280,
+  });
+  await p.start({ ovl: { on: false }, roll: { upPct: 0.5 } });
+  const first = p.state().paper.cycle.call.strike;
+  spot = 26000;
+  await p.tick();
+  const cyc = p.state().paper.cycle;
+  assert.ok(cyc.call.strike > first, 'sold a higher call');
+  assert.equal(cyc.rolls.length, 1);
+  assert.equal(cyc.closedCalls[0].strike, first);
+  assert.ok(cyc.closedCalls[0].exit > cyc.closedCalls[0].entry, 'the first call was bought back at a loss');
+});
+
+test('month by month model: the strategy each month on a chosen path, totals add up', () => {
+  const r = CC.modelPath({ params: {}, spot0: 25000, bees0: 280, totalPct: 25, months: 12, iv: 0.13 });
+  assert.equal(r.path.length, 12);
+  const last = r.path[11];
+  assert.ok(Math.abs(last.spotOut - 25000 * 1.25) < 1, 'ends +25 %');
+  assert.equal(last.cum.total, last.cum.opt + last.cum.bees);
+  assert.ok(Math.abs(last.cum.bees - r.qty * (280 / 25000) * 25000 * 0.25) < 12, 'NIFTYBEES gains its share of the move');
+  for (const m of r.path) {
+    assert.equal(m.call.strike, Math.floor(m.spotIn / 100) * 100, 'ITM call from each month’s spot');
+    assert.ok(Math.abs(m.opt - (m.callPnl + m.insPnl + m.wkPnl - m.costs)) <= 2);
+  }
+  const flat = CC.modelPath({ params: {}, spot0: 25000, bees0: 280, totalPct: 0, months: 6, iv: 0.13, swings: false });
+  assert.ok(
+    flat.path.every((m) => m.callPnl > 0 && m.bees === 0),
+    'a flat month keeps the call’s time value',
+  );
+  const up = CC.modelPath({ params: {}, spot0: 25000, bees0: 280, totalPct: 25, months: 12, iv: 0.13 });
+  assert.ok(up.path[11].cum.total < up.path[11].cum.bees, 'a steady rise: the calls cap it below buy and hold');
+});
+
+test('holding a Nifty 50 index fund: modelled NAV at the close, stamp duty only, no booking above the strike', async () => {
+  const etf = await CC.runCoveredCall(synth({ path: (i) => 23000 + i * 20, bees: 0.011 }), { ovl: { on: false } });
+  const mf = await CC.runCoveredCall(synth({ path: (i) => 23000 + i * 20, bees: 0.011 }), {
+    ovl: { on: false },
+    hold: { kind: 'mf', divPct: 1.2, expPct: 0.2 },
+  });
+  assert.equal(mf.holdName, 'Nifty 50 index fund');
+  assert.ok(Math.abs(mf.bees0 - mf.spot0 / 100) < 1, 'the NAV starts at Nifty / 100');
+  assert.ok(mf.events[0].text.includes('units of the Nifty 50 index fund') && mf.events[0].text.includes('modelled NAV'));
+  assert.ok(
+    etf.cycles.some((c) => c.booked > 0),
+    'the ETF books above the strike',
+  );
+  assert.ok(
+    mf.cycles.every((c) => !c.booked),
+    'the fund does not (redemptions take days)',
+  );
+  assert.equal(mf.stats.call, etf.stats.call, 'the same calls');
+  assert.ok(CC.mfNav(25000, { divPct: 1.2, expPct: 0.2 }, '2025-01-01', '2026-01-01') > 250, 'the NAV grows by dividends less expenses');
+});

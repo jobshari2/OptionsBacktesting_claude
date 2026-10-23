@@ -11,7 +11,8 @@ const { MPD, OPEN_MIN, addDays } = require('./data');
 
 const BEFORE_DAYS = 7; // calendar days before the low: the usual volume is measured on those sessions
 const CHUNK_DAYS = 28;
-const BURST = 5; // a minute with this many times the usual volume per minute is a burst
+const BURST = 5; // a minute with this many times the median volume of the session's previous BURST_WINDOW minutes is a burst
+const BURST_WINDOW = 15;
 
 const minuteOf = (ts) => Number(ts.slice(11, 13)) * 60 + Number(ts.slice(14, 16)) - OPEN_MIN;
 const volFile = (cacheDir, expiry, strike, type) => path.join(cacheDir, 'vol', expiry, `${strike}${type}.json.gz`);
@@ -101,7 +102,8 @@ async function fetchVolumes(api, cacheDir, surges, { onProgress, stopped, logErr
 
 // What the trading looked like during one surge (intraday or multi-day), or null without a volume file.
 //   volMult   volume per minute from the low to the peak ÷ the usual volume per minute (earlier sessions)
-//   volLead   minutes the first volume burst came before the +50 % mark (negative: after it); intraday only
+//   volLead   minutes the first volume burst (5× the session's pace of the previous 15 min) came before the +50 % mark
+//             (negative: after it); null when there was none; intraday only
 //   oiChg     % change of open interest from the low to the peak
 //   flow      'Short covering' (OI down ≥ 3 % while the price rose), 'Long build-up' (OI up ≥ 3 %), 'Flat OI'
 //   turnover  ₹ traded from the low to the peak
@@ -149,16 +151,23 @@ function flowStats(cacheDir, ev, prices) {
       }
     }
   }
-  // the first burst from 30 minutes before the low (intraday only: the minutes are of one session)
+  // The first burst from 30 minutes before the low (intraday only: the minutes are of one session), against the same
+  // session's own recent pace: a contract trades more every day towards expiry, so earlier sessions would make every
+  // minute of the surge day look like a burst.
   let volLead = null;
-  if (ev.span === 'intraday' && usual > 0 && ev.m50 != null) {
+  if (ev.span === 'intraday' && ev.m50 != null) {
     const a = v.days.get(ev.troughDay);
     if (a)
-      for (let m = Math.max(0, ev.troughMin - 30); m <= ev.peakMin; m++)
-        if (a[m * 2] >= BURST * usual) {
+      for (let m = Math.max(BURST_WINDOW, ev.troughMin - 30); m <= ev.peakMin; m++) {
+        const prior = [];
+        for (let k = m - BURST_WINDOW; k < m; k++) prior.push(Math.max(0, a[k * 2]));
+        prior.sort((x, y) => x - y);
+        const med = prior[prior.length >> 1];
+        if (med > 0 && a[m * 2] >= BURST * med) {
           volLead = ev.m50 - m;
           break;
         }
+      }
   }
   const oiChg = oiLow > 0 && oiPeak != null ? ((oiPeak - oiLow) / oiLow) * 100 : null;
   return {

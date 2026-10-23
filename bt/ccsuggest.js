@@ -158,8 +158,13 @@ function suggest({ today, spot, bees = null, chains, expiries, params, paper = n
   for (const e of expiries) lastOf.set(e.slice(0, 7), e);
   const monthly = [...lastOf.values()].filter((e) => e >= today);
   // no NIFTYBEES quote (demo, or the read failed): modelled from Nifty with the paper trade's last ratio, and flagged
-  const beesModelled = !(bees > 0);
-  if (beesModelled) bees = r2(spot * (paper?.beesRatio ?? CC.BEES_RATIO));
+  const mf = p.hold.kind === 'mf';
+  const HN = CC.holdName(p);
+  const HNt = mf ? 'the ' + HN : HN; // in a sentence
+  const beesModelled = mf || !(bees > 0);
+  if (mf)
+    bees = r2(spot / 100); // an index fund: its modelled NAV
+  else if (beesModelled) bees = r2(spot * (paper?.beesRatio ?? CC.BEES_RATIO));
   const qtyBees = Math.round((units * spot) / bees);
   const ruleIns = (c) => c.kind === p.ins.kind && c.upperPct === p.ins.upperPct && c.bodyPct === p.ins.bodyPct;
 
@@ -240,7 +245,7 @@ function suggest({ today, spot, bees = null, chains, expiries, params, paper = n
     now.push({
       kind: 'start',
       text:
-        `Buy ${qtyBees.toLocaleString('en-IN')} NIFTYBEES at about ₹${bees}${beesModelled ? ' (modelled: no quote)' : ''} (${units} Nifty units); ` +
+        `Buy ${qtyBees.toLocaleString('en-IN')} ${mf ? 'units of the ' + HN : HN} at about ₹${bees}${mf ? " (modelled NAV; a fund fills at the day's NAV, and new units take a day or two to pledge)" : beesModelled ? ' (modelled: no quote)' : ''} (${units} Nifty units); ` +
         (first ? describe(first) : 'no monthly expiry far enough away') +
         '.',
     });
@@ -252,7 +257,7 @@ function suggest({ today, spot, bees = null, chains, expiries, params, paper = n
   } else if (cyc) {
     now.push({
       kind: 'hold',
-      text: `Keep NIFTYBEES, the ${cyc.call?.strike} CE${cyc.ins.length ? ' and the insurance' : ''} to ${cyc.expiry}: the threads change nothing inside the month.`,
+      text: `Keep ${HNt}, the ${cyc.call?.strike} CE${cyc.ins.length ? ' and the insurance' : ''} to ${cyc.expiry}: the threads change nothing inside the month.`,
     });
     if (!cyc.ins.length && p.ins.kind !== 'none') {
       const m = months.find((x) => x.expiry === cyc.expiry);
@@ -262,6 +267,28 @@ function suggest({ today, spot, bees = null, chains, expiries, params, paper = n
           kind: 'buy',
           text: `Insurance still missing: buy the ${i.strikes.join(' / ')} PE ${i.kind === 'debit' ? 'debit spread' : 'butterfly'} (${cyc.expiry}) for about ₹${i.debit.toLocaleString('en-IN')}.`,
         });
+    }
+    // over the call's breakeven the call loses what NIFTYBEES gains: what rolling it up would cost now
+    if (cyc.call && cyc.callBE && spot > cyc.callBE) {
+      const chain = chains.get(cyc.expiry);
+      const k = CC.callTarget(spot, p.call);
+      const qb = quote(chain, cyc.call.strike, 'CE');
+      const qn = k > cyc.call.strike ? quote(chain, k, 'CE') : null;
+      if (qb && qn) {
+        const back = CC.fillPx(qb.px, 'S', p.costs.slippage, false);
+        const sell = CC.fillPx(qn.px, 'S', p.costs.slippage);
+        const locked = Math.round((cyc.call.entry - back) * units);
+        const debit = Math.round((back - sell) * units);
+        now.push({
+          kind: 'roll',
+          text:
+            `Nifty ${Math.round(spot)} is over the call's ${Math.round(cyc.callBE)} breakeven: above it the ${cyc.call.strike} CE loses what ${HNt} gains. ` +
+            `To keep more of a further rise, roll it up: buy back ${cyc.call.strike} CE at about ${back} (locks ${locked >= 0 ? '+' : '−'}₹${Math.abs(locked).toLocaleString('en-IN')}) and sell ${k} CE at about ${sell} (net debit ₹${debit.toLocaleString('en-IN')}); ${HNt} then gains again up to ${k}. ` +
+            (p.roll.upPct == null
+              ? "Not in the threads' rules, so the paper trade keeps the call; in the backtest rolling up recovered part of rallies but gave most of it back in flat months."
+              : `The paper trade does this itself once Nifty is ${p.roll.upPct}% over the breakeven.`),
+        });
+      }
     }
     const left = daysBetween(today, cyc.expiry);
     const nextM = months.find((m) => m.expiry > cyc.expiry);
@@ -285,7 +312,7 @@ function suggest({ today, spot, bees = null, chains, expiries, params, paper = n
       });
     else now.push({ kind: 'info', text: `No ${kind} this week clears the minimum credit (${p.ovl.minCredit} points) and a ${MIN_POP}% chance.` });
   }
-  return { at: Date.now(), today, spot: r2(spot), bees, beesModelled, qtyBees, units, months, weekly, now, minPop: MIN_POP };
+  return { at: Date.now(), today, spot: r2(spot), bees, beesModelled, holdName: HN, mf, qtyBees, units, months, weekly, now, minPop: MIN_POP };
 }
 const REGIME_TRADE = { up: 'put credit spread', down: 'call credit spread', range: 'iron condor' };
 

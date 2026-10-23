@@ -15,6 +15,7 @@
 //      reinvested in the holding ("buy more bees at a better average"). The next month starts the next session.
 // The rule functions are shared by the backtest (runCoveredCall) and the live paper trade (ccpaper.js).
 const Costs = require('../lib/costs');
+const { bsm } = require('../lib/pricing');
 const { MPD, OPEN_MIN, addDays, BEES } = require('./data');
 
 const DEFAULTS = {
@@ -24,8 +25,14 @@ const DEFAULTS = {
   call: { rule: 'itm100', value: 0 }, // itm100 | atm | itmPts | otmPts | otmPct
   ins: { kind: 'butterfly', upperPct: 1.5, bodyPct: 4 }, // butterfly | debit | none; the butterfly's lower wing mirrors the upper
   ovl: { on: true, lots: 1, otmPct: 1.5, width: 200, minCredit: 5, lowerPct: 1.5 },
-  roll: { bookAbove: true, reinvest: 'below' }, // reinvest: below (the month closed under its entry) | always | never
+  // reinvest: below (the month closed under its entry) | always | never. upPct: roll the call up when Nifty is this % over
+  // its breakeven at a day's entry time (null = never), at most maxUp times a month, not in its last 3 days.
+  roll: { bookAbove: true, reinvest: 'below', upPct: null, maxUp: 2 },
   costs: { slippage: 0.5, brokerage: 20, etfPct: 0.03 }, // slippage and ETF charges in % of each fill
+  // what is held: NIFTYBEES (the ETF, its own prices) or a Nifty 50 index mutual fund. The app has no fund NAV history, so
+  // a fund is modelled: Nifty's close + its dividend yield (divPct a year) − the fund's expense ratio (expPct a year);
+  // bought and sold at that day's NAV, stamp duty only (0.005 % on purchases), and never sold and bought back.
+  hold: { kind: 'etf', divPct: 1.2, expPct: 0.2 },
   minDays: 14, // live paper trade: the monthly expiry sold is at least this many days away
 };
 const CALL_RULES = ['itm100', 'atm', 'itmPts', 'otmPts', 'otmPct'];
@@ -69,6 +76,8 @@ function normalize(p = {}) {
     roll: {
       bookAbove: r.bookAbove === undefined ? D.roll.bookAbove : Boolean(r.bookAbove),
       reinvest: REINVEST.includes(r.reinvest) ? r.reinvest : D.roll.reinvest,
+      upPct: r.upPct === null || r.upPct === undefined || r.upPct === '' || !Number.isFinite(Number(r.upPct)) ? null : num(r.upPct, 0, 0, 10),
+      maxUp: Math.round(num(r.maxUp, D.roll.maxUp, 1, 5)),
     },
     costs: {
       slippage: num(k.slippage, D.costs.slippage, 0, 10),
@@ -76,8 +85,19 @@ function normalize(p = {}) {
       etfPct: num(k.etfPct, D.costs.etfPct, 0, 2),
     },
     minDays: Math.round(num(p.minDays, D.minDays, 1, 60)),
+    hold: {
+      kind: p.hold?.kind === 'mf' ? 'mf' : 'etf',
+      divPct: num(p.hold?.divPct, D.hold.divPct, 0, 5),
+      expPct: num(p.hold?.expPct, D.hold.expPct, 0, 3),
+    },
   };
 }
+// The holding's name in texts.
+const holdName = (p) => (p?.hold?.kind === 'mf' ? 'Nifty 50 index fund' : 'NIFTYBEES');
+const MF_STAMP_PCT = 0.005; // stamp duty on mutual fund purchases
+// A modelled index fund NAV: Nifty / 100, growing by (dividends − expenses) a year from `since`.
+const mfNav = (nifty, hold, since, day) =>
+  r2((nifty / 100) * Math.pow(1 + (hold.divPct - hold.expPct) / 100, Math.max(0, (Date.parse(day) - Date.parse(since)) / (365.25 * 86400_000))));
 
 // ---------- the rules ----------
 // Strike the covered call aims for (the nearest listed strike is used). "itm100" is the Nifty thread's choice:
@@ -210,6 +230,7 @@ function cyclesOf(cal, days, from, to) {
   return out;
 }
 
+const daysBetween = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 86400_000);
 const minuteOf = (hhmm) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5)) - OPEN_MIN;
 const CLOSE_M = MPD - 1;
 
@@ -217,6 +238,8 @@ const CLOSE_M = MPD - 1;
 // units, option layer alone), an event log and statistics. ctl: { onProgress(p), stopped() }.
 async function runCoveredCall(data, params, { from, to } = {}, ctl = {}) {
   const p = normalize(params);
+  const mf = p.hold.kind === 'mf'; // a Nifty 50 index fund instead of NIFTYBEES
+  const HN = holdName(p);
   const cal = await data.expiryCalendar();
   const monthly = [...cal.monthly].filter((e) => cal.expiredSet.has(e)).sort();
   if (!monthly.length) throw new Error('No expired monthly expiries in the calendar');
@@ -231,13 +254,13 @@ async function runCoveredCall(data, params, { from, to } = {}, ctl = {}) {
   const units = p.lots * p.lotSize; // Nifty units the holding covers, and the call quantity
   const ovlQty = p.ovl.lots * p.lotSize;
   const slip = p.costs.slippage;
-  const etf = p.costs.etfPct / 100;
+  const etf = (mf ? MF_STAMP_PCT : p.costs.etfPct) / 100;
   const entryM = minuteOf(p.entryTime);
   const spotAt = (day, m, f = 0) => data.spotDay(day)?.[m * 4 + f] ?? null;
 
   // NIFTYBEES at a minute: its own price, else Nifty × the last known ratio.
-  await data.loadSeries?.(BEES, from, to);
-  const beesRow = (day) => data.seriesDay?.(BEES, day) || null;
+  if (!mf) await data.loadSeries?.(BEES, from, to);
+  const beesRow = (day) => (mf ? null : data.seriesDay?.(BEES, day) || null);
   let ratio = null;
   for (const d of days) {
     const v = beesRow(d)?.[CLOSE_M * 4 + 3];
@@ -248,6 +271,8 @@ async function runCoveredCall(data, params, { from, to } = {}, ctl = {}) {
   }
   const beesDays = { real: new Set(), model: new Set() };
   function beesAt(day, m, f = 0) {
+    // an index fund: one NAV a day, at the close
+    if (mf) return mfNav(spotAt(day, CLOSE_M, 3), p.hold, from, day);
     const v = beesRow(day)?.[m * 4 + f];
     const sp = spotAt(day, m, f);
     if (v > 0) {
@@ -357,7 +382,7 @@ async function runCoveredCall(data, params, { from, to } = {}, ctl = {}) {
         d0,
         p.entryTime,
         'hold',
-        `Bought ${hold.qty.toLocaleString('en-IN')} NIFTYBEES at ₹${b0.toFixed(2)} = ₹${Math.round(hold.cost).toLocaleString('en-IN')} (covers ${units} Nifty units, ${p.lots} lot${p.lots > 1 ? 's' : ''}, at Nifty ${s0.toFixed(0)})`,
+        `Bought ${hold.qty.toLocaleString('en-IN')} ${mf ? 'units of the ' + HN : HN} at ₹${b0.toFixed(2)}${mf ? ' (modelled NAV)' : ''} = ₹${Math.round(hold.cost).toLocaleString('en-IN')} (covers ${units} Nifty units, ${p.lots} lot${p.lots > 1 ? 's' : ''}, at Nifty ${s0.toFixed(0)})`,
       );
     }
     const cyc = { n: cycles.length + 1, expiry: P.expiry, start: d0, spotIn: s0, beesIn: b0, qtyIn: hold.qty, notes: [], weeks: [], costs: 0 };
@@ -367,8 +392,10 @@ async function runCoveredCall(data, params, { from, to } = {}, ctl = {}) {
     const ct = callTarget(s0, p.call);
     const callOpen = await open([{ type: 'CE', side: 'S', strike: ct, mult: 1 }], P.expiry, units, d0, 300, d0, 'call');
     // without a call (no option data) the month carries the holding alone: no insurance, no overlay
-    const call = callOpen.error ? null : callOpen.legs[0];
+    let call = callOpen.error ? null : callOpen.legs[0];
     cyc.call = call;
+    cyc.rolls = [];
+    cyc.callRealized = 0; // P&L of calls bought back when rolled up
     cyc.lower = s0 * (1 - p.ovl.lowerPct / 100);
     if (call) {
       cyc.callBE = call.strike + call.entry;
@@ -412,6 +439,41 @@ async function runCoveredCall(data, params, { from, to } = {}, ctl = {}) {
     let maxMargin = margin0;
     for (let di = dayIdx.get(d0); di != null && di < days.length && days[di] <= P.expiry; di++) {
       const d = days[di];
+      // roll the call up: Nifty is upPct over its breakeven at the entry time (the threads hold it; an option to test)
+      if (call && p.roll.upPct != null && d > d0 && cyc.rolls.length < p.roll.maxUp && daysBetween(d, P.expiry) >= 3) {
+        const s = spotAt(d, entryM);
+        if (s > cyc.callBE * (1 + p.roll.upPct / 100)) {
+          const k = callTarget(s, p.call);
+          const back = k > call.strike ? await priceAt(P.expiry, call.strike, 'CE', d, entryM) : null;
+          const nu = back != null ? await open([{ type: 'CE', side: 'S', strike: k, mult: 1 }], P.expiry, units, d, 300, d, 'roll') : null;
+          if (nu && !nu.error) {
+            const exit = fillPx(back, 'S', slip, false);
+            const closeCost = orderCost([{ side: 'B', qty: call.qty, x: exit }], 'x', d, p.costs.brokerage);
+            const realized = (call.entry - exit) * call.qty;
+            cyc.callRealized += realized;
+            cash += realized - closeCost - nu.cost;
+            optCum += realized - closeCost - nu.cost;
+            cyc.costs += closeCost + nu.cost;
+            const next = nu.legs[0];
+            cyc.rolls.push({
+              day: d,
+              spot: s,
+              from: { strike: call.strike, entry: call.entry, exit },
+              to: { strike: next.strike, entry: next.entry },
+              pnl: Math.round(realized),
+            });
+            ev(
+              d,
+              p.entryTime,
+              'roll',
+              `Nifty ${s.toFixed(0)} is over the ${cyc.callBE.toFixed(0)} breakeven: bought back ${call.strike} CE at ${exit.toFixed(1)} (${realized >= 0 ? '+' : '−'}₹${Math.abs(Math.round(realized)).toLocaleString('en-IN')}) and sold ${next.strike} CE at ${next.entry.toFixed(1)}`,
+            );
+            call = next;
+            cyc.call = call;
+            cyc.callBE = call.strike + call.entry;
+          }
+        }
+      }
       // weekly overlay entry
       const wk = p.ovl.on && call ? wkByEntry.get(d) : null;
       if (wk && !ovl) {
@@ -475,7 +537,7 @@ async function runCoveredCall(data, params, { from, to } = {}, ctl = {}) {
         cyc.costs += sCall.cost + sIns.cost;
         cyc.spotOut = sc;
         cyc.beesOut = bc;
-        cyc.callPnl = sCall.pnl;
+        cyc.callPnl = sCall.pnl + cyc.callRealized; // with the calls bought back on a roll up
         cyc.insPnl = sIns.pnl;
         cyc.ovlPnl = cyc.weeks.reduce((s, w) => s + (w.legs ? w.pnl + w.costs : 0), 0); // before charges, like the others
         cyc.holdChange = cyc.qtyIn * (bc - b0);
@@ -489,7 +551,7 @@ async function runCoveredCall(data, params, { from, to } = {}, ctl = {}) {
             (cyc.ins.length ? `, insurance ${sIns.pnl >= 0 ? '+' : '−'}₹${Math.abs(Math.round(sIns.pnl)).toLocaleString('en-IN')}` : ''),
         );
         // Nifty above the call strike: the call is "called away" against the holding; book its profit and buy back
-        if (p.roll.bookAbove && call && sc > call.strike && bc * hold.qty > hold.cost) {
+        if (p.roll.bookAbove && !mf && call && sc > call.strike && bc * hold.qty > hold.cost) {
           const gain = bc * hold.qty - hold.cost;
           const c = 2 * bc * hold.qty * etf;
           hold.booked += gain;
@@ -501,7 +563,7 @@ async function runCoveredCall(data, params, { from, to } = {}, ctl = {}) {
             d,
             '15:30',
             'book',
-            `Nifty closed above the ${call.strike} strike: booked the NIFTYBEES profit ₹${Math.round(gain).toLocaleString('en-IN')} (sold and bought back ${hold.qty.toLocaleString('en-IN')} at ₹${bc.toFixed(2)})`,
+            `Nifty closed above the ${call.strike} strike: booked the ${HN} profit ₹${Math.round(gain).toLocaleString('en-IN')} (sold and bought back ${hold.qty.toLocaleString('en-IN')} at ₹${bc.toFixed(2)})`,
           );
         }
         // the month's option profit into more of the holding
@@ -520,7 +582,7 @@ async function runCoveredCall(data, params, { from, to } = {}, ctl = {}) {
             d,
             '15:30',
             'reinvest',
-            `Reinvested the month's option profit: bought ${add.toLocaleString('en-IN')} more NIFTYBEES at ₹${bc.toFixed(2)} (₹${Math.round(amt).toLocaleString('en-IN')}), now ${hold.qty.toLocaleString('en-IN')}`,
+            `Reinvested the month's option profit: bought ${add.toLocaleString('en-IN')} more ${mf ? 'units of the ' + HN : HN} at ₹${bc.toFixed(2)} (₹${Math.round(amt).toLocaleString('en-IN')}), now ${hold.qty.toLocaleString('en-IN')}`,
           );
         }
       }
@@ -562,7 +624,8 @@ async function runCoveredCall(data, params, { from, to } = {}, ctl = {}) {
     bees0,
     qty0,
     initialCost,
-    beesSource: { real: beesDays.real.size, model: [...beesDays.model].filter((d) => !beesDays.real.has(d)).length },
+    beesSource: { real: beesDays.real.size, model: [...beesDays.model].filter((d) => !beesDays.real.has(d)).length, mf },
+    holdName: HN,
     cycles: cycles.map(slimCycle),
     equity,
     events,
@@ -585,6 +648,7 @@ function slimCycle(c) {
     qtyIn: c.qtyIn,
     qty: c.qty,
     call: slimLeg(c.call),
+    rolls: c.rolls || [],
     callBE: c.callBE == null ? null : r2(c.callBE),
     lower: r2(c.lower),
     ins: c.ins.map(slimLeg),
@@ -675,6 +739,104 @@ function statsOf(cycles, equity, initialCost, hold) {
   };
 }
 
+// ---------- month by month on a chosen path (a model, for the Strategy & rules animation) ----------
+// The strategy repeated every month while Nifty moves `totalPct` % in all over `months` months, the same % each month.
+// swings: inside each month Nifty zig-zags around that line by a typical weekly move (0.8 × the weekly σ at `iv`: up,
+// back, down, back, so the month still ends on the line); false = a straight line, which flatters the weekly spreads.
+// Each month: the rule's call
+// and insurance priced by Black-Scholes at volatility `iv` (decimal) for 4 weeks, four weekly contra spreads priced for a
+// week each, all with the strategy's slippage and charges, settled at intrinsic. NIFTYBEES bought once at the start
+// and held; booking and reinvesting at the expiry are left out. Returns the months and their running totals.
+function modelPath({ params, spot0, bees0, totalPct, months = 12, iv = 0.13, swings = true }) {
+  const p = normalize(params);
+  const units = p.lots * p.lotSize;
+  const ovlQty = p.ovl.lots * p.lotSize;
+  const slip = p.costs.slippage;
+  months = Math.round(Math.min(36, Math.max(1, Number(months) || 12)));
+  const total = Math.min(100, Math.max(-60, Number(totalPct) || 0));
+  const g = Math.pow(1 + total / 100, 1 / months) - 1;
+  const d = swings ? 0.8 * iv * Math.sqrt(7 / 365) : 0; // a typical weekly move
+  const ZIG = [0, d, 0, -d, 0]; // offsets from the line at the week boundaries
+  const at = (S, j) => S * Math.pow(1 + g, j / 4) * (1 + ZIG[j]);
+  const qty = Math.max(1, Math.round((units * spot0) / bees0));
+  const day = new Date().toISOString().slice(0, 10); // today's charges
+  const price = (S, K, days, type) => Math.max(0.05, bsm(S, K, days / 365, iv, type === 'CE'));
+  const priced = (legs, S, qtyEach, days) =>
+    legs.map((l) => {
+      const px = price(S, l.strike, days, l.type);
+      return { ...l, qty: qtyEach * l.mult, mkt: r2(px), entry: fillPx(px, l.side, slip) };
+    });
+  const settle = (legs, S) => legs.reduce((a, l) => a + legPnl(l, intrinsic(l.type, l.strike, S)), 0);
+  const out = [];
+  let S = spot0;
+  const cum = { opt: 0, bees: 0, total: 0 };
+  for (let m = 0; m < months; m++) {
+    const S1 = S * (1 + g);
+    const call = priced([{ type: 'CE', side: 'S', strike: callTarget(S, p.call), mult: 1 }], S, units, 28)[0];
+    const ins = priced(insuranceLegs(S, p.ins), S, units, 28);
+    const lv = { callBE: call.strike + call.entry, lower: S * (1 - p.ovl.lowerPct / 100) };
+    // the weekly spreads, each net of its own charges
+    const weeks = [];
+    if (p.ovl.on)
+      for (let w = 0; w < 4; w++) {
+        const a = at(S, w);
+        const b = at(S, w + 1);
+        const regime = regimeOf(a, lv);
+        const legs = priced(overlayLegs(a, regime, p.ovl), a, ovlQty, 7);
+        const credit = r2(legs.reduce((s, l) => s + (l.side === 'S' ? l.entry : -l.entry) * l.qty, 0) / ovlQty);
+        const week = { regime, spot: r2(a), spotOut: r2(b), credit };
+        if (credit < p.ovl.minCredit) week.skipped = true;
+        else {
+          week.shorts = legs.filter((l) => l.side === 'S').map((l) => l.strike + ' ' + l.type);
+          week.pnl = Math.round(settle(legs, b) - orderCost(legs, 'entry', day, p.costs.brokerage) - expiryCost(legs, b, day));
+        }
+        weeks.push(week);
+      }
+    const monthCosts = orderCost([call, ...ins], 'entry', day, p.costs.brokerage) + expiryCost([call, ...ins], S1, day);
+    const callPnl = settle([call], S1);
+    const insPnl = settle(ins, S1);
+    const wkPnl = weeks.reduce((s, w) => s + (w.pnl || 0), 0);
+    const opt = callPnl + insPnl + wkPnl - monthCosts;
+    const bees = qty * (bees0 / spot0) * (S1 - S);
+    cum.opt += opt;
+    cum.bees += bees;
+    cum.total += opt + bees;
+    out.push({
+      n: m + 1,
+      spotIn: r2(S),
+      spotOut: r2(S1),
+      call: { strike: call.strike, entry: call.entry, exit: r2(intrinsic('CE', call.strike, S1)) },
+      callBE: r2(lv.callBE),
+      ins: ins.map((l) => ({ side: l.side, strike: l.strike, qty: l.qty, entry: l.entry, exit: r2(intrinsic('PE', l.strike, S1)) })),
+      weeks,
+      callPnl: Math.round(callPnl),
+      insPnl: Math.round(insPnl),
+      wkPnl: Math.round(wkPnl),
+      costs: Math.round(monthCosts),
+      opt: Math.round(opt),
+      bees: Math.round(bees),
+      total: Math.round(opt + bees),
+      cum: { opt: Math.round(cum.opt), bees: Math.round(cum.bees), total: Math.round(cum.total) },
+    });
+    S = S1;
+  }
+  return {
+    holdName: holdName(p),
+    spot0: r2(spot0),
+    bees0: r2(bees0),
+    qty,
+    units,
+    months,
+    totalPct: total,
+    monthlyPct: r2(g * 100),
+    iv,
+    swings: Boolean(swings),
+    weeklySwingPct: r2(d * 100),
+    cost: Math.round(qty * bees0),
+    path: out,
+  };
+}
+
 module.exports = {
   DEFAULTS,
   normalize,
@@ -692,4 +854,8 @@ module.exports = {
   marginEstimate,
   cyclesOf,
   runCoveredCall,
+  modelPath,
+  holdName,
+  mfNav,
+  MF_STAMP_PCT,
 };

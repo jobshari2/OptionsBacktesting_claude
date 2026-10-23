@@ -115,3 +115,23 @@
 .cc-alt { margin: 4px 0 6px; }
 .cc-alt summary { cursor: pointer; margin-bottom: 4px; }
 .cc-tag.t-held { color: var(--atm); border-color: var(--atm); }
+
+/* Strategy & rules › What happens when Nifty moves */
+.cc-sim-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 16px; align-items: start; margin-top: 8px; }
+@media (max-width: 1100px) {
+  .cc-sim-grid { grid-template-columns: minmax(0, 1fr); }
+}
+#ccSimMove { width: 220px; accent-color: var(--accent); }
+.cc-sim-now { font-size: 13px; min-width: 260px; }
+.cc-sim-bars { display: flex; flex-direction: column; gap: 6px; }
+.cc-sim-row { display: grid; grid-template-columns: 190px minmax(0, 1fr) 100px; align-items: center; gap: 8px; font-size: 12.5px; }
+.cc-sim-row.sum { border-top: 1px solid var(--line); padding-top: 6px; font-weight: 600; }
+.cc-sim-row.tot .cc-sim-v { font-size: 15px; }
+.cc-sim-track { position: relative; height: 16px; background: var(--panel-2); border-radius: 4px; overflow: hidden; }
+.cc-sim-mid { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--line); }
+.cc-sim-bar { position: absolute; top: 2px; bottom: 2px; border-radius: 3px; transition: left .08s linear, width .08s linear; }
+.cc-sim-bar.up { background: var(--up); }
+.cc-sim-bar.dn { background: var(--down); }
+.cc-sim-v { text-align: right; font-variant-numeric: tabular-nums; }
+.cc-sim-story { margin-top: 10px; line-height: 1.5; min-height: 60px; }
+.cc-rise td, .cc-rise th { white-space: nowrap; }

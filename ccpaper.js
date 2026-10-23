@@ -106,8 +106,9 @@ function createCcPaper({
   }
   const credit = (legs, qty) => r2(legs.reduce((s, l) => s + (l.side === 'S' ? l.entry : -l.entry) * l.qty, 0) / qty);
 
-  // NIFTYBEES now: its LTP, else Nifty × the last known ETF / Nifty ratio.
+  // NIFTYBEES now: its LTP, else Nifty × the last known ETF / Nifty ratio. An index fund: its modelled NAV.
   async function beesNow(spot) {
+    if (st.params.hold?.kind === 'mf') return { px: CC.mfNav(spot, st.params.hold, istDate(st.startedAt), istDate()), real: false, nav: true };
     const px = await beesPrice().catch(() => null);
     if (px > 0) {
       st.beesRatio = px / spot;
@@ -139,7 +140,7 @@ function createCcPaper({
       st.cash -= st.bhCost;
       log(
         'hold',
-        `Bought (paper) ${h.qty.toLocaleString('en-IN')} NIFTYBEES at ₹${bees.px.toFixed(2)}${bees.real ? '' : ' (modelled: no NIFTYBEES quote)'} = ${inr(h.cost)} (covers ${units} Nifty units at Nifty ${spot.toFixed(0)})`,
+        `Bought (paper) ${h.qty.toLocaleString('en-IN')} ${bees.nav ? 'units of the ' + CC.holdName(p) : 'NIFTYBEES'} at ₹${bees.px.toFixed(2)}${bees.nav ? ' (modelled NAV)' : bees.real ? '' : ' (modelled: no NIFTYBEES quote)'} = ${inr(h.cost)} (covers ${units} Nifty units at Nifty ${spot.toFixed(0)})`,
       );
     }
     const cyc = {
@@ -193,6 +194,46 @@ function createCcPaper({
     }
   }
 
+  // The optional roll up (roll.upPct, off in the threads' rules): Nifty this % over the call's breakeven, at most maxUp
+  // times a month and not in its last 3 days: buy the call back and sell the rule's strike from the spot now.
+  async function maybeRollUp(today, spot) {
+    const p = st.params;
+    const cyc = st.cycle;
+    const rolls = (cyc.rolls ||= []);
+    if (p.roll.upPct == null || rolls.length >= p.roll.maxUp || daysBetween(today, cyc.expiry) < 3) return;
+    if (!(spot > cyc.callBE * (1 + p.roll.upPct / 100))) return;
+    const k = CC.callTarget(spot, p.call);
+    if (k <= cyc.call.strike) return;
+    const chain = await getChain(cyc.expiry);
+    const backPx = priceOf(chain, cyc.call.strike, 'CE');
+    if (backPx == null) return;
+    const units = p.lots * p.lotSize;
+    const nu = await openLegs([{ type: 'CE', side: 'S', strike: k, mult: 1 }], cyc.expiry, units, 300, today);
+    const old = cyc.call;
+    old.exit = CC.fillPx(backPx, 'S', p.costs.slippage, false);
+    old.exitAt = Date.now();
+    const closeCost = CC.orderCost([{ side: 'B', qty: old.qty, x: old.exit }], 'x', today, p.costs.brokerage);
+    const realized = CC.legPnl(old, old.exit);
+    cyc.callRealized = (cyc.callRealized || 0) + realized;
+    st.cash += realized - closeCost - nu.cost;
+    st.optCum += realized - closeCost - nu.cost;
+    cyc.costs += closeCost + nu.cost;
+    (cyc.closedCalls ||= []).push(old);
+    cyc.call = nu.legs[0];
+    rolls.push({
+      day: today,
+      spot: r2(spot),
+      from: { strike: old.strike, entry: old.entry, exit: old.exit },
+      to: { strike: cyc.call.strike, entry: cyc.call.entry },
+      pnl: Math.round(realized),
+    });
+    log(
+      'roll',
+      `Nifty ${spot.toFixed(0)} is over the ${cyc.callBE.toFixed(0)} breakeven: bought back ${old.strike} CE at ${old.exit.toFixed(1)} (${signed(realized)}) and sold ${cyc.call.strike} CE at ${cyc.call.entry.toFixed(1)}`,
+    );
+    cyc.callBE = cyc.call.strike + cyc.call.entry;
+  }
+
   async function maybeOverlay(today, spot, expiries) {
     const p = st.params;
     const cyc = st.cycle;
@@ -242,6 +283,7 @@ function createCcPaper({
     return st.lastSpot ? { spot: st.lastSpot, how: 'at the last Nifty seen (the close was not available)' } : null;
   }
   async function expiryBees(day, today, sc, bees) {
+    if (st.params.hold?.kind === 'mf') return CC.mfNav(sc, st.params.hold, istDate(st.startedAt), day);
     if (day === today && bees) return bees.px;
     const c = await beesCloseOf(day).catch(() => null);
     return c > 0 ? c : r2(sc * (st.beesRatio ?? CC.BEES_RATIO));
@@ -277,7 +319,7 @@ function createCcPaper({
     st.cash += net;
     st.optCum += net;
     cyc.costs += sCall.cost + sIns.cost;
-    Object.assign(cyc, { spotOut: r2(sc), beesOut: r2(bc), callPnl: Math.round(sCall.pnl), insPnl: Math.round(sIns.pnl) });
+    Object.assign(cyc, { spotOut: r2(sc), beesOut: r2(bc), callPnl: Math.round(sCall.pnl + (cyc.callRealized || 0)), insPnl: Math.round(sIns.pnl) });
     cyc.ovlPnl = Math.round(cyc.weeks.reduce((s, w) => s + (w.legs ? w.pnl + w.costs : 0), 0));
     cyc.optNet = Math.round(cyc.callPnl + cyc.insPnl + cyc.ovlPnl - cyc.costs);
     cyc.holdChange = Math.round(cyc.qtyIn * (bc - cyc.beesIn));
@@ -287,9 +329,10 @@ function createCcPaper({
       `Monthly expiry ${cyc.expiry} settled ${x.how}, Nifty ${sc.toFixed(0)}: call ${signed(sCall.pnl)}` +
         (cyc.ins.length ? `, insurance ${signed(sIns.pnl)}` : ''),
     );
-    const etf = p.costs.etfPct / 100;
+    const mf = p.hold?.kind === 'mf';
+    const etf = (mf ? CC.MF_STAMP_PCT : p.costs.etfPct) / 100;
     const h = st.holding;
-    if (p.roll.bookAbove && cyc.call && sc > cyc.call.strike && bc * h.qty > h.cost) {
+    if (p.roll.bookAbove && !mf && cyc.call && sc > cyc.call.strike && bc * h.qty > h.cost) {
       const gain = bc * h.qty - h.cost;
       const c = 2 * bc * h.qty * etf;
       h.booked += gain;
@@ -300,7 +343,7 @@ function createCcPaper({
       cyc.booked = Math.round(gain);
       log(
         'book',
-        `Nifty closed above the ${cyc.call.strike} strike: booked the NIFTYBEES profit ${inr(gain)} (sold and bought back ${h.qty.toLocaleString('en-IN')} at ₹${bc.toFixed(2)})`,
+        `Nifty closed above the ${cyc.call.strike} strike: booked the ${CC.holdName(p)} profit ${inr(gain)} (sold and bought back ${h.qty.toLocaleString('en-IN')} at ₹${bc.toFixed(2)})`,
       );
     }
     const re = p.roll.reinvest;
@@ -317,7 +360,7 @@ function createCcPaper({
       cyc.reinvestQty = add;
       log(
         'reinvest',
-        `Reinvested the month's option profit: bought ${add.toLocaleString('en-IN')} more NIFTYBEES at ₹${bc.toFixed(2)} (${inr(amt)}), now ${h.qty.toLocaleString('en-IN')}`,
+        `Reinvested the month's option profit: bought ${add.toLocaleString('en-IN')} more ${mf ? 'units of the ' + CC.holdName(p) : 'NIFTYBEES'} at ₹${bc.toFixed(2)} (${inr(amt)}), now ${h.qty.toLocaleString('en-IN')}`,
       );
     }
     cyc.qty = h.qty;
@@ -394,6 +437,7 @@ function createCcPaper({
         const canEnter = demo || (open && hhmm >= st.params.entryTime && hhmm < LAST_ENTRY);
         if (!st.cycle && canEnter && today > (st.lastExpiry || '')) await startCycle(today, spot, bees, expiries);
         if (st.cycle?.call && !st.cycle.ins.length && canEnter) await buyInsurance(today, spot);
+        if (st.cycle?.call && canEnter) await maybeRollUp(today, spot);
         if (st.cycle?.call && st.params.ovl.on && !st.cycle.ovl && canEnter) await maybeOverlay(today, spot, expiries);
         await mark(today, spot, bees);
       }
@@ -416,7 +460,7 @@ function createCcPaper({
     const cyc = st.cycle;
     const p = st.params;
     if (!cyc)
-      return `Next: at ${p.entryTime} on a trading day${st.lastExpiry ? ' after ' + st.lastExpiry : ''}, buy NIFTYBEES (first month only), sell the monthly call and buy the insurance.`;
+      return `Next: at ${p.entryTime} on a trading day${st.lastExpiry ? ' after ' + st.lastExpiry : ''}, buy ${CC.holdName(p)} (first month only), sell the monthly call and buy the insurance.`;
     const today = istDate(now);
     const bits = [];
     if (cyc.ovl) bits.push(`the weekly spread settles on ${cyc.ovl.expiry} at ${SETTLE_AT}`);

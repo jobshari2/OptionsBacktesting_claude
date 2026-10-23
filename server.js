@@ -26,7 +26,7 @@ const { createKiteSession, loginUrl: kiteLoginUrl, exchangeRequestToken, profile
 const { createKiteData } = require('./lib/kitedata');
 const { createKiteBasket } = require('./kitebasket');
 const { createCcPaper } = require('./ccpaper');
-const { runCoveredCall, DEFAULTS: CC_DEFAULTS } = require('./bt/coveredcall');
+const { runCoveredCall, modelPath: ccModelPath, DEFAULTS: CC_DEFAULTS } = require('./bt/coveredcall');
 const { suggest: ccSuggest } = require('./bt/ccsuggest');
 const { createFeedCompare } = require('./feedcmp');
 const { createTickStore } = require('./lib/ticks');
@@ -798,6 +798,25 @@ async function handleCc(req, res, url, p) {
       return sendJson(res, 200, { ok: Boolean(job) });
     }
     if (p === '/api/cc/paper') return sendJson(res, 200, ccPaper.state());
+    // Strategy & rules › Month by month: the strategy repeated every month on a chosen Nifty path (a model)
+    if (p === '/api/cc/model' && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req, 20_000)).toString('utf8') || '{}');
+      const spot0 = Number(b.spot) > 0 ? Number(b.spot) : 25000;
+      const bees0 = Number(b.bees) > 0 ? Number(b.bees) : spot0 * 0.0112;
+      return sendJson(
+        res,
+        200,
+        ccModelPath({
+          params: { ...(b.params || {}), lotSize: contracts.lot },
+          spot0,
+          bees0,
+          totalPct: b.totalPct,
+          months: b.months,
+          iv: (Number(b.iv) || 13) / 100,
+          swings: b.swings !== false,
+        }),
+      );
+    }
     // Suggestions on the live chain: the current and next monthly expiry and this week's contra spread.
     if (p === '/api/cc/suggest' && req.method === 'POST') {
       if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the suggestions read the live chain`);
