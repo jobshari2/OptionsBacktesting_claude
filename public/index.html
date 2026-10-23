@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="ideas.css" />
   <link rel="stylesheet" href="kite.css" />
   <link rel="stylesheet" href="cc.css" />
+  <link rel="stylesheet" href="surge.css" />
   <link rel="stylesheet" href="themes.css" />
   <script>try { document.documentElement.dataset.theme = localStorage.getItem("nifty-theme") || "night"; } catch (e) {}</script>
 </head>
@@ -100,6 +101,7 @@
     </span>
     <span class="sub-group" data-group="tideas">
       <button data-view="cc" title="Covered call against NIFTYBEES: rules, backtest and live paper trade">Covered call</button>
+      <button data-view="surge" title="Options whose premium jumped 200 % or more: every one in the history, what caused it, a live radar and a backtest of trading them">Option surges</button>
     </span>
     <span class="sub-group" data-group="port">
       <button data-view="hedge" title="Hedge your portfolio with Nifty options: planner and backtest">Hedge</button>
@@ -1004,6 +1006,12 @@
     </section>
   </main>
 
+  <!-- ===== Trading Ideas: option surges (surge-view.js) ===== -->
+  <main id="surge" class="surge-screen hidden">
+    <div class="panel cc-tabs-panel sr-tabs-panel"><div class="seg" id="srTabs"></div><span class="muted small" id="srStatus"></span></div>
+    <div id="srBody" class="sr-body"></div>
+  </main>
+
   <!-- ===== Data ===== -->
   <main id="data" class="data-screen hidden">
     <div id="dataBody" class="data-grid"></div>
@@ -1041,6 +1049,7 @@
   <script src="sb-view.js"></script>
   <script src="ideas-view.js"></script>
   <script src="cc-view.js"></script>
+  <script src="surge-view.js"></script>
   <script src="theme.js"></script>
 </body>
 </html>

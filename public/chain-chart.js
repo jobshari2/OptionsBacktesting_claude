@@ -43,6 +43,7 @@
     ['area', 'Area'],
   ];
   const TICK_MS = 1000;
+  const INDS_MS = 3000; // least time between two recomputes of the indicators on live prices
   const RELOAD_LIVE_MS = 30_000;
   const RELOAD_IDLE_MS = 5 * 60_000;
   const LEVELS_MS = 60_000; // the server keeps the day's swing levels; the levels beyond them follow the price
@@ -488,7 +489,7 @@
     function render() {
       series.setData(viewData());
       drawVol();
-      refreshInds();
+      refreshInds(true);
       drawFlow();
     }
 
@@ -547,7 +548,7 @@
       drawLevels();
       drawHLines();
       drawVol();
-      refreshInds();
+      refreshInds(true);
       cvdSeries?.applyOptions({ color: css('--accent') });
       drawFlow();
     }
@@ -920,7 +921,13 @@
         ind.last[j] = data.length ? data[data.length - 1].value : null;
       });
     }
-    function refreshInds() {
+    // Indicators are recomputed over every bar and their series replaced: on a live price that is once a second, so at
+    // most every INDS_MS (the Tick view, whose bars are every trade of the day, every 5 s).
+    let indsAt = 0;
+    function refreshInds(force) {
+      if (!inds.length) return void (dirty = false);
+      if (!force && Date.now() - indsAt < (isTick() ? 5000 : INDS_MS)) return;
+      indsAt = Date.now();
       dirty = false;
       for (const ind of inds) fillInd(ind);
     }

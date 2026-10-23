@@ -22,6 +22,10 @@ bt-data/cc-paper.json
 bt-data/cc-paper-demo.json
 bt-data/live-source.json
 bt-data/kite-prev-oi.json
+bt-data/surge-scan.json
+bt-data/surge-backtest.json
+bt-data/surge-grid.json
+bt-data/surge-config.json
 
 # written by the CI scripts (npm run test:ci, npm run test:e2e)
 reports/

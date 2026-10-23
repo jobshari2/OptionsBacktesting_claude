@@ -30,6 +30,9 @@ const { runCoveredCall, DEFAULTS: CC_DEFAULTS } = require('./bt/coveredcall');
 const { suggest: ccSuggest } = require('./bt/ccsuggest');
 const { createFeedCompare } = require('./feedcmp');
 const { createTickStore } = require('./lib/ticks');
+const { createSurgeRadar } = require('./surgeradar');
+const surgeLab = require('./bt/surge');
+const surgeVol = require('./bt/surgevol');
 
 loadEnv(path.join(__dirname, '.env'));
 
@@ -154,6 +157,8 @@ const pulse = createPulse({
   getLot: () => contracts.lot,
   logError,
 });
+// Trading Ideas › Option surges › Live radar: options climbing off today's low (paper record only)
+const surgeRadar = createSurgeRadar({ dir: CFG.signals.dir, logError, minLow: () => surgeConfig().minPrice });
 const book = createBook({ strikesAround: num(env.BOOK_STRIKES, 10), pressureStrikes: num(env.PULSE_STRIKES, 5) });
 // Order flow of the chart: minute rows of aggressor volume, today live and earlier days from the recorded tape.
 const orderflow = createOrderflow({
@@ -343,6 +348,13 @@ function targetExpiries() {
 function snapshotAll() {
   for (const e of targetExpiries()) {
     const built = buildSnapshot(e);
+    if (built) {
+      try {
+        surgeRadar.update(built.snap);
+      } catch (err) {
+        logError('surge-radar', err);
+      }
+    }
     if (built && e === nearestExpiry) {
       signals.onSnapshot(built.hist, built.snap);
       flow.onSnapshot(built.hist, built.snap);
@@ -825,6 +837,191 @@ async function handleCc(req, res, url, p) {
   }
 }
 
+// ---------- Trading Ideas › Option surges (bt/surge.js, bt/surgevol.js, surgeradar.js) ----------
+const SURGE_CACHE = env.BT_CACHE_DIR ? path.resolve(env.BT_CACHE_DIR) : path.join(__dirname, 'bt-cache');
+const SURGE_FILES = {
+  scan: path.join(__dirname, 'bt-data', 'surge-scan.json'),
+  backtest: path.join(__dirname, 'bt-data', 'surge-backtest.json'),
+  grid: path.join(__dirname, 'bt-data', 'surge-grid.json'),
+  calendar: path.join(__dirname, 'bt-data', 'surge-calendar.json'), // optional: [["YYYY-MM-DD", "what happened"], …]
+  config: path.join(__dirname, 'bt-data', 'surge-config.json'), // the screen's settings: { minPrice }
+};
+// Minimum option price (₹) a surge may start from: used by the scan, the live radar and the backtest's default.
+let surgeCfg = null;
+function surgeConfig() {
+  if (!surgeCfg) {
+    const saved = readJson(SURGE_FILES.config) || {};
+    const x = Number(saved.minPrice);
+    surgeCfg = { minPrice: Number.isFinite(x) && x >= 0.5 ? x : surgeLab.SCAN_DEFAULTS.minBase };
+  }
+  return surgeCfg;
+}
+const surgeJobs = new Map();
+const readJson = (file) => {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return null;
+  }
+};
+function writeJson(file, obj) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file + '.tmp', JSON.stringify(obj));
+  fs.renameSync(file + '.tmp', file);
+}
+// The saved scan is a few MB: gzipped when the browser takes it.
+function sendJsonGz(req, res, obj) {
+  if (!/\bgzip\b/.test(req.headers['accept-encoding'] || '')) return sendJson(res, 200, obj);
+  res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip', 'Cache-Control': 'no-store' });
+  res.end(require('zlib').gzipSync(JSON.stringify(obj), { level: 5 }));
+}
+function surgeJob(kind, run) {
+  const id = Math.random().toString(36).slice(2, 10);
+  const job = { id, kind, status: 'running', progress: { phase: 'Starting', done: 0, total: 0 }, startedAt: Date.now() };
+  surgeJobs.set(id, job);
+  while (surgeJobs.size > 6) surgeJobs.delete(surgeJobs.keys().next().value);
+  const ctl = { onProgress: (x) => (job.progress = x), stopped: () => Boolean(job.stop) };
+  run(ctl)
+    .then((r) => {
+      job.result = r;
+      job.status = 'done';
+    })
+    .catch((e) => {
+      job.status = 'error';
+      job.error = e.message;
+      logError('surge-' + kind, e);
+    });
+  return job;
+}
+const runSurgeScan = (ctl) =>
+  surgeLab.scanSurges(backtester.data, SURGE_CACHE, { minBase: surgeConfig().minPrice }, { calendarFile: SURGE_FILES.calendar, ...ctl }).then((r) => {
+    writeJson(SURGE_FILES.scan, r);
+    return { at: r.at, rows: r.rows.length };
+  });
+
+async function handleSurge(req, res, url, p) {
+  lastClientAt = Date.now();
+  try {
+    const body = async () => (req.method === 'POST' ? JSON.parse((await readBody(req, 50_000)).toString('utf8') || '{}') : {});
+    if (p === '/api/surge/meta') {
+      const scan = readJson(SURGE_FILES.scan);
+      let volFiles = 0;
+      try {
+        for (const e of fs.readdirSync(path.join(SURGE_CACHE, 'vol'))) volFiles += fs.readdirSync(path.join(SURGE_CACHE, 'vol', e)).length;
+      } catch {}
+      return sendJson(res, 200, {
+        btDefaults: { ...surgeLab.BT_DEFAULTS, minBase: surgeConfig().minPrice },
+        config: surgeConfig(),
+        scanAt: scan?.at || null,
+        scanRows: scan?.rows?.length || 0,
+        scanMinPrice: scan?.params?.minBase ?? null,
+        volFiles,
+        macro: surgeLab.MACRO,
+        backtest: readJson(SURGE_FILES.backtest),
+        grid: readJson(SURGE_FILES.grid),
+        demo: DEMO,
+      });
+    }
+    if (p === '/api/surge/scan' && req.method !== 'POST') {
+      const scan = readJson(SURGE_FILES.scan);
+      if (!scan) return sendJson(res, 200, { scan: null });
+      return sendJsonGz(req, res, { scan });
+    }
+    if (p === '/api/surge/scan' && req.method === 'POST') return sendJson(res, 200, { id: surgeJob('scan', runSurgeScan).id, status: 'running' });
+    // The minimum option price: saved, used by the radar at once and by the next scan (the page rescans after a change).
+    if (p === '/api/surge/config' && req.method === 'POST') {
+      const x = Number((await body()).minPrice);
+      if (!Number.isFinite(x) || x < 0.5 || x > 1000) throw new Error('Minimum option price: a number from ₹0.5 to ₹1,000');
+      surgeCfg = { ...surgeConfig(), minPrice: Math.round(x * 100) / 100 };
+      writeJson(SURGE_FILES.config, surgeCfg);
+      return sendJson(res, 200, { config: surgeCfg });
+    }
+    // Volume and OI of the contracts that tripled (downloaded from Upstox), then the scan again so its rows carry them.
+    if (p === '/api/surge/volume' && req.method === 'POST') {
+      if (DEMO) throw new Error('Volume and OI come from Upstox: not in demo mode');
+      const scan = readJson(SURGE_FILES.scan);
+      if (!scan) throw new Error('Scan the history first');
+      const I = (k) => scan.cols.indexOf(k);
+      const list = scan.rows
+        .filter((r) => r[I('mult')] >= 3)
+        .map((r) => ({ expiry: r[I('expiry')], strike: r[I('strike')], type: r[I('type')], troughDay: r[I('troughDay')], peakDay: r[I('peakDay')] }))
+        .reverse(); // newest first
+      const job = surgeJob('volume', async (ctl) => {
+        const got = await surgeVol.fetchVolumes(backtester.data.api, SURGE_CACHE, list, { ...ctl, logError });
+        const r = await runSurgeScan(ctl);
+        return { ...got, ...r };
+      });
+      return sendJson(res, 200, { id: job.id, status: 'running' });
+    }
+    if (p === '/api/surge/backtest' && req.method === 'POST') {
+      const b = await body();
+      const grid = Boolean(b.grid);
+      const job = surgeJob(grid ? 'grid' : 'backtest', async (ctl) => {
+        const variants = grid ? surgeLab.gridVariants(b.params || {}) : [b.params || {}];
+        const out = await surgeLab.backtestSurge(backtester.data, SURGE_CACHE, variants, { from: b.from || null, to: b.to || null, keepTrades: !grid, ...ctl });
+        const saved = grid
+          ? {
+              at: Date.now(),
+              base: b.params || {},
+              rows: out.map((x) => ({ params: x.params, summary: { ...x.summary, equity: undefined, byMonth: undefined } })),
+            }
+          : { at: Date.now(), ...out[0] };
+        writeJson(grid ? SURGE_FILES.grid : SURGE_FILES.backtest, saved);
+        return saved;
+      });
+      return sendJson(res, 200, { id: job.id, status: 'running' });
+    }
+    if (p === '/api/surge/job') {
+      const job = surgeJobs.get(url.searchParams.get('id'));
+      if (!job) return sendJson(res, 404, { error: 'Job not found (the server may have restarted): run it again' });
+      return sendJson(res, 200, {
+        id: job.id,
+        status: job.status,
+        progress: job.progress,
+        error: job.error,
+        result: job.status === 'done' ? job.result : undefined,
+      });
+    }
+    if (p === '/api/surge/job/stop' && req.method === 'POST') {
+      const job = surgeJobs.get((await body()).id);
+      if (job) job.stop = true;
+      return sendJson(res, 200, { ok: Boolean(job) });
+    }
+    // One contract around a surge: its minute bars, Nifty's closes, and volume / OI when downloaded.
+    if (p === '/api/surge/series') {
+      const q = url.searchParams;
+      const expiry = q.get('expiry');
+      const strike = Number(q.get('strike'));
+      const type = q.get('type') === 'PE' ? 'PE' : 'CE';
+      const from = q.get('from');
+      const to = q.get('to');
+      if (![expiry, from, to].every((d) => /^\d{4}-\d{2}-\d{2}$/.test(d || ''))) throw new Error('expiry, from and to are dates');
+      const days = surgeLab.readContract(SURGE_CACHE, expiry, strike, type);
+      if (!days) throw new Error('That contract is not in the cache');
+      await backtester.data.loadIndex(from, to, 'soft');
+      const out = { expiry, strike, type, days: [] };
+      for (const [d, a] of days) {
+        if (d < from || d > to) continue;
+        const n = backtester.data.spotDay(d);
+        const opt = [];
+        const nifty = [];
+        for (let m = 0; m < backtester.data.MPD; m++) {
+          if (a[m * 4 + 3] > 0) opt.push([m, a[m * 4] / 100, a[m * 4 + 1] / 100, a[m * 4 + 2] / 100, a[m * 4 + 3] / 100]);
+          if (n) nifty.push([m, Math.round(n[m * 4 + 3] * 100) / 100]);
+        }
+        out.days.push({ day: d, opt, nifty });
+      }
+      out.vol = surgeVol.volSeries(SURGE_CACHE, expiry, strike, type, from, to);
+      return sendJson(res, 200, out);
+    }
+    if (p === '/api/surge/live') return sendJson(res, 200, { loggedIn: liveLoggedIn(), marketOpen: DEMO || isMarketOpen(), ...surgeRadar.state() });
+    return sendJson(res, 404, { error: 'Not found' });
+  } catch (e) {
+    logError('surge', e);
+    return sendJson(res, 400, { error: e.message });
+  }
+}
+
 async function handleKite(req, res, url, p) {
   try {
     if (p === '/kite/login') {
@@ -1096,6 +1293,8 @@ const server = http.createServer(async (req, res) => {
   if (p.startsWith('/api/hedge/')) return handleHedge(req, res, p);
 
   if (p.startsWith('/api/cc/')) return handleCc(req, res, url, p);
+
+  if (p.startsWith('/api/surge/')) return handleSurge(req, res, url, p);
 
   if (p === '/kite/login' || p === '/kite/callback' || p.startsWith('/api/kite/')) return handleKite(req, res, url, p);
 

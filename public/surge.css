@@ -1,0 +1,86 @@
+/* Trading Ideas › Option surges (surge-view.js) */
+.surge-screen { flex: 1; min-height: 0; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+.sr-tabs-panel { flex-direction: row; align-items: center; gap: 12px; flex-wrap: wrap; }
+.sr-body { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.sr-body .panel { overflow: visible; }
+.sr-sec { padding: 10px 14px; gap: 8px; }
+.sr-sec h3 { margin: 0; font-size: 13.5px; }
+.sr-sec h3 .small { font-weight: 400; }
+.sr-sec p { margin: 0; line-height: 1.5; max-width: 1150px; }
+.sr-grid2 { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+.sr-grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 1200px) { .sr-grid3 { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+@media (max-width: 900px) { .sr-grid2, .sr-grid3 { grid-template-columns: minmax(0, 1fr); } }
+.sr-chart { position: relative; height: 240px; }
+.sr-chart.tall { height: 340px; }
+.sr-chart.short { height: 170px; }
+
+/* filters */
+.sr-filters { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; font-size: 12px; }
+.sr-filters label { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
+.sr-filters select, .sr-filters input { font-size: 12px; }
+.sr-filters input.num { width: 64px; }
+.sr-count { margin-left: auto; }
+
+/* table */
+.sr-tbl-wrap { max-height: 560px; overflow: auto; }
+.sr-tbl th[data-sort] { cursor: pointer; }
+.sr-tbl th[data-sort].on { color: var(--accent); }
+.sr-tbl tbody tr { cursor: pointer; }
+.sr-tbl tbody tr.on td, .sr-tbl tbody tr.on th { background: rgba(88, 166, 255, .14); }
+.sr-tbl td.l, .sr-tbl th.l { text-align: left; }
+.sr-type { display: inline-block; min-width: 22px; padding: 0 4px; border-radius: 4px; font-size: 10.5px; font-weight: 700; text-align: center; }
+.sr-type.CE { color: var(--ce); background: var(--ce-soft); }
+.sr-type.PE { color: var(--pe); background: var(--pe-soft); }
+.sr-tag { display: inline-block; padding: 0 6px; margin: 1px 2px 1px 0; border-radius: 9px; font-size: 10.5px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.sr-tag.macro { color: var(--atm); border-color: var(--atm); }
+.sr-tag.flow { color: var(--accent); border-color: var(--accent); }
+.sr-tag.big { color: var(--text); }
+.sr-mult { font-weight: 700; }
+.sr-mult.x5 { color: var(--up); }
+.sr-mult.x10 { color: var(--atm); }
+
+/* one surge */
+.sr-detail { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr); gap: 14px; align-items: start; }
+@media (max-width: 1100px) { .sr-detail { grid-template-columns: minmax(0, 1fr); } }
+.sr-why { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; line-height: 1.5; }
+.sr-why ul { margin: 0; padding-left: 18px; }
+.sr-split { display: flex; height: 16px; border-radius: 4px; overflow: hidden; border: 1px solid var(--line); }
+.sr-split span { display: block; height: 100%; }
+.sr-split .mv { background: var(--accent); }
+.sr-split .iv { background: var(--atm); }
+.sr-legend { display: flex; gap: 12px; font-size: 11px; color: var(--muted); }
+.sr-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+
+/* calendar heat map */
+.sr-cal { display: flex; gap: 14px; flex-wrap: wrap; }
+.sr-cal-month { display: flex; flex-direction: column; gap: 3px; }
+.sr-cal-month .lbl { font-size: 10.5px; color: var(--muted); }
+.sr-cal-days { display: grid; grid-template-columns: repeat(5, 13px); gap: 2px; }
+.sr-cal-days span { width: 13px; height: 13px; border-radius: 2px; background: var(--panel-2); border: 1px solid var(--line); box-sizing: border-box; cursor: pointer; }
+.sr-cal-days span.blank { visibility: hidden; }
+.sr-cal-days span.on { outline: 2px solid var(--text); }
+
+/* odds table */
+.sr-odds td, .sr-odds th { text-align: right; }
+.sr-bar { display: inline-block; height: 8px; border-radius: 2px; background: var(--accent); vertical-align: middle; margin-left: 6px; opacity: .7; }
+
+/* backtest */
+.sr-form { display: flex; flex-direction: column; gap: 7px; }
+.sr-form .set-row b { min-width: 120px; }
+.sr-form input.num { width: 64px; }
+.sr-verdict { padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); line-height: 1.5; font-size: 12.5px; }
+.sr-verdict.neg { border-color: var(--down); }
+.sr-verdict.pos { border-color: var(--up); }
+.sr-grid-tbl tbody tr { cursor: pointer; }
+.sr-ok { color: var(--up); font-weight: 700; }
+
+/* live radar */
+.sr-stage { display: inline-block; padding: 0 7px; border-radius: 9px; font-size: 10.5px; font-weight: 600; border: 1px solid var(--line); }
+.sr-stage.rising { color: var(--accent); border-color: var(--accent); }
+.sr-stage.doubled { color: var(--atm); border-color: var(--atm); }
+.sr-stage.tripled { color: var(--up); border-color: var(--up); background: rgba(63, 182, 139, .12); }
+.sr-guide ol, .sr-guide ul { margin: 0; padding-left: 20px; }
+.sr-guide li { margin-bottom: 5px; line-height: 1.5; max-width: 1150px; }
+.sr-empty { padding: 30px 14px; text-align: center; }
+.sr-minp { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); margin-right: 6px; }

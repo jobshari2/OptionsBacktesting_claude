@@ -1,4 +1,8 @@
 const REFRESH_MS = 400; // the server folds ticks into a snapshot every 500 ms
+// On the screens outside the Live group the chain is only kept current, not drawn: a whole chain every 400 ms there
+// was work for nothing (the Builder and the other screens read their own prices).
+const REFRESH_OFF_LIVE_MS = 3000;
+const refreshMs = () => (groupOf(state.view) === 'live' ? REFRESH_MS : REFRESH_OFF_LIVE_MS);
 const WAKE_CHECK_MS = 30_000; // market closed: only look at the clock this often (no request) to resume at the open
 const STALE_MS = 15000;
 
@@ -113,7 +117,7 @@ async function refresh() {
     reportError(e, 'render');
   } finally {
     updateStatus();
-    marketClosed() ? scheduleWake() : scheduleRefresh(REFRESH_MS);
+    marketClosed() ? scheduleWake() : scheduleRefresh(refreshMs());
   }
 }
 
@@ -277,6 +281,9 @@ function render() {
   $('pcr').textContent = d.pcr == null ? '—' : d.pcr.toFixed(2);
   $('pcr').className = 'value ' + (d.pcr > 1 ? 'pos' : d.pcr < 0.8 ? 'neg' : '');
   buildWindowButtons(d.windows);
+  // The chain, its arbitrage list, levels, surge and signals are on the Chain screen only: rebuilding them for a screen
+  // that is not showing cost a full table of work on every refresh. setView() redraws them when the Chain is opened.
+  if (state.view !== 'chain') return runScreenHooks();
   document.querySelectorAll('.win-label').forEach((el) => (el.textContent = state.win + 'm'));
 
   window.atmCharts?.follow(d);
@@ -990,6 +997,7 @@ function setView(view) {
   if (state.loggedOut) $('login').classList.toggle('hidden', NO_LOGIN.has(view));
   if (group === 'live' && state.data) render();
   else runScreenHooks();
+  if (group === 'live' && state.data && !marketClosed()) scheduleRefresh(0); // back from a slower-refreshed screen
   if (group !== 'live') setError(null);
   window.dispatchEvent(new CustomEvent('viewchange', { detail: view }));
 }
@@ -1004,17 +1012,25 @@ $('subtabs').addEventListener('click', (e) => {
 window.app = { marketClosed, state, compact, pctText, render, istClock, esc, setView, setError, price, TYPE_LABEL, nearestLevelsHtml, reload };
 setView(state.view);
 
-// Top-bar clock with milliseconds, plus how old the last fetched data is.
+// Top-bar clock with milliseconds, plus how old the last fetched data is. Ten times a second while the page is on screen:
+// redrawn on every display frame (requestAnimationFrame) it kept the browser and the GPU painting non-stop.
+const setText = (el, s) => el.textContent !== s && (el.textContent = s);
 function tickClock() {
+  if (document.hidden) return;
   const now = Date.now();
-  $('clock').textContent = istClockMs(now);
+  setText($('clock'), istClockMs(now));
   const d = state.data;
   if (d) {
-    const age = ((now - d.updatedAt) / 1000).toFixed(1);
-    $('fetchedAt').innerHTML = `${istClockMs(d.updatedAt)}<span class="age">${age}s ago</span>`;
+    const fa = $('fetchedAt');
+    if (!fa._at) {
+      fa.innerHTML = '<span></span><span class="age"></span>';
+      [fa._at, fa._age] = fa.children;
+    }
+    setText(fa._at, istClockMs(d.updatedAt));
+    setText(fa._age, `${((now - d.updatedAt) / 1000).toFixed(1)}s ago`);
   }
-  requestAnimationFrame(tickClock);
 }
-requestAnimationFrame(tickClock);
+setInterval(tickClock, 100);
+tickClock();
 
 refresh();

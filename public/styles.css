@@ -61,10 +61,13 @@ select {
 }
 .status { display: flex; align-items: center; gap: 8px; color: var(--muted); }
 .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
-.status.live .dot { background: var(--up); box-shadow: 0 0 0 0 rgba(63,182,139,.6); animation: pulse 1.6s infinite; }
+/* the "live" ring grows and fades with transform / opacity only, which the compositor animates without repainting the
+   page (an animated box-shadow repainted it on every frame) */
+.status.live .dot { background: var(--up); position: relative; }
+.status.live .dot::after { content: ''; position: absolute; inset: 0; border-radius: 50%; background: rgba(63,182,139,.6); animation: pulse 1.6s infinite; will-change: transform, opacity; }
 .status.stale .dot { background: var(--atm); }
 .status.err .dot { background: var(--down); }
-@keyframes pulse { 70% { box-shadow: 0 0 0 7px rgba(63,182,139,0); } 100% { box-shadow: 0 0 0 0 rgba(63,182,139,0); } }
+@keyframes pulse { 0% { transform: scale(1); opacity: 1; } 70% { transform: scale(2.6); opacity: 0; } 100% { transform: scale(1); opacity: 0; } }
 
 .login { margin: 80px auto; text-align: center; max-width: 420px; padding: 0 16px; }
 .btn {

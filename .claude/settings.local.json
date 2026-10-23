@@ -108,7 +108,8 @@
       "Bash(node --test test)",
       "Bash(node --test test/*.test.js)",
       "Bash(netstat -ano)",
-      "WebFetch(domain:kite.trade)"
+      "WebFetch(domain:kite.trade)",
+      "PowerShell(ls bt-cache/opt | Select-Object -First 5; \\(ls bt-cache/opt\\).Count; ls bt-cache/opt | Select-Object -Last 5; $d = \\(ls bt-cache/opt | Select-Object -Last 3 | Select-Object -First 1\\).FullName; ls $d | Select-Object -First 10; \\(ls $d\\).Count; ls bt-cache/index; Get-Content bt-cache/expiries.json -TotalCount 5)"
     ]
   }
 }

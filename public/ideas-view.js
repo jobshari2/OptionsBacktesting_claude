@@ -68,6 +68,9 @@
   let trades = []; // saved live paper trades (/api/sb/trades)
   let tradesAt = 0;
   let drawnAt = 0;
+  // Least time between two redraws on new prices: a redraw prices every structure and rebuilds the cards (about 0.1 s of
+  // script, then the browser lays the screen out again), so once a second kept the page busy all session.
+  const REDRAW_MS = 2500;
   // A mouse button is down on a control: redrawing now would swallow the click, so the screen waits. The wait ends by
   // itself (PRESS_MS): a press whose release the page never sees (a native dropdown takes it, a touch scroll cancels
   // it, the pointer is let go outside the window) must not freeze the prices.
@@ -1016,7 +1019,10 @@
     if (!E) return null;
     const unlimited = E.maxP === Infinity;
     return {
-      maxP: { v: E.maxP == null ? '—' : unlimited ? (E.openDown ? 'Open-ended' : 'Unlimited') : money(E.netMaxP), c: E.maxP == null ? '' : unlimited || E.netMaxP > 0 ? 'pos' : 'neg' },
+      maxP: {
+        v: E.maxP == null ? '—' : unlimited ? (E.openDown ? 'Open-ended' : 'Unlimited') : money(E.netMaxP),
+        c: E.maxP == null ? '' : unlimited || E.netMaxP > 0 ? 'pos' : 'neg',
+      },
       maxL: { v: E.maxL === -Infinity ? 'Unlimited' : money(E.netMaxL), c: E.netMaxL >= 0 ? 'pos' : 'neg', label: E.netMaxL >= 0 ? 'Worst case' : 'Max loss' },
       net: { v: inr(Math.abs(E.net)), label: E.net >= 0 ? 'Credit' : 'Debit' },
       be: E.bes.length ? E.bes.map((x) => x.toFixed(0)).join(' – ') : '—',
@@ -1368,7 +1374,7 @@
     if (state.view !== 'ideas') return;
     if (!force) {
       // too soon after the last redraw, or a click in progress: paint the latest prices as soon as that is over
-      const wait = Math.max(drawnAt + 900 - Date.now(), isPressed() ? pressedAt + PRESS_MS - Date.now() : 0);
+      const wait = Math.max(drawnAt + REDRAW_MS - Date.now(), isPressed() ? pressedAt + PRESS_MS - Date.now() : 0);
       if (wait > 0) {
         drawTimer ??= setTimeout(() => {
           drawTimer = null;
@@ -2021,8 +2027,7 @@
         forms: C.bsForm === 'iron' || C.bsForm === 'same' ? [C.bsForm] : ['same', 'iron'],
       });
       return window.app.setView('bs');
-    }
-    else if (b.dataset.basis) C.basis = b.dataset.basis;
+    } else if (b.dataset.basis) C.basis = b.dataset.basis;
     else if (b.dataset.chainw) {
       C.chainW = Number(b.dataset.chainw);
       centredFor = null;
