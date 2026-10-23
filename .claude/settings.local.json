@@ -107,7 +107,8 @@
       "Bash(node --check pulse.js)",
       "Bash(node --test test)",
       "Bash(node --test test/*.test.js)",
-      "Bash(netstat -ano)"
+      "Bash(netstat -ano)",
+      "WebFetch(domain:kite.trade)"
     ]
   }
 }

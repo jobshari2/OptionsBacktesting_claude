@@ -1008,7 +1008,7 @@
     const insRows = (M?.ins || [])
       .map(
         (c, i) =>
-          `<tr data-ins="${i}" class="cc-click${i === insI ? ' on' : ''}"><th>${c.kind === 'debit' ? 'Debit spread' : 'Butterfly'} ${c.upperPct}/${c.bodyPct}%<div><button class="btn-sm ghost cc-sb" data-sb-ins="${i}" title="Open this insurance as a live paper position in the Builder: watch its price, P&amp;L and payoff, adjust it">Add / watch in Builder ▸</button></div></th><td>${c.strikes.join(' / ')}</td><td class="neg">${inr(-c.debit)}</td><td class="pos">${inrS(c.maxPay)}</td><td>${c.payRatio ?? '—'}×</td>
+          `<tr data-ins="${i}" class="cc-click${i === insI ? ' on' : ''}"><th>${c.kind === 'debit' ? 'Debit spread' : 'Butterfly'} ${c.upperPct}/${c.bodyPct}%<div><button class="btn-sm ghost cc-sb" data-sb-ins="${i}" title="Open this insurance as a live paper position in the Builder: watch its price, P&amp;L and payoff, adjust it">Add / watch in Builder ▸</button> <button class="btn-sm kite" data-kite-ins="${i}" title="Buy this insurance on Zerodha Kite: real orders at the prices shown, after you confirm">Trade on Kite</button></div></th><td>${c.strikes.join(' / ')}</td><td class="neg">${inr(-c.debit)}</td><td class="pos">${inrS(c.maxPay)}</td><td>${c.payRatio ?? '—'}×</td>
           <td>${c.zone[0] ? num0(c.zone[0]) + ' – ' : 'under '}${num0(c.zone[1])}</td><td>${c.pZone}%</td><td>${tags([...(sameStrikes(c) ? ['held'] : []), ...c.tags])}</td></tr>`,
       )
       .join('');
@@ -1039,7 +1039,7 @@
               ? `Held: ${heldCall ? `sell ${heldCall.strike} CE at ${heldCall.entry.toFixed(2)}` : `sell ${call?.strike} CE (alternative)`}${heldIns ? ` + ${insName(held.ins.length === 3 ? 'butterfly' : 'debit')} ${heldIns.map((l) => l.strike).join('/')}` : ins ? ` + ${insName(ins.kind)} ${ins.strikes.join('/')} (alternative)` : ''} → net credit <b class="${cls(net)}">${inrS(net)}</b> against ${num0(held.qtyIn)} NIFTYBEES`
               : `Selected: ${call ? `sell ${call.strike} CE at ${call.fill}` : 'no call'}${ins ? ` + ${insName(ins.kind)} ${ins.strikes.join('/')}` : ''} → net credit <b class="${cls(net)}">${inrS(net)}</b>${S.qtyBees ? ` against ${num0(S.qtyBees)} NIFTYBEES (${kinr(S.qtyBees * S.bees)})` : ''}`
           }
-              ${(call || ins) && !(heldCall && heldIns) ? '<button class="btn-sm ghost cc-sb" data-sb-all="1" title="Open the selected call and insurance together as a live paper position in the Builder">Add / watch both in Builder ▸</button>' : ''}</div>
+              ${(call || ins) && !(heldCall && heldIns) ? '<button class="btn-sm ghost cc-sb" data-sb-all="1" title="Open the selected call and insurance together as a live paper position in the Builder">Add / watch both in Builder ▸</button> <button class="btn-sm kite" data-kite-all="1" title="Send the selected call and insurance to Zerodha Kite as real orders (the insurance is bought first, the call sold only after it fills). The call is covered by your NIFTYBEES, which Kite does not check here. Asks you to confirm first.">Trade on Kite</button>' : ''}</div>
             <div class="set-row">${viewSeg()}</div>
             ${payBox(
               'ccSuggPay',
@@ -1121,6 +1121,17 @@
       const legs = [...(call ? [{ type: 'CE', side: 'S', strike: call.strike, qty: S.units, mkt: call.ltp }] : []), ...(ins ? ins.legs : [])];
       toBuilder(M.expiry, legs, `Covered call: ${call ? call.strike + ' CE' : ''}${ins ? ' + ' + ins.strikes.join('/') + ' PE' : ''} (${dayLabel(M.expiry)})`);
     });
+    box.querySelectorAll('[data-kite-ins]').forEach((b) =>
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const c = M.ins[Number(b.dataset.kiteIns)];
+        toKite(M.expiry, c.legs, `Covered call insurance: ${c.kind === 'debit' ? 'put debit spread' : 'put butterfly'} ${c.strikes.join('/')}`);
+      }),
+    );
+    box.querySelector('[data-kite-all]')?.addEventListener('click', () => {
+      const legs = [...(call ? [{ type: 'CE', side: 'S', strike: call.strike, qty: S.units, mkt: call.ltp }] : []), ...(ins ? ins.legs : [])];
+      toKite(M.expiry, legs, `Covered call: ${call ? call.strike + ' CE' : ''}${ins ? ' + ' + ins.strikes.join('/') + ' PE' : ''}`);
+    });
     bindView(box, () => renderPaper(false));
     const insLegs = heldIns || ins?.legs || null;
     if (insLegs)
@@ -1154,6 +1165,23 @@
     }
     const wc = W && wkI != null ? W.candidates[wkI] : null;
     if (wc) payoffChart($('ccSuggWkPay'), { legs: wc.legs, hold: null, marks: [{ x: S.spot, label: 'Nifty now ' + num0(S.spot), color: BT.COLORS[2] }] });
+  }
+
+  // The same legs [{ type, side, strike, qty, mkt }] to Zerodha Kite as real orders, after the dialog's confirmation.
+  function toKite(expiry, legs, title) {
+    const lot = meta.lot || params.lotSize;
+    window.KiteOrder?.open({
+      title,
+      sub: `${dayLabel(expiry)} · prices shown`,
+      legs: legs.map((l) => ({
+        action: l.side,
+        type: l.type,
+        strike: l.strike,
+        expiry: l.expiry || expiry,
+        lots: Math.max(1, Math.round(l.qty / lot)),
+        price: l.mkt,
+      })),
+    });
   }
 
   // Opens legs [{ type, side, strike, qty, mkt }] in the Builder as a live paper position (at the prices shown), the way

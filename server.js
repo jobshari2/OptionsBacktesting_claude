@@ -22,7 +22,8 @@ const { loadEnv, num } = require('./lib/env');
 const { createAuth, LOGIN_PAGE } = require('./lib/auth');
 const { createUpstox, parseChain } = require('./lib/upstox');
 const { createOptionCandles, respond, demoRows, OPT_TFS } = require('./lib/optcandles');
-const { createKiteSession, loginUrl: kiteLoginUrl, exchangeRequestToken, profile: kiteProfile } = require('./lib/kite');
+const { createKiteSession, loginUrl: kiteLoginUrl, exchangeRequestToken, profile: kiteProfile, invalidate: kiteInvalidate } = require('./lib/kite');
+const { createKiteData } = require('./lib/kitedata');
 const { createKiteBasket } = require('./kitebasket');
 const { createCcPaper } = require('./ccpaper');
 const { runCoveredCall, DEFAULTS: CC_DEFAULTS } = require('./bt/coveredcall');
@@ -48,6 +49,15 @@ const CFG = {
 
 const auth = createAuth(env); // AUTH_USERNAME / AUTH_PASSWORD from .env; off when either is missing
 
+// Zerodha Kite: the login in use (one for the whole app), and Kite as a source of live data (lib/kitedata.js).
+const kiteSession = createKiteSession({ file: path.join(__dirname, '.kite-token.json'), appFile: path.join(__dirname, '.kite-app.json'), env, logError });
+const kiteData = createKiteData({
+  getAuth: kiteSession.get,
+  logError,
+  onAuthError: (e) => kiteSession.clear('Kite rejected the token (' + e.message + '). Log in to Kite again.'),
+  prevOiFile: path.join(__dirname, 'bt-data', 'kite-prev-oi.json'),
+});
+
 const API = 'https://api.upstox.com/v2';
 const NIFTY_KEY = 'NSE_INDEX|Nifty 50';
 const TOKEN_FILE = path.join(__dirname, '.token.json');
@@ -56,7 +66,7 @@ const WINDOWS_MIN = [1, 3, 5, 15]; // volume-change windows offered in the UI
 const HISTORY_MS = (Math.max(16, CFG.signals.beforeMin) + 1) * 60_000;
 // Bumped whenever the /api/chain response shape changes or the page needs routes an older server lacks, so an
 // old server + new page is detected.
-const API_VERSION = 21;
+const API_VERSION = 22;
 const FEED_STRIKES = num(env.FEED_STRIKES, 15); // strikes either side of ATM streamed over the WebSocket
 const TICK_SNAPSHOT_MS = 500; // how often ticks are folded into a snapshot (history, signals, UI)
 const REST_WITH_FEED_MS = 15_000; // REST refresh interval while the WebSocket feed is live
@@ -64,6 +74,15 @@ const IDLE_STOP_MS = 30_000; // outside market hours, stop calling Upstox when n
 
 // ---------- state ----------
 let token = DEMO ? 'demo' : env.UPSTOX_ACCESS_TOKEN || readSavedToken();
+// Where the live screens' data comes from: 'upstox' or 'kite'. Picked on the page (the Kite chip, or the Connect panel)
+// and kept in bt-data/live-source.json; LIVE_DATA_SOURCE in .env sets the default. Backtests, the Data screen and the
+// Hedge price history always use Upstox: Kite has no expired option contracts.
+const SOURCE_FILE = path.join(__dirname, 'bt-data', 'live-source.json');
+let liveSource = readLiveSource();
+const useKite = () => !DEMO && liveSource === 'kite';
+// Logged in to the live data source in use (demo needs nothing).
+const liveLoggedIn = () => DEMO || (useKite() ? Boolean(kiteSession.get()) : Boolean(token));
+const sourceName = () => (DEMO ? 'demo' : liveSource);
 let contracts = { expiries: [], lot: 65, fetchedAt: 0 }; // live Nifty option contracts: expiries from today on, lot size
 let activeExpiry = null; // expiry the browser is viewing
 const sideExpiries = new Map(); // expiry -> last time the Builder asked for it (/api/live), tracked besides the chain's
@@ -80,16 +99,13 @@ try {
 }
 const signals = createSignals(CFG.signals, logError, signalOdds);
 const ticks = createTickStore(); // every trade of the streamed instruments today, for the chart's Tick view
-const feed = createFeed({
+const upstoxFeed = createFeed({
   getToken: () => token,
   logError,
-  // every message, as it arrives, to the tick store and to the Feeds screen's Upstox-vs-Kite comparison (created
-  // further down)
+  // every message, as it arrives, to the tick store (while Upstox is the source) and to the Feeds screen's
+  // Upstox-vs-Kite comparison (created further down)
   onTick: (keys, at) => {
-    for (const k of keys) {
-      const t = feed.tick(k);
-      if (t) ticks.record(k, at, t.ltp, t.vol);
-    }
+    if (!useKite()) recordTicks(upstoxFeed, keys, at);
     try {
       feedCmp?.onUpstoxTicks(keys, at);
     } catch (e) {
@@ -97,6 +113,38 @@ const feed = createFeed({
     }
   },
 });
+// Kite's tick feed, in feed.js's shape: the live screens' feed while Kite is the source.
+const kiteFeed = kiteData.createFeed({
+  onTick: (keys, at) => useKite() && recordTicks(kiteFeed, keys, at),
+  // Kite refuses the socket: drop the login if Kite says the token is no longer valid.
+  async onAuthFail() {
+    const a = kiteSession.get();
+    if (!a) return;
+    try {
+      await kiteProfile(a);
+    } catch (e) {
+      if (e.tokenProblem) {
+        kiteSession.clear('Kite rejected the token (' + e.message + '). Log in to Kite again.');
+        kiteFeed.setEnabled(false);
+      }
+    }
+  },
+});
+function recordTicks(f, keys, at) {
+  for (const k of keys) {
+    const t = f.tick(k);
+    if (t) ticks.record(k, at, t.ltp, t.vol);
+  }
+}
+// The feed of the source in use: everything below reads ticks through this.
+const activeFeed = () => (useKite() ? kiteFeed : upstoxFeed);
+const feed = {
+  tick: (key) => activeFeed().tick(key),
+  status: () => ({ ...activeFeed().status(), source: sourceName() }),
+  get version() {
+    return activeFeed().version;
+  },
+};
 const flow = createFlow({ ...flowConfig(env), dir: CFG.signals.dir }, logError);
 const tape = createTape({ dir: CFG.signals.dir, strikesAround: num(env.TAPE_STRIKES, 15), logError });
 const pulse = createPulse({
@@ -139,8 +187,10 @@ const chartKeys = new Map(); // instrument key -> last time the chart asked for 
 // backtester and the hedge planner count against the same rate limits.
 const upstoxClient = createUpstox({ getToken: () => token, onUnauthorized: clearToken });
 const optionCandles = createOptionCandles({ bulk: (pathname) => upstoxClient.bulk(pathname) });
+// The live calls of the screens: Upstox's REST API, or the same questions answered from Kite (lib/kitedata.js).
 async function upstox(pathname, params = {}) {
   if (DEMO) return demoData(pathname);
+  if (useKite()) return kiteData.call(pathname, params);
   return upstoxClient.live(pathname, params);
 }
 
@@ -169,7 +219,7 @@ async function getFuture() {
     const f = (data || [])
       .filter((x) => x.instrument_type === 'FUT' && x.underlying_key === NIFTY_KEY && x.instrument_key && expiry(x) >= today)
       .sort((a, b) => (expiry(a) < expiry(b) ? -1 : 1))[0];
-    if (!f) throw new Error('Upstox returned no Nifty future');
+    if (!f) throw new Error(`${useKite() ? 'Kite' : 'Upstox'} returned no Nifty future`);
     future = { key: f.instrument_key, symbol: f.trading_symbol || 'NIFTY FUT', expiry: expiry(f), lot: f.lot_size || contracts.lot, day: today };
     updateSubscriptions();
     return future;
@@ -307,7 +357,8 @@ function snapshotAll() {
 // Subscribe to the index, the Nifty future, whatever the chart shows and FEED_STRIKES strikes either side of ATM (calls
 // and puts) per tracked expiry.
 function updateSubscriptions() {
-  const keys = new Set([NIFTY_KEY, ...(future ? [future.key] : []), ...(feedCmp?.upstoxKeys() || [])]);
+  const cmpKeys = feedCmp?.upstoxKeys() || [];
+  const keys = new Set([NIFTY_KEY, ...(future ? [future.key] : []), ...(useKite() ? [] : cmpKeys)]);
   for (const [k, at] of chartKeys) {
     if (Date.now() - at < IDLE_STOP_MS) keys.add(k);
     else chartKeys.delete(k);
@@ -325,7 +376,13 @@ function updateSubscriptions() {
       if (r.pe.key) keys.add(r.pe.key);
     }
   }
-  feed.setSubscriptions([...keys]);
+  if (useKite()) {
+    kiteFeed.setSubscriptions([...keys]);
+    upstoxFeed.setSubscriptions(cmpKeys.length ? [NIFTY_KEY, ...cmpKeys] : []); // the Feeds screen's Upstox side only
+  } else {
+    upstoxFeed.setSubscriptions([...keys]);
+    kiteFeed.setSubscriptions([]);
+  }
 }
 
 // During market hours this keeps running with no browser open, so spikes are recorded all day.
@@ -335,13 +392,16 @@ async function restLoop() {
   try {
     const watching = Date.now() - lastClientAt < IDLE_STOP_MS;
     const marketOpen = DEMO || isMarketOpen();
-    const active = Boolean(token) && (watching || marketOpen);
+    const active = liveLoggedIn() && (watching || marketOpen);
     // Shut market: nothing changes, so no tick feed and no re-polling of a chain we already hold, even with a page open.
-    feed.setEnabled(active && !DEMO && marketOpen);
+    const feedOn = active && !DEMO && marketOpen;
+    kiteFeed.setEnabled(useKite() && feedOn);
+    // Upstox streams for the screens, or (Kite as the source) only for the Feeds screen's comparison
+    upstoxFeed.setEnabled(useKite() ? Boolean(token) && !DEMO && marketOpen && (feedCmp?.upstoxKeys() || []).length > 0 : feedOn);
     if (!active) return;
     const list = await getExpiries();
     nearestExpiry = list[0];
-    if (!nearestExpiry) throw new Error('No upcoming Nifty expiries returned by Upstox');
+    if (!nearestExpiry) throw new Error(`No upcoming Nifty expiries returned by ${useKite() ? 'Kite' : 'Upstox'}`);
     await getFuture().catch(() => {}); // logged there; the chain does not depend on it
     const live = feed.status().connected;
     let fetched = false;
@@ -413,7 +473,7 @@ function buildResponse(expiry) {
   }
 
   return {
-    source: DEMO ? 'demo' : 'upstox',
+    source: sourceName(),
     expiry,
     updatedAt: snap.updatedAt,
     spot: snap.spot,
@@ -535,6 +595,8 @@ const backtester = createBacktester({
   storeFile: path.join(__dirname, 'bt-data', 'strategies.json'),
   tapeDir: CFG.signals.dir, // the recorded quotes the Arbitrage screen's quote scan reads
   logError,
+  // with Kite as the live source: today's Nifty candles and the live expiries come from Kite
+  liveData: () => (useKite() && kiteSession.get() ? { niftyIntraday: kiteData.niftyIntraday, contracts: () => kiteData.call('/option/contract') } : null),
 });
 
 // Live anomaly scanner on the nearest expiry (Anomalies tab), logging to bt-data/anomaly-log/.
@@ -570,8 +632,17 @@ const hedge = createHedge({
   logError,
 });
 
-// Zerodha Kite (Feeds screen): the login in use, and the comparison of its ticks with Upstox's on the same options.
-const kiteSession = createKiteSession({ file: path.join(__dirname, '.kite-token.json'), env, logError });
+// The Feeds screen: Kite's ticks against Upstox's on the same options. Its Upstox side always reads Upstox, also while
+// Kite is the live source (then from a chain of its own, refreshed once a minute).
+const upstoxOnlyChains = new Map(); // expiry -> { fetchedAt, spot, rows } read from Upstox while Kite is the source
+async function upstoxChain(expiry) {
+  if (!useKite()) return snapshots.get(expiry) ? restChains.get(expiry) : await restChain(expiry, 60_000);
+  const c = upstoxOnlyChains.get(expiry);
+  if (c && Date.now() - c.fetchedAt < 60_000) return c;
+  const fresh = { fetchedAt: Date.now(), ...parseChain(await upstoxClient.live('/option/chain', { instrument_key: NIFTY_KEY, expiry_date: expiry })) };
+  upstoxOnlyChains.set(expiry, fresh);
+  return fresh;
+}
 feedCmp = createFeedCompare({
   dir: CFG.signals.dir,
   configFile: path.join(__dirname, 'bt-data', DEMO ? 'feedcmp-config-demo.json' : 'feedcmp-config.json'),
@@ -580,10 +651,10 @@ feedCmp = createFeedCompare({
   upstox: {
     getExpiries,
     // the chain screen keeps its expiries fresh; another expiry is re-read once a minute for its instrument keys
-    getChain: async (expiry) => (token ? (snapshots.get(expiry) ? restChains.get(expiry) : await restChain(expiry, 60_000)) : null),
-    tick: (key) => feed.tick(key),
-    status: () => feed.status(),
-    getSpot: () => feed.tick(NIFTY_KEY)?.ltp ?? (nearestExpiry ? snapshots.get(nearestExpiry)?.spot : null) ?? null,
+    getChain: async (expiry) => (token ? await upstoxChain(expiry) : null),
+    tick: (key) => upstoxFeed.tick(key),
+    status: () => upstoxFeed.status(),
+    getSpot: () => upstoxFeed.tick(NIFTY_KEY)?.ltp ?? (nearestExpiry ? snapshots.get(nearestExpiry)?.spot : null) ?? null,
   },
   kite: kiteSession,
   getLot: () => contracts.lot, // the paper trades on big gaps are sized in lots
@@ -595,12 +666,27 @@ feedCmp = createFeedCompare({
 });
 
 // The login as the screens see it: whether orders through an enctoken web session are allowed (KITE_ORDERS_ENCTOKEN=1).
-const kiteStatus = () => ({ ...kiteSession.status(), ordersEnctoken: env.KITE_ORDERS_ENCTOKEN === '1' });
+// Also the live data source and the Redirect URL the Kite Connect app must have.
+const kiteRedirect = (req) => `http://${req?.headers?.host || 'localhost:' + CFG.port}/kite/callback`;
+const kiteStatus = (req) => ({
+  ...kiteSession.status(),
+  ordersEnctoken: env.KITE_ORDERS_ENCTOKEN === '1',
+  liveSource: sourceName(),
+  upstox: { loggedIn: !DEMO && Boolean(token), configured: Boolean(CFG.apiKey && CFG.apiSecret) }, // the other source, for the switch
+  redirectUrl: kiteRedirect(req),
+  data: useKite() ? { feed: kiteFeed.status(), ...kiteData.status() } : null,
+});
+// After a Kite login or logout: the Feeds screen's socket, the live feed and the instrument list start again.
+function kiteChanged() {
+  feedCmp.restartKite();
+  kiteFeed.restart();
+  if (useKite()) resetLive();
+}
 
 // Orders of Live Ideas: a trade idea's legs sent to Kite as one basket, after the screen's confirmation (kitebasket.js).
 const kiteBasket = createKiteBasket({
   getAuth: kiteSession.get,
-  symbolFor: (expiry, strike, type) => feedCmp.symbolFor(expiry, strike, type),
+  symbolFor: async (expiry, strike, type) => (DEMO ? null : (await kiteData.symbolFor(expiry, strike, type)) || feedCmp.symbolFor(expiry, strike, type)),
   getLot: () => contracts.lot,
   allowEnctoken: env.KITE_ORDERS_ENCTOKEN === '1',
   marketProtection: env.KITE_MARKET_PROTECTION || null, // sent with MARKET orders only
@@ -643,7 +729,7 @@ const ccPaper = createCcPaper({
   logError,
 });
 setInterval(() => {
-  if (DEMO || token) ccPaper.tick();
+  if (liveLoggedIn()) ccPaper.tick();
 }, 30_000);
 const ccJobs = new Map();
 
@@ -702,7 +788,7 @@ async function handleCc(req, res, url, p) {
     if (p === '/api/cc/paper') return sendJson(res, 200, ccPaper.state());
     // Suggestions on the live chain: the current and next monthly expiry and this week's contra spread.
     if (p === '/api/cc/suggest' && req.method === 'POST') {
-      if (!DEMO && !token) throw new Error('Log in to Upstox first: the suggestions read the live chain');
+      if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the suggestions read the live chain`);
       const b = JSON.parse((await readBody(req, 50_000)).toString('utf8') || '{}');
       const expiries = await getExpiries();
       const today = istDate();
@@ -722,7 +808,7 @@ async function handleCc(req, res, url, p) {
     if (p.startsWith('/api/cc/paper/') && req.method === 'POST') {
       const b = JSON.parse((await readBody(req, 50_000)).toString('utf8') || '{}');
       if (p === '/api/cc/paper/start') {
-        if (!DEMO && !token) throw new Error('Log in to Upstox first: the paper trade follows the live chain');
+        if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the paper trade follows the live chain`);
         await ccPaper.start(b.params || {});
       } else if (p === '/api/cc/paper/pause') ccPaper.pause();
       else if (p === '/api/cc/paper/resume') await ccPaper.resume();
@@ -742,10 +828,10 @@ async function handleCc(req, res, url, p) {
 async function handleKite(req, res, url, p) {
   try {
     if (p === '/kite/login') {
-      if (!kiteSession.apiKey) {
+      if (!kiteSession.configured) {
         res.writeHead(400, { 'Content-Type': 'text/html' });
         return res.end(
-          '<h3>Kite Connect is not set up</h3><p>Add KITE_API_KEY and KITE_API_SECRET (from developers.kite.trade) to .env and restart the server, or use the enctoken option on the Feeds screen.</p><a href="/">Back</a>',
+          '<h3>Kite Connect is not set up</h3><p>Click the <b>Kite</b> chip at the top of the page and enter your Kite Connect app API key and API secret (from developers.kite.trade), or put KITE_API_KEY and KITE_API_SECRET in .env and restart the server.</p><a href="/">Back</a>',
         );
       }
       res.writeHead(302, { Location: kiteLoginUrl(kiteSession.apiKey) });
@@ -757,11 +843,27 @@ async function handleKite(req, res, url, p) {
         throw new Error(url.searchParams.get('message') || 'Kite did not return a request token');
       const data = await exchangeRequestToken({ apiKey: kiteSession.apiKey, apiSecret: kiteSession.apiSecret, requestToken });
       kiteSession.set({ mode: 'connect', apiKey: kiteSession.apiKey, accessToken: data.access_token }, data);
-      feedCmp.restartKite();
+      kiteChanged();
       res.writeHead(302, { Location: '/?kite=ok' });
       return res.end();
     }
-    if (p === '/api/kite/status') return sendJson(res, 200, kiteStatus());
+    if (p === '/api/kite/status') return sendJson(res, 200, kiteStatus(req));
+    // The Kite Connect app typed in on the page: api_key + api_secret, kept in .kite-app.json (the secret never comes back).
+    if (p === '/api/kite/app' && req.method === 'POST') {
+      if (DEMO) throw new Error('Demo mode simulates Kite; run the server without DEMO to set up Kite Connect.');
+      const b = JSON.parse((await readBody(req, 5_000)).toString('utf8') || '{}');
+      if (b.clear === true) kiteSession.clearApp();
+      else kiteSession.setApp(b.apiKey, b.apiSecret);
+      return sendJson(res, 200, { ok: true, kite: kiteStatus(req) });
+    }
+    // Live data from Upstox or from Kite, for every live screen.
+    if (p === '/api/kite/source' && req.method === 'POST') {
+      if (DEMO) throw new Error('Demo mode serves synthetic data: run the server without DEMO to pick the live source.');
+      const b = JSON.parse((await readBody(req, 2_000)).toString('utf8') || '{}');
+      if (b.source !== 'upstox' && b.source !== 'kite') throw new Error('source must be upstox or kite');
+      setLiveSource(b.source);
+      return sendJson(res, 200, { ok: true, kite: kiteStatus(req) });
+    }
     // A pasted token, or the enctoken sent by the bookmarklet (kite-link.html): checked with Kite before it is kept.
     if (p === '/api/kite/session' && req.method === 'POST') {
       if (DEMO) throw new Error('Demo mode simulates the Kite feed; run the server without DEMO to log in to Kite.');
@@ -787,8 +889,8 @@ async function handleKite(req, res, url, p) {
         throw new Error('Kite did not accept this token: ' + e.message, { cause: e });
       }
       kiteSession.set(auth, user);
-      feedCmp.restartKite();
-      return sendJson(res, 200, { ok: true, kite: kiteStatus() });
+      kiteChanged();
+      return sendJson(res, 200, { ok: true, kite: kiteStatus(req) });
     }
     // Live Ideas: what a basket would send (nothing is sent), and the basket itself (needs `confirmed: true`).
     if ((p === '/api/kite/basket/preview' || p === '/api/kite/basket') && req.method === 'POST') {
@@ -796,9 +898,11 @@ async function handleKite(req, res, url, p) {
       return sendJson(res, 200, p === '/api/kite/basket' ? await kiteBasket.place(b) : await kiteBasket.preview(b));
     }
     if (p === '/api/kite/logout' && req.method === 'POST') {
+      const was = kiteSession.get();
       kiteSession.clear();
-      feedCmp.restartKite();
-      return sendJson(res, 200, { ok: true, kite: kiteStatus() });
+      kiteChanged();
+      await kiteInvalidate(was); // a Kite Connect session is ended at Kite too
+      return sendJson(res, 200, { ok: true, kite: kiteStatus(req) });
     }
     return sendJson(res, 404, { error: 'Not found' });
   } catch (e) {
@@ -929,14 +1033,20 @@ const server = http.createServer(async (req, res) => {
 
   if (p === '/api/chain') {
     lastClientAt = Date.now();
-    if (!token) {
-      return sendJson(res, 200, { apiVersion: API_VERSION, loggedIn: false, configured: Boolean(CFG.apiKey && CFG.apiSecret), error: lastError });
+    if (!liveLoggedIn()) {
+      return sendJson(res, 200, {
+        apiVersion: API_VERSION,
+        loggedIn: false,
+        source: sourceName(),
+        configured: useKite() ? kiteSession.configured : Boolean(CFG.apiKey && CFG.apiSecret),
+        error: useKite() ? kiteSession.status().error : lastError,
+      });
     }
     try {
       const list = await getExpiries();
       const wanted = url.searchParams.get('expiry');
       const expiry = list.includes(wanted) ? wanted : list[0];
-      if (!expiry) throw new Error('No upcoming Nifty expiries returned by Upstox');
+      if (!expiry) throw new Error(`No upcoming Nifty expiries returned by ${useKite() ? 'Kite' : 'Upstox'}`);
       if (expiry !== activeExpiry || !snapshots.has(expiry)) {
         activeExpiry = expiry;
         await restLoop(); // fetch immediately on first load / expiry switch
@@ -955,7 +1065,7 @@ const server = http.createServer(async (req, res) => {
     } catch (e) {
       lastError = e.message;
       logError('api', e);
-      return sendJson(res, 200, { apiVersion: API_VERSION, loggedIn: Boolean(token), error: e.message });
+      return sendJson(res, 200, { apiVersion: API_VERSION, loggedIn: liveLoggedIn(), source: sourceName(), error: e.message });
     }
   }
 
@@ -964,7 +1074,7 @@ const server = http.createServer(async (req, res) => {
   if (p === '/api/live') {
     lastClientAt = Date.now();
     try {
-      if (!token) throw new Error('Not logged in');
+      if (!liveLoggedIn()) throw new Error(`Not logged in to ${useKite() ? 'Kite' : 'Upstox'}`);
       const list = await getExpiries();
       const expiry = url.searchParams.get('expiry');
       if (!list.includes(expiry)) throw new Error('Not a live expiry: ' + expiry);
@@ -1154,7 +1264,7 @@ const server = http.createServer(async (req, res) => {
     const t = feed.tick(NIFTY_KEY);
     const rest = nearestExpiry ? restChains.get(nearestExpiry) : null;
     const at = t?.at ?? rest?.fetchedAt ?? 0;
-    return sendJson(res, 200, { ltp: t?.ltp ?? rest?.spot ?? null, at, live: !DEMO && isMarketOpen() && Date.now() - at < 60_000, loggedIn: Boolean(token) });
+    return sendJson(res, 200, { ltp: t?.ltp ?? rest?.spot ?? null, at, live: !DEMO && isMarketOpen() && Date.now() - at < 60_000, loggedIn: liveLoggedIn() });
   }
 
   // The option chart of the Chain screen (the chart button beside each strike): candles and the latest price of one
@@ -1177,6 +1287,7 @@ const server = http.createServer(async (req, res) => {
       const lot = contracts.lot; // the chart shows the volume in lots too
       if (DEMO) return sendJson(res, 200, { ...respond(demoRows(`${q.get('expiry')}${q.get('strike')}${q.get('type')}`, cur.ltp ?? 100), tf), lot });
       if (!o.key) throw new Error('No instrument key for this option');
+      if (useKite()) return sendJson(res, 200, { ...(await kiteData.candles(o.key, tf)), lot });
       return sendJson(res, 200, { ...(await optionCandles.candles(o.key, tf)), lot });
     } catch (e) {
       logError('option-chart', e);
@@ -1199,7 +1310,7 @@ const server = http.createServer(async (req, res) => {
       const tf = url.searchParams.get('tf') || '5';
       if (!OPT_TFS.has(tf === 'D' ? 'D' : Number(tf))) throw new Error('Unknown chart timeframe ' + tf);
       if (DEMO) return sendJson(res, 200, { ...respond(demoRows('NIFTYFUT', q.ltp ?? 24900), tf), ...about });
-      return sendJson(res, 200, { ...(await optionCandles.candles(f.key, tf)), ...about });
+      return sendJson(res, 200, { ...(await (useKite() ? kiteData : optionCandles).candles(f.key, tf)), ...about });
     } catch (e) {
       return sendJson(res, 400, { error: e.message });
     }
@@ -1289,8 +1400,10 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(CFG.port, () => {
   console.log(`Nifty option chain running at http://localhost:${CFG.port}`);
-  console.log(DEMO ? 'Data source: DEMO (synthetic data, not real prices)' : 'Data source: Upstox API (real market data)');
-  if (!token) console.log('Not logged in yet — open the page and click "Login with Upstox".');
+  console.log(
+    DEMO ? 'Data source: DEMO (synthetic data, not real prices)' : `Live data source: ${useKite() ? 'Zerodha Kite' : 'Upstox API'} (real market data)`,
+  );
+  if (!liveLoggedIn()) console.log(`Not logged in yet — open the page and log in to ${useKite() ? 'Kite' : 'Upstox'}.`);
   console.log(auth.enabled ? `Sign-in required (user "${auth.user}")` : 'WARNING: no sign-in. Set AUTH_USERNAME and AUTH_PASSWORD in .env to require one.');
   console.log(`Spike recordings are saved to ${CFG.signals.dir}`);
   console.log(`Errors are logged to ${LOG_FILE}`);
@@ -1312,6 +1425,41 @@ for (const sig of ['SIGINT', 'SIGTERM']) {
     setTimeout(() => process.exit(0), 1500); // don't hang if the disk is slow
     tape.close(() => process.exit(0));
   });
+}
+
+// ---------- live data source ----------
+function readLiveSource() {
+  try {
+    const s = JSON.parse(fs.readFileSync(SOURCE_FILE, 'utf8')).source;
+    if (s === 'upstox' || s === 'kite') return s;
+  } catch {}
+  return env.LIVE_DATA_SOURCE === 'kite' ? 'kite' : 'upstox';
+}
+function setLiveSource(s) {
+  if (s === liveSource) return;
+  liveSource = s;
+  try {
+    fs.mkdirSync(path.dirname(SOURCE_FILE), { recursive: true });
+    fs.writeFileSync(SOURCE_FILE, JSON.stringify({ source: s }));
+  } catch (e) {
+    logError('live-source', e);
+  }
+  console.log(`Live data source: ${s === 'kite' ? 'Zerodha Kite' : 'Upstox API'}`);
+  resetLive();
+}
+// The chains, contracts and future of one source mean nothing to the other (different instrument keys): start again.
+// The per-strike history (volume windows, signals) carries on, as both read the exchange's own figures.
+function resetLive() {
+  restChains.clear();
+  snapshots.clear();
+  upstoxOnlyChains.clear();
+  contracts = { expiries: [], lot: contracts.lot, fetchedAt: 0 };
+  future = null;
+  futureRetryAt = 0;
+  chartKeys.clear();
+  lastError = null;
+  updateSubscriptions();
+  restLoop();
 }
 
 // ---------- utils ----------

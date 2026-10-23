@@ -22,7 +22,9 @@ const addDays = (day, n) => new Date(Date.parse(day + 'T00:00:00Z') + n * 86400_
 const minuteOf = (ts) => Number(ts.slice(11, 13)) * 60 + Number(ts.slice(14, 16)) - OPEN_MIN;
 
 // upstox: the app's Upstox client (lib/upstox.js); left out, the data layer makes its own (tests, scripts).
-function createData({ getToken, upstox = createUpstox({ getToken }), cacheDir, logError = () => {} }) {
+// live (optional): the live data source when it is not Upstox (Kite): { niftyIntraday(), contracts() } answering in
+// Upstox's shapes, or null while Upstox is the source.
+function createData({ getToken, upstox = createUpstox({ getToken }), cacheDir, logError = () => {}, live: liveSource = () => null }) {
   const limiter = upstox.limiter;
   const inflight = new Map();
   fs.mkdirSync(cacheDir, { recursive: true });
@@ -160,8 +162,9 @@ function createData({ getToken, upstox = createUpstox({ getToken }), cacheDir, l
   async function niftyIntraday() {
     if (Date.now() - intraday.at < 20_000) return intraday.candles;
     return once('intraday', async () => {
-      const d = await api(`/v3/historical-candle/intraday/${encodeURIComponent(NIFTY)}/minutes/1`);
-      const candles = (d?.candles || []).map((c) => c.slice(0, 5)).sort((a, b) => (a[0] < b[0] ? -1 : 1));
+      const alt = liveSource();
+      const rows = alt ? await alt.niftyIntraday() : (await api(`/v3/historical-candle/intraday/${encodeURIComponent(NIFTY)}/minutes/1`))?.candles;
+      const candles = (rows || []).map((c) => c.slice(0, 5)).sort((a, b) => (a[0] < b[0] ? -1 : 1));
       intraday = { at: Date.now(), candles };
       return candles;
     });
@@ -180,10 +183,18 @@ function createData({ getToken, upstox = createUpstox({ getToken }), cacheDir, l
       let liveLot = null;
       let stale = false;
       try {
-        const [e, c] = await Promise.all([
-          api(`/v2/expired-instruments/expiries?instrument_key=${encodeURIComponent(NIFTY)}`),
-          api(`/v2/option/contract?instrument_key=${encodeURIComponent(NIFTY)}`),
-        ]);
+        const alt = liveSource();
+        // with Kite as the live source the expired list still comes from Upstox when it can (else the saved file)
+        const expiredList = alt
+          ? api(`/v2/expired-instruments/expiries?instrument_key=${encodeURIComponent(NIFTY)}`).catch(() => {
+              try {
+                return JSON.parse(fs.readFileSync(file, 'utf8')).expired;
+              } catch {
+                return [];
+              }
+            })
+          : api(`/v2/expired-instruments/expiries?instrument_key=${encodeURIComponent(NIFTY)}`);
+        const [e, c] = await Promise.all([expiredList, alt ? alt.contracts() : api(`/v2/option/contract?instrument_key=${encodeURIComponent(NIFTY)}`)]);
         expired = [...new Set(e || [])].sort();
         live = [...new Set((c || []).map((x) => x.expiry))].sort();
         liveLot = c?.[0]?.lot_size || null;

@@ -2,6 +2,7 @@ node_modules/
 .env
 .token.json
 .kite-token.json
+.kite-app.json
 logs/
 events/
 events-demo/
@@ -19,6 +20,8 @@ bt-data/feedcmp-config-demo.json
 bt-data/cc-backtest.json
 bt-data/cc-paper.json
 bt-data/cc-paper-demo.json
+bt-data/live-source.json
+bt-data/kite-prev-oi.json
 
 # written by the CI scripts (npm run test:ci, npm run test:e2e)
 reports/

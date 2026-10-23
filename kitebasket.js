@@ -1,4 +1,5 @@
-// Orders from Live Ideas: the legs of a trade idea sent to Zerodha Kite as one basket. Real orders, real money.
+// Orders to Zerodha Kite from every screen that holds legs (Live Ideas, the Builder, Strategies, Covered call, Hedge,
+// Arbitrage...): the legs sent as one basket. Real orders, real money.
 // Only on a click on the screen, after its confirmation dialog (the request must say `confirmed: true`).
 // How a basket is sent:
 //   - LIMIT orders by default, at the price shown on the screen moved `buffer` points towards a fill (a bought leg a
@@ -7,7 +8,8 @@
 //     request says `orderType: 'MARKET'`
 //   - the BUY legs go first and the SELL legs only when every BUY leg is filled: the bought wings are in place before
 //     anything is sold, so the short legs are never uncovered and the margin is hedged. A BUY leg that is not filled
-//     within the wait is cancelled and no SELL leg is sent. A basket with no BUY leg (an uncovered short) is refused.
+//     within the wait is cancelled and no SELL leg is sent. A basket with no BUY leg is refused unless every SELL in it
+//     closes a long position Kite already holds (same instrument and product, enough quantity): an exit, never a short.
 //   - a SELL leg that does not fill in time is cancelled too, and the basket is reported as partial: the legs bought
 //     stay open in Kite and have to be managed there
 // Safety, as in the Feeds live trader (feedlive.js): needs a Kite login; an enctoken web session (unofficial) only with
@@ -99,9 +101,32 @@ function createKiteBasket({
     return { legs: out, product, orderType, buffer, lot };
   }
 
+  // A basket with no BUY leg: null when every SELL closes a long held in Kite (same symbol and product), else why not.
+  async function sellsOnlyProblem(P) {
+    if (P.legs.some((l) => l.action === 'BUY')) return null;
+    const refuse = 'A basket with no BUY leg would leave a SELL uncovered: not sent';
+    if (demo) return refuse + ' (demo mode has no Kite positions to close)';
+    const auth = getAuth();
+    if (!auth) return 'Not logged in to Kite';
+    let held;
+    try {
+      held = await api.positions(auth);
+    } catch (e) {
+      return `${refuse} (Kite's positions could not be read to check it is an exit: ${e.message})`;
+    }
+    const need = new Map();
+    for (const l of P.legs) need.set(l.symbol, (need.get(l.symbol) || 0) + l.qty);
+    for (const [symbol, qty] of need) {
+      const long = (held || []).filter((x) => x.tradingsymbol === symbol && x.product === P.product).reduce((a, x) => a + (Number(x.quantity) || 0), 0);
+      if (long < qty) return `${refuse}: Kite holds ${long > 0 ? long : 'no'} long ${symbol} (${P.product}) to close, the basket sells ${qty}`;
+    }
+    return null;
+  }
+
   // What would be sent, and why it can't be yet: for the confirmation dialog. Sends nothing.
   async function preview(req) {
     const P = await plan(req);
+    const exitOnly = !P.legs.some((l) => l.action === 'BUY');
     let funds = null;
     const auth = getAuth();
     if (!demo && auth) {
@@ -134,7 +159,8 @@ function createKiteBasket({
         margin = { error: e.message };
       }
     }
-    return { ...P, gate: gate(), user: demo ? 'DEMO' : auth?.userId || null, funds, margin, demo };
+    const closing = exitOnly ? await sellsOnlyProblem(P) : null;
+    return { ...P, gate: gate() || closing, exitOnly, user: demo ? 'DEMO' : auth?.userId || null, funds, margin, demo };
   }
 
   async function refresh(auth, leg) {
@@ -197,7 +223,8 @@ function createKiteBasket({
     if (why) throw new Error(why);
     if (busy) throw new Error('Another basket is being placed: wait for it to finish');
     const P = await plan(req);
-    if (!P.legs.some((l) => l.action === 'BUY')) throw new Error('A basket with no BUY leg would leave a SELL uncovered: not sent');
+    const uncovered = await sellsOnlyProblem(P);
+    if (uncovered) throw new Error(uncovered);
     const sig = JSON.stringify([P.orderType, P.legs.map((l) => [l.action, l.symbol, l.qty, l.limit])]);
     if (sig === lastSig && now() - lastAt < 15_000) throw new Error('This same basket was just sent: not sending it twice');
     busy = true;

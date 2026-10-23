@@ -291,6 +291,7 @@
       <div class="dep-chart-head"><span><b>Payoff</b> <span class="muted small">${esc(SBAdjust.structure(a.legs).name)}</span></span><div class="pay-ctl" id="depCtl"></div></div>
       <div class="chart-box dep-chart"><canvas id="depChart"></canvas></div>
       <div class="dep-actions">
+        <button class="btn-sm kite" data-act="kite" title="Send these exact legs (strikes, lots, the prices shown) to Zerodha Kite as real orders: buys first, sells only after the buys fill. Asks you to confirm first.">Trade on Kite</button>
         <button class="btn-sm" data-act="builder" title="Open these exact legs (strikes, lots, entry prices, what-if settings) in the Builder on the live chain, to paper trade, adjust and roll them">Customise in Builder ▸</button>
         <button class="btn-sm ghost" data-act="save" title="Save as a strategy defined relative to ATM, reusable on any expiry">Save as my strategy</button>
         <button class="btn-sm ghost" data-act="bt">Backtest it</button>
@@ -368,7 +369,13 @@
       dep = null;
       renderDeployEmpty();
     } else if (b.dataset.act === 'bt') BT.emit('open-backtest', { strategy: asStrategy(), run: false });
-    else if (b.dataset.act === 'builder') {
+    else if (b.dataset.act === 'kite') {
+      window.KiteOrder?.open({
+        title: dep.strategy.name,
+        sub: `deployed for ${dayShort(dep.live.base)} at ${dep.pricing === 'market' ? 'bid / ask' : 'LTP'}`,
+        legs: dep.legs.map((l) => ({ action: l.action, type: l.type, strike: l.strikeValue, lots: l.lots, expiry: l.expiryDate, price: entryPx(l) })),
+      });
+    } else if (b.dataset.act === 'builder') {
       // Hand the exact position over: strikes, lots, expiries and the entry prices shown here (LTP or bid / ask),
       // each leg tagged with its strategy rule so saving from the Builder keeps the rule, SL and target.
       BT.emit('open-builder', {

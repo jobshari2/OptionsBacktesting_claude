@@ -6,3 +6,15 @@
 .kite-pop-head { display: flex; flex-direction: column; gap: 2px; }
 .kl { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
 .kl .fd-actions { margin-top: 0; }
+/* the Kite Connect app (api_key / api_secret) typed in on the page */
+.kl-app { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px dashed var(--line); border-radius: 8px; }
+.kl-appform { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.kl-appform input.txt { width: 170px; }
+.kl-redirect code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; user-select: all; }
+/* Live data: Upstox | Kite, in the top bar */
+.src-sw { display: inline-flex; align-items: center; gap: 6px; }
+.src-sw .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.src-sw .seg button { display: inline-flex; align-items: center; gap: 5px; }
+.src-sw .seg button .fd-dot { margin: 0; }
+.login .login-kite { max-width: 640px; margin: 10px auto 0; text-align: left; }
+.source.kite { background: rgba(255, 140, 50, .18); color: #ff9a4d; }

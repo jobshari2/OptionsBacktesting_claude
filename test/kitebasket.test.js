@@ -215,3 +215,32 @@ test('the preview asks Kite for the basket margin and gives it per lot of the st
   assert.match(q.margin.error, /Kite is down/);
   assert.equal(q.legs.length, 3);
 });
+
+test('a basket of SELLs alone goes out only as the exit of longs Kite already holds', async () => {
+  const sym = 'NIFTY2026102024900CE'; // LEGS[1]: 2 lots = 130 qty
+  const withHeld = (held) => {
+    const f = fake();
+    f.api.positions = async () => held;
+    return make({}, f);
+  };
+  // held long, same product, enough: sent
+  const ok = withHeld([{ tradingsymbol: sym, product: 'NRML', quantity: 130 }]);
+  const r = await ok.b.place(req({ legs: [LEGS[1]] }));
+  assert.equal(r.status, 'done');
+  assert.equal(ok.f.calls.filter((c) => c.call === 'place').length, 1);
+  assert.equal((await ok.b.preview(req({ legs: [LEGS[1]] }))).gate, null);
+  // too little held, a short held, another product, nothing held: refused, nothing placed
+  for (const held of [
+    [{ tradingsymbol: sym, product: 'NRML', quantity: 65 }],
+    [{ tradingsymbol: sym, product: 'NRML', quantity: -130 }],
+    [{ tradingsymbol: sym, product: 'MIS', quantity: 130 }],
+    [],
+  ]) {
+    const no = withHeld(held);
+    await assert.rejects(no.b.place(req({ legs: [LEGS[1]] })), /no BUY leg/);
+    assert.equal(no.f.calls.filter((c) => c.call === 'place').length, 0);
+    assert.match((await no.b.preview(req({ legs: [LEGS[1]] }))).gate, /no BUY leg/);
+  }
+  // demo mode has no positions to check against
+  await assert.rejects(make({ demo: true }).b.place(req({ legs: [LEGS[1]] })), /demo mode/);
+});

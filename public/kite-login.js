@@ -1,10 +1,12 @@
-// The one place to log in to Zerodha Kite, shared by the top bar's Kite chip, the Feeds screen and the order dialog of
-// Live Ideas. Three ways, as before on the Feeds screen: the Kite Connect redirect (KITE_API_KEY / KITE_API_SECRET in
-// .env), the enctoken of a Kite web login sent by the "Send Kite login here" bookmarklet (kite-link.html), or a pasted
-// token. The login itself lives on the server (/api/kite/*); this file only draws it and keeps the screens in step:
+// The one place to log in to Zerodha Kite, shared by the top bar's Kite chip, the Feeds screen, the login panel (Kite as
+// the live source) and the order dialogs. Three ways: the Kite Connect redirect (the app's API key and API secret, typed
+// in here or KITE_API_KEY / KITE_API_SECRET in .env), the enctoken of a Kite web login sent by the "Send Kite login here"
+// bookmarklet (kite-link.html), or a pasted token. Also the top bar's "Live data: Upstox | Kite" switch. The login itself
+// lives on the server (/api/kite/*); this file only draws it and keeps the screens in step:
 //   KiteLogin.mount(el)      draws the login controls in el (any number of places at once)
 //   KiteLogin.status         the latest /api/kite/status (null until it has arrived)
-//   'kitechange' event       fired on window whenever the login changes
+//   KiteLogin.setSource(s)   live data from 'upstox' or 'kite'
+//   'kitechange' event       fired on window whenever the login or the live source changes
 (() => {
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -59,6 +61,16 @@ addEventListener('message',function h(ev){if(ev.origin!==o||ev.data!=='ready')re
     el.classList.add('kl');
     el.innerHTML = `
       ${status ? '<div class="fd-status kl-line"></div>' : ''}
+      <div class="kl-app">
+        <div class="kl-appline small"></div>
+        <form class="kl-appform hidden" autocomplete="off">
+          <input class="txt kl-akey" type="text" placeholder="API key" autocomplete="off" spellcheck="false">
+          <input class="txt kl-asec" type="password" placeholder="API secret" autocomplete="new-password">
+          <button type="submit" class="btn-sm">Save</button>
+          <span class="muted small kl-amsg"></span>
+        </form>
+        <div class="muted small kl-redirect hidden">From your app on <a href="https://developers.kite.trade/apps" target="_blank" rel="noopener">developers.kite.trade</a>. Its <b>Redirect URL</b> must be <code class="kl-rurl"></code> <button type="button" class="btn-sm ghost kl-copy">Copy</button>. The secret stays on this computer (.kite-app.json) and is never shown again.</div>
+      </div>
       <div class="fd-actions">
         <a class="btn-sm kl-connect" href="/kite/login" title="Kite Connect login. If you are already logged in to Kite in this browser, Kite usually sends you straight back.">Login with Kite</a>
         <button type="button" class="btn-sm ghost kl-tokbtn">Use a token…</button>
@@ -78,7 +90,46 @@ addEventListener('message',function h(ev){if(ev.origin!==o||ev.data!=='ready')re
         <span class="muted small kl-msg"></span>
       </form>`;
     const q = (s) => el.querySelector(s);
-    const m = { el, line: q('.kl-line'), connect: q('.kl-connect'), logout: q('.kl-logout'), auto: q('.kl-auto'), form: q('.kl-form') };
+    const m = {
+      el,
+      line: q('.kl-line'),
+      connect: q('.kl-connect'),
+      logout: q('.kl-logout'),
+      auto: q('.kl-auto'),
+      form: q('.kl-form'),
+      app: q('.kl-app'),
+      appLine: q('.kl-appline'),
+      appForm: q('.kl-appform'),
+      redirect: q('.kl-redirect'),
+      editing: false,
+    };
+    m.appLine.onclick = async (e) => {
+      const b = e.target.closest('[data-app]');
+      if (!b) return;
+      if (b.dataset.app === 'edit') {
+        m.editing = !m.editing;
+        paint(m);
+        if (m.editing) q('.kl-akey').focus();
+      } else if (b.dataset.app === 'remove' && confirm('Remove the Kite Connect API key and secret saved on this computer?')) {
+        await api('/api/kite/app', { clear: true }).catch((err) => alert(err.message));
+        refresh();
+      }
+    };
+    q('.kl-copy').onclick = () => navigator.clipboard?.writeText(q('.kl-rurl').textContent).catch(() => {});
+    m.appForm.onsubmit = async (e) => {
+      e.preventDefault();
+      q('.kl-amsg').textContent = 'Saving…';
+      try {
+        await api('/api/kite/app', { apiKey: q('.kl-akey').value, apiSecret: q('.kl-asec').value });
+        q('.kl-akey').value = '';
+        q('.kl-asec').value = '';
+        q('.kl-amsg').textContent = '';
+        m.editing = false;
+        refresh();
+      } catch (err) {
+        q('.kl-amsg').textContent = err.message;
+      }
+    };
     q('.kl-bm').href = bookmarklet();
     q('.kl-bm').onclick = (e) => {
       e.preventDefault();
@@ -136,10 +187,57 @@ addEventListener('message',function h(ev){if(ev.origin!==o||ev.data!=='ready')re
   function paint(m) {
     const k = KL.status;
     if (m.line) m.line.innerHTML = lineOf(k);
-    m.connect.classList.toggle('hidden', !k?.apiKey || KL.demo());
+    m.connect.classList.toggle('hidden', !k?.configured || KL.demo());
     m.logout.classList.toggle('hidden', !k?.loggedIn || KL.demo());
-    m.auto.disabled = !k?.apiKey;
+    m.auto.disabled = !k?.configured;
+    // the Kite Connect app: its key (shortened), or the form to type it in
+    m.app.classList.toggle('hidden', KL.demo() || !k);
+    const open = m.editing || (k && !k.configured);
+    m.appLine.innerHTML = !k
+      ? ''
+      : k.configured
+        ? `Kite Connect app <b>${esc(k.apiKeyHint || '')}</b> <span class="muted">(${k.appSource === 'env' ? 'from .env' : 'saved on this computer'})</span> <button type="button" class="btn-sm ghost" data-app="edit">${m.editing ? 'Cancel' : 'Change'}</button>${k.appSource === 'saved' ? ' <button type="button" class="btn-sm ghost danger" data-app="remove">Remove</button>' : ''}`
+        : '<b>Set up Kite Connect:</b> enter the API key and API secret of your Kite Connect app, then press Login with Kite.';
+    m.appForm.classList.toggle('hidden', !open);
+    m.redirect.classList.toggle('hidden', !open);
+    if (k?.redirectUrl) m.el.querySelector('.kl-rurl').textContent = k.redirectUrl;
   }
+
+  // ---------- Live data: Upstox | Kite (top bar) ----------
+  function paintSource() {
+    const sw = $('srcSw');
+    if (!sw) return;
+    const k = KL.status;
+    sw.classList.toggle('hidden', KL.demo());
+    if (!k) return;
+    for (const b of sw.querySelectorAll('[data-src]')) {
+      const s = b.dataset.src;
+      const on = k.liveSource === s;
+      const logged = s === 'kite' ? k.loggedIn : k.upstox?.loggedIn;
+      b.classList.toggle('on', on);
+      b.querySelector('.fd-dot').className = `fd-dot ${logged ? 'on' : 'warn'}`;
+      b.title = `${on ? 'Live data comes from' : 'Take live data from'} ${s === 'kite' ? 'Zerodha Kite' : 'Upstox'} (${logged ? 'logged in' : 'not logged in'})`;
+    }
+  }
+  async function setSource(source) {
+    if (KL.status?.liveSource === source) return;
+    try {
+      KL.status = (await api('/api/kite/source', { source })).kite;
+    } catch (e) {
+      alert(e.message);
+      return;
+    }
+    mounts.forEach(paint);
+    paintChip();
+    paintSource();
+    window.dispatchEvent(new CustomEvent('kitechange', { detail: KL.status }));
+    window.app?.reload?.(); // the chain and every live screen load again from the new source
+  }
+  KL.setSource = setSource;
+  $('srcSw')?.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-src]');
+    if (b) setSource(b.dataset.src);
+  });
 
   // ---------- the top bar chip ----------
   function paintChip() {
@@ -150,7 +248,7 @@ addEventListener('message',function h(ev){if(ev.origin!==o||ev.data!=='ready')re
     chip.innerHTML = `<i class="fd-dot ${on ? 'on' : 'warn'}"></i>Kite ${KL.demo() ? '<span class="muted">demo</span>' : k?.loggedIn ? esc(k.userId || '') : '<span class="muted">log in</span>'}`;
     chip.title = k?.loggedIn
       ? `Logged in to Zerodha Kite as ${k.userId || ''} (${k.mode === 'enctoken' ? 'web session' : 'Kite Connect'}): click to manage`
-      : 'Log in to Zerodha Kite (used by the Feeds screen and the Trade with Zerodha Kite buttons)';
+      : 'Log in to Zerodha Kite (Kite live data, the Feeds screen and the Trade on Kite buttons)';
   }
 
   let last = '';
@@ -162,7 +260,8 @@ addEventListener('message',function h(ev){if(ev.origin!==o||ev.data!=='ready')re
     }
     mounts.forEach(paint);
     paintChip();
-    const key = JSON.stringify([KL.status.loggedIn, KL.status.userId, KL.status.mode]);
+    paintSource();
+    const key = JSON.stringify([KL.status.loggedIn, KL.status.userId, KL.status.mode, KL.status.liveSource]);
     if (key !== last) {
       last = key;
       window.dispatchEvent(new CustomEvent('kitechange', { detail: KL.status }));
@@ -179,6 +278,15 @@ addEventListener('message',function h(ev){if(ev.origin!==o||ev.data!=='ready')re
     chip.onclick = (e) => {
       e.stopPropagation();
       pop.classList.toggle('hidden');
+      // kept inside the window whether the chip sits at the right of the top bar or has wrapped to its left
+      const r = chip.getBoundingClientRect();
+      const w = pop.offsetWidth;
+      Object.assign(pop.style, {
+        position: 'fixed',
+        top: `${r.bottom + 8}px`,
+        right: 'auto',
+        left: `${Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8))}px`,
+      });
     };
     document.addEventListener('click', (e) => {
       if (!pop.classList.contains('hidden') && !pop.contains(e.target) && e.target !== chip) pop.classList.add('hidden');

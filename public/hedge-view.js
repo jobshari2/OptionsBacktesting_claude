@@ -542,6 +542,16 @@
       legs: c.legs.map((l) => ({ action: l.action === 'buy' ? 'B' : 'S', type: l.type, strike: l.strike, expiry: c.expiry, lots: l.lots })),
     });
   });
+  // The selected hedge to Zerodha Kite as real orders, after the dialog's confirmation (kite-order.js).
+  $('hKite').addEventListener('click', () => {
+    const c = hs.data?.selected;
+    if (!c?.legs?.length) return;
+    window.KiteOrder?.open({
+      title: `Hedge: ${nameOf(c, hs.data)}`,
+      sub: dateLabel(c.expiry),
+      legs: c.legs.map((l) => ({ action: l.action === 'buy' ? 'B' : 'S', type: l.type, strike: l.strike, expiry: c.expiry, lots: l.lots, price: l.price })),
+    });
+  });
   $('hNew').addEventListener('click', startNew);
   $('hEdSave').addEventListener('click', () => saveDraft(false));
   $('hEdSaveNew').addEventListener('click', () => saveDraft(true));

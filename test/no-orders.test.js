@@ -47,7 +47,7 @@ test('Kite orders are sent only by lib/kite.js, and only the live trader and the
   assert.ok(/let on = false;/.test(live), 'live trading starts switched off');
 });
 
-test('the Ideas basket keeps its guards, and only the server and the Ideas screen reach it', () => {
+test('the Kite basket keeps its guards, and only the server, the Ideas screen and the shared order dialog reach it', () => {
   const basket = fs.readFileSync(path.join(ROOT, 'kitebasket.js'), 'utf8');
   assert.ok(/confirmed !== true/.test(basket), 'a basket must be confirmed');
   assert.ok(/no BUY leg/.test(basket), 'an uncovered short is refused');
@@ -55,6 +55,8 @@ test('the Ideas basket keeps its guards, and only the server and the Ideas scree
   assert.ok(/KITE_ORDERS_ENCTOKEN/.test(basket), 'enctoken sessions need the explicit switch');
   for (const f of sources(ROOT)) {
     const rel = path.relative(ROOT, f).replace(/\\/g, '/');
-    if (!['server.js', 'public/ideas-view.js'].includes(rel)) assert.ok(!/api\/kite\/basket/.test(fs.readFileSync(f, 'utf8')), `${rel} calls the Ideas basket`);
+    // every other screen sends orders only through public/kite-order.js, the one shared dialog with the confirmation
+    if (!['server.js', 'public/ideas-view.js', 'public/kite-order.js'].includes(rel))
+      assert.ok(!/api\/kite\/basket/.test(fs.readFileSync(f, 'utf8')), `${rel} calls the Kite basket`);
   }
 });

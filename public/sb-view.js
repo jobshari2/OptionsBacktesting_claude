@@ -3,7 +3,8 @@
 // at expiry and today; below: positions and P&L over the replay, and adjustment suggestions (rule book in
 // sb-adjust.js, plus online research through Claude + web search). The replay steps 1 minute to 1 day,
 // manually or automatically, within the day (intraday) or across days up to expiry (multi-day).
-// Live mode is paper trading: entries and exits are recorded at the chain's prices; no orders are sent.
+// Live mode is paper trading: entries and exits are recorded at the chain's prices. Real orders only through the
+// "Trade on Kite" / "Close on Kite" buttons (kite-order.js), after their own confirmation.
 // A position can be saved as a trade (💾 Save trade): the Trades tab lists them all, live paper trades with
 // their P&L at current prices, and loads one back with its legs, log and P&L to adjust it and save it again.
 // Other screens open a position here through BT.emit('open-builder', …) (a backtest trade to replay, a deployed
@@ -819,7 +820,30 @@
     if (!el) return;
     const cur = trades.find((t) => t.id === S.tradeId);
     el.innerHTML = `<button class="btn-sm" id="sbSaveTrade" title="${cur ? `Save the position (legs, exits, log, P&amp;L) back into the trade &quot;${esc(cur.name)}&quot;` : 'Save the position in the Builder as a trade (listed on the Trades tab), to load it again later'}">💾 ${cur ? 'Save changes' : 'Save trade'}</button>
-      ${cur ? `<button class="btn-sm ghost" id="sbSaveTradeNew" title="Save the position as a separate, new trade">Save as new…</button> <span class="muted small">trade: <b>${esc(cur.name)}</b></span>` : ''}`;
+      ${cur ? `<button class="btn-sm ghost" id="sbSaveTradeNew" title="Save the position as a separate, new trade">Save as new…</button> <span class="muted small">trade: <b>${esc(cur.name)}</b></span>` : ''}${
+        S.src === 'live' && openLegs().some(picked) && window.KiteOrder
+          ? ` <button class="btn-sm kite" id="sbKiteOpen" title="Send the open legs ticked in Positions to Zerodha Kite as real orders, at the live prices (asks you to confirm first)">Trade on Kite</button><button class="btn-sm ghost" id="sbKiteClose" title="Close the open legs ticked in Positions on Zerodha Kite: the reverse order of each (buy back the shorts first, then sell the longs). Asks you to confirm first.">Close on Kite</button>`
+          : ''
+      }`;
+  }
+  // The open legs ticked in Positions, to Zerodha Kite at the live chain's prices: as they are, or reversed to close them.
+  function toKite(exit) {
+    const legs = openLegs()
+      .filter(picked)
+      .map((l) => ({
+        action: exit ? (l.action === 'B' ? 'S' : 'B') : l.action,
+        type: l.type,
+        strike: l.strike,
+        expiry: legExp(l),
+        lots: l.lots,
+        price: market(legExp(l))?.px(l.strike, l.type),
+      }));
+    window.KiteOrder.open({
+      title: exit ? 'Close the Builder position' : 'Builder position',
+      sub: `${legs.length} leg${legs.length === 1 ? '' : 's'} · live prices`,
+      legs,
+      exit,
+    });
   }
   function renderTrades() {
     renderSaveBox();
@@ -1636,6 +1660,8 @@
     } else if (b.id === 'sbSaveStrat') saveAsStrategy();
     else if (b.id === 'sbSaveTrade') saveTrade(false);
     else if (b.id === 'sbSaveTradeNew') saveTrade(true);
+    else if (b.id === 'sbKiteOpen') toKite(false);
+    else if (b.id === 'sbKiteClose') toKite(true);
     else if (b.id === 'sbBacktest') backtestPosition();
     else if (b.id === 'sbFromClose') {
       S.from = null;

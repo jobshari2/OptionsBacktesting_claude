@@ -67,7 +67,7 @@ function localSet(k, v) {
 }
 
 // ---------- data loop ----------
-const API_VERSION = 21; // must match API_VERSION in server.js
+const API_VERSION = 22; // must match API_VERSION in server.js
 
 async function refresh() {
   let json;
@@ -150,16 +150,45 @@ function scheduleRefresh(ms) {
   refreshTimer = setTimeout(refresh, ms);
 }
 
+// The login panel of the live data source in use (Upstox or Kite, the top bar's "Live data" switch).
+let kiteLoginMounted = false;
 function showLogin(json) {
   state.loggedOut = true;
   showViews();
   $('login').classList.toggle('hidden', NO_LOGIN.has(state.view));
-  $('loginMsg').textContent = json.error
-    ? `${json.error}. Check UPSTOX_ACCESS_TOKEN in .env (restart the server after changing it) or log in again.`
-    : json.configured
-      ? 'Log in once per day to start streaming the Nifty option chain.'
-      : 'Put your Upstox analytics token in UPSTOX_ACCESS_TOKEN in the .env file (or add UPSTOX_API_KEY and UPSTOX_API_SECRET to log in), then restart the server.';
+  const kite = json.source === 'kite';
+  $('loginTitle').textContent = kite ? 'Connect to Zerodha Kite' : 'Connect to Upstox';
+  $('loginUpstox').classList.toggle('hidden', kite);
+  $('loginKite').classList.toggle('hidden', !kite);
+  if (kite && !kiteLoginMounted && window.KiteLogin) {
+    window.KiteLogin.mount($('loginKite'));
+    kiteLoginMounted = true;
+  }
+  $('loginMsg').textContent = kite
+    ? json.error
+      ? `${json.error}`
+      : json.configured
+        ? 'Live data comes from Kite: log in once per day (the session lasts until about 6 AM IST).'
+        : "Live data comes from Kite: enter your Kite Connect app's API key and API secret below, then press Login with Kite."
+    : json.error
+      ? `${json.error}. Check UPSTOX_ACCESS_TOKEN in .env (restart the server after changing it) or log in again.`
+      : json.configured
+        ? 'Log in once per day to start streaming the Nifty option chain.'
+        : 'Put your Upstox analytics token in UPSTOX_ACCESS_TOKEN in the .env file (or add UPSTOX_API_KEY and UPSTOX_API_SECRET to log in), then restart the server.';
+  $('loginSwitch').innerHTML =
+    `Or take live data from <a href="#" data-src-switch="${kite ? 'upstox' : 'kite'}">${kite ? 'Upstox' : 'Zerodha Kite'}</a> instead (the <b>Live data</b> switch at the top).`;
   setError(null);
+}
+$('loginSwitch').addEventListener('click', (e) => {
+  const a = e.target.closest('[data-src-switch]');
+  if (!a) return;
+  e.preventDefault();
+  window.KiteLogin?.setSource(a.dataset.srcSwitch);
+});
+// The live source changed: drop what the old one showed and load again.
+function reload() {
+  state.data = null;
+  refresh();
 }
 
 function setError(msg) {
@@ -187,8 +216,11 @@ function updateStatus() {
   const src = $('source');
   src.classList.remove('hidden');
   src.className = 'source ' + d.source;
-  src.textContent = d.source === 'demo' ? 'DEMO DATA' : 'UPSTOX';
-  src.title = d.source === 'demo' ? 'Synthetic data — not real prices' : 'Real market data from the Upstox API';
+  src.textContent = d.source === 'demo' ? 'DEMO DATA' : d.source === 'kite' ? 'KITE' : 'UPSTOX';
+  src.title =
+    d.source === 'demo'
+      ? 'Synthetic data — not real prices'
+      : `Real market data from ${d.source === 'kite' ? 'Zerodha Kite' : 'the Upstox API'} (switch with Live data at the top)`;
 
   const age = Date.now() - d.updatedAt;
   if (!$('errorBar').classList.contains('hidden')) {
@@ -969,7 +1001,7 @@ $('subtabs').addEventListener('click', (e) => {
   if (e.target.dataset.view) setView(e.target.dataset.view);
 });
 
-window.app = { marketClosed, state, compact, pctText, render, istClock, esc, setView, setError, price, TYPE_LABEL, nearestLevelsHtml };
+window.app = { marketClosed, state, compact, pctText, render, istClock, esc, setView, setError, price, TYPE_LABEL, nearestLevelsHtml, reload };
 setView(state.view);
 
 // Top-bar clock with milliseconds, plus how old the last fetched data is.

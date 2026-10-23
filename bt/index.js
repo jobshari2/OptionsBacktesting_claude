@@ -28,8 +28,9 @@ const { istDate: istToday } = require('../lib/time');
 
 // upstox: the app's Upstox client; getRestChain(expiry, maxAgeMs): the server's REST chain of a live expiry;
 // tapeDir: where the live chain is recorded (tape.js), for the Arbitrage screen's quote scan.
-function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile, tapeDir = null, logError }) {
-  const data = createData({ getToken, upstox, cacheDir, logError });
+// liveData(): the live source when it is not Upstox (see bt/data.js), or null.
+function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile, tapeDir = null, logError, liveData }) {
+  const data = createData({ getToken, upstox, cacheDir, logError, live: liveData });
   const hist = createHistChain(data);
   const levels = createLevels();
   const ext = { hist, levels };

@@ -11,7 +11,7 @@
 // prices when the LTP basis is picked (what the chain shows, but a stale print is not a price you can trade at);
 // replay uses closes.
 (() => {
-  const { $, inr, inrS, dayShort } = BT;
+  const { $, inr, inrS, dayShort, esc } = BT;
   const MIN = 0.05; // smallest edge (index points) that counts: one tick past the no-arbitrage bound
   const WIDTHS = [10, 20, 30]; // strikes either side of ATM that can be scanned
   const SHOWN = 8;
@@ -225,7 +225,11 @@
             : `<span class="arb-fit ${a.fit >= o.lots ? 'ok' : a.fit > 0 ? 'thin' : 'none'}" title="Lots both legs can fill at the quoted price">${a.fit >= o.lots ? '✔' : '⚠'} ${a.fit} lot${a.fit === 1 ? '' : 's'} fillable</span>`;
       return `<div class="arb-row"><span class="arb-leg">${a.legs.map(([act, k]) => `<b class="${act === 'B' ? 'pos' : 'neg'}">${act === 'B' ? 'BUY' : 'SELL'}</b> ${k} ${a.type} <span class="muted small" title="Strikes away from the at-the-money strike (${atmK})">(${atmTag(k)})</span>`).join(' + ')}</span>
         <span class="muted small">${a.kind} · ${a.dist === 0 ? 'at the money' : `${Math.round(a.dist)} pts from Nifty`}</span> ${a.edge >= MIN ? `<b class="pos" title="Guaranteed minimum gain per lot">+${a.edge.toFixed(2)} pts · ${inr(a.edge * M.lot)}/lot</b>` : `<b class="neg" title="Points this spread is short of a ${MIN}-point arbitrage edge at today's prices (negative = it would cost this much)">${a.edge >= 0 ? '+' : ''}${a.edge.toFixed(2)} pts · ${(MIN - a.edge).toFixed(2)} short</b>`} ${badge}
-        <button class="btn-sm ghost" data-arb="${i}" title="${o.btnTip}">${o.btn}</button>
+        <button class="btn-sm ghost" data-arb="${i}" title="${o.btnTip}">${o.btn}</button>${
+          live && window.KiteOrder
+            ? ` <button class="btn-sm kite" data-kite-title="${a.lo}/${a.hi} ${a.type} vertical spread" data-kite-legs="${esc(JSON.stringify(a.info.map((x) => ({ action: x.act, type: a.type, strike: x.k, expiry: a.expiry, lots: o.lots || 1, price: x.px }))))}" title="Send this spread to Zerodha Kite as real orders at the prices shown (the bought leg first). Asks you to confirm first.">Trade on Kite</button>`
+            : ''
+        }
         ${pnlLine(a)}
         ${live && !ltpOnly ? `<div class="arb-depth small">${depth}</div>` : ''}</div>`;
     };

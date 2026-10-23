@@ -49,10 +49,14 @@
       <button data-theme="day" title="Day: light background, normal size">☀ Day</button>
       <button data-theme="large" title="Large: highest contrast and ~20% bigger text for easy reading">A+ Large</button>
     </div>
+    <div class="src-sw" id="srcSw" title="Where the live screens get their prices from (chain, Nifty, charts, Pulse, Live Ideas, Builder, Strategies, Covered call, Hedge). Backtests and the Data screen always use Upstox history.">
+      <span class="label">Live data</span>
+      <span class="seg sm"><button type="button" data-src="upstox"><i class="fd-dot"></i>Upstox</button><button type="button" data-src="kite"><i class="fd-dot"></i>Kite</button></span>
+    </div>
     <div class="kite-wrap">
       <button id="kiteChip" class="kite-chip" type="button"><i class="fd-dot warn"></i>Kite</button>
       <div id="kitePop" class="kite-pop hidden">
-        <div class="kite-pop-head"><b>Zerodha Kite</b><span class="muted small">one login for the Feeds screen and the Trade with Zerodha Kite buttons of Live Ideas</span></div>
+        <div class="kite-pop-head"><b>Zerodha Kite</b><span class="muted small">one login for Kite live data, the Feeds screen and the Trade on Kite buttons of every screen</span></div>
         <div id="kitePopLogin"></div>
       </div>
     </div>
@@ -106,9 +110,11 @@
   </nav>
 
   <div id="login" class="login hidden">
-    <h2>Connect to Upstox</h2>
+    <h2 id="loginTitle">Connect to Upstox</h2>
     <p id="loginMsg">Log in once per day to stream the Nifty option chain and download historical data.</p>
-    <a class="btn" href="/login">Login with Upstox</a>
+    <a class="btn" id="loginUpstox" href="/login">Login with Upstox</a>
+    <div id="loginKite" class="login-kite hidden"></div>
+    <p class="muted small" id="loginSwitch"></p>
   </div>
 
   <div id="errorBar" class="error-bar hidden"></div>
@@ -696,7 +702,7 @@
       <section class="panel h-detail">
         <div class="chart-head">
           <h3 id="hSelTitle">Selected hedge</h3>
-          <span><button class="btn-sm ghost" id="hBuilder" title="Open these legs in the Builder as a paper position on the live chain: payoff on any date, Greeks and adjustment suggestions">Builder ▸</button> <button class="btn-sm" id="hCustomise" title="Edit these legs as your own structure">Customise</button> <button class="btn-sm" id="hNew" title="Start a structure from scratch">+ New structure</button></span>
+          <span><button class="btn-sm kite" id="hKite" title="Send these legs to Zerodha Kite as real orders at the prices shown: buys first, sells only after the buys fill. Asks you to confirm first.">Trade on Kite</button> <button class="btn-sm ghost" id="hBuilder" title="Open these legs in the Builder as a paper position on the live chain: payoff on any date, Greeks and adjustment suggestions">Builder ▸</button> <button class="btn-sm" id="hCustomise" title="Edit these legs as your own structure">Customise</button> <button class="btn-sm" id="hNew" title="Start a structure from scratch">+ New structure</button></span>
         </div>
         <div class="muted small h-selsub" id="hSelSub"></div>
         <div class="h-legs-wrap"><table class="h-legs"><thead><tr><th>Action</th><th>Qty</th><th>Strike</th><th>Expiry</th><th>Price</th><th>Bid / Ask</th><th>OI</th><th>Value</th></tr></thead><tbody id="hLegs"></tbody></table></div>
@@ -1020,6 +1026,7 @@
   <script src="/lib/costs.js"></script>
   <script src="/lib/backspread.js"></script>
   <script src="bt-common.js"></script>
+  <script src="kite-order.js"></script>
   <script src="arb.js"></script>
   <script src="chain-chart.js"></script>
   <script src="payoff.js"></script>
