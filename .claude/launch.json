@@ -29,6 +29,15 @@
       "port": 3002
     },
     {
+      "name": "demo-3003-noauth",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "-e",
+        "process.env.DEMO='1';process.env.PORT='3003';process.env.AUTH_USERNAME='';require('./server.js')"
+      ],
+      "port": 3003
+    },
+    {
       "name": "live",
       "runtimeExecutable": "npm",
       "runtimeArgs": [

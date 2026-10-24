@@ -6,6 +6,10 @@
 //   - Every weekly series up to that monthly expiry: the contra spread for where Nifty is (put spread above the call's
 //     breakeven, call spread under the lower trigger, iron condor in between), opened once per series, never on its
 //     expiry day.
+//   - Weekly insurance (ins.expiry 'weekly', instead of the month's): on the nearest weekly series up to the monthly
+//     expiry, the structure best suited to that week (bt/ccsuggest.js weeklyInsurance: pays the most per rupee in a bad
+//     week). It is closed at its expiry like the other legs, and the next week's is bought at the next check from the
+//     entry time (on the expiry day itself too, so the holding is never left uncovered overnight).
 //   - Expiries settle at their intrinsic value: at 15:25 on the day, or, when the server was not running then, at that
 //     day's Nifty close from the history cache. After the monthly expiry the holding's profit is booked / the option
 //     profit reinvested as in the backtest, and the next month starts the next session.
@@ -14,6 +18,7 @@
 const fs = require('fs');
 const path = require('path');
 const CC = require('./bt/coveredcall');
+const { weeklyInsurance } = require('./bt/ccsuggest');
 const { istDate, istTime } = require('./lib/time');
 
 const SETTLE_AT = '15:25';
@@ -167,15 +172,16 @@ function createCcPaper({
     st.optCum -= co.cost;
     log('call', `Sold ${cyc.call.strike} CE (${E}) at ${cyc.call.entry.toFixed(1)} (LTP ${cyc.call.mkt}), breakeven ${cyc.callBE.toFixed(0)}`);
     st.cycle = cyc;
-    await buyInsurance(today, spot);
+    await buyInsurance(today, spot, expiries);
   }
 
   // The month's insurance under spot. When a strike has no price it is tried again at every check of the month (the
   // first failure is logged).
-  async function buyInsurance(today, spot) {
+  async function buyInsurance(today, spot, expiries) {
     const p = st.params;
     const cyc = st.cycle;
     const units = p.lots * p.lotSize;
+    if (p.ins.expiry === 'weekly') return buyWeeklyInsurance(today, spot, expiries);
     const want = CC.insuranceLegs(spot, p.ins);
     if (!want.length || cyc.ins.length || today >= cyc.expiry) return;
     try {
@@ -191,6 +197,62 @@ function createCcPaper({
     } catch (e) {
       if (!cyc.insFailed) log('skip', 'Insurance not bought yet (tried again at every check): ' + e.message);
       cyc.insFailed = e.message;
+    }
+  }
+
+  // Weekly insurance: the nearest weekly series after today, up to the month's expiry, when no insurance runs past today
+  // (a monthly one bought before the switch to weekly is kept to its expiry). The best suited structure on that week's
+  // chain; a series that cannot be priced is tried again at every check (logged once).
+  async function buyWeeklyInsurance(today, spot, expiries) {
+    const p = st.params;
+    const cyc = st.cycle;
+    if (p.ins.kind === 'none' || cyc.ins.some((l) => l.expiry > today)) return;
+    expiries ||= await getExpiries();
+    const W = expiries.find((e) => e > today && e <= cyc.expiry);
+    if (!W) return;
+    const units = p.lots * p.lotSize;
+    const weeks = (cyc.insWeeks ||= []);
+    try {
+      const chain = await getChain(W);
+      const wi = weeklyInsurance(chain, spot, p, daysBetween(today, W), units);
+      const c = wi.pick != null ? wi.candidates[wi.pick] : null;
+      if (!c) throw new Error(`no weekly insurance could be priced (${W})`);
+      const legs = c.legs.map((l) => ({
+        id: `${W}|${l.strike}|${l.type}|${l.side}`,
+        expiry: W,
+        type: l.type,
+        side: l.side,
+        strike: l.strike,
+        qty: l.qty,
+        mkt: l.mkt,
+        entry: l.entry,
+        entryAt: Date.now(),
+      }));
+      const cost = CC.orderCost(legs, 'entry', today, p.costs.brokerage);
+      cyc.ins.push(...legs);
+      cyc.costs += cost;
+      st.cash -= cost;
+      st.optCum -= cost;
+      weeks.push({
+        expiry: W,
+        entry: today,
+        spot: r2(spot),
+        kind: c.kind,
+        strikes: c.strikes,
+        debit: c.debit,
+        costs: cost,
+        badPct: wi.badPct,
+        badPay: c.badPay,
+        legs,
+      });
+      delete cyc.insFailed;
+      log(
+        'ins',
+        `Weekly insurance (${W}): ${c.kind === 'debit' ? 'put debit spread' : 'put butterfly'} ${c.strikes.join(' / ')} for ${(-credit(legs, units)).toFixed(1)} debit, best suited this week (pays ${inr(c.badPay)}, ${c.badRatio}× its cost, if Nifty falls ${wi.badPct}%)`,
+      );
+    } catch (e) {
+      if (cyc.insFailed !== W) log('skip', `Weekly insurance (${W}) not bought yet (tried again at every check): ${e.message}`);
+      cyc.insFailed = W;
     }
   }
 
@@ -308,6 +370,24 @@ function createCcPaper({
       cyc.ovl = null;
       log('ovl-exp', `Weekly spread (${w.expiry}) settled ${x.how}, Nifty ${x.spot.toFixed(0)}: ${signed(w.pnl)} after charges`);
     }
+    // insurance on a weekly series ending before the month: closed at its expiry
+    for (const e of [...new Set(cyc.ins.map((l) => l.expiry))].sort()) {
+      if (e >= cyc.expiry || !due(e)) continue;
+      const x = await expirySpot(e, today, hhmm, spot);
+      if (!x) return;
+      const legs = cyc.ins.filter((l) => l.expiry === e);
+      const s = settleLegs(legs, x.spot, e);
+      cyc.ins = cyc.ins.filter((l) => l.expiry !== e);
+      (cyc.insClosed ||= []).push(...legs);
+      cyc.insRealized = (cyc.insRealized || 0) + s.pnl;
+      cyc.costs += s.cost;
+      st.cash += s.pnl - s.cost;
+      st.optCum += s.pnl - s.cost;
+      const w = (cyc.insWeeks || []).find((x) => x.expiry === e);
+      const pnl = s.pnl - s.cost - (w?.costs ?? 0); // after the charges of buying and settling it
+      if (w) Object.assign(w, { spotOut: r2(x.spot), pnl: Math.round(pnl), costs: w.costs + s.cost });
+      log('ins-exp', `Weekly insurance ${legs.map((l) => l.strike).join(' / ')} PE (${e}) closed at its expiry ${x.how}, Nifty ${x.spot.toFixed(0)}: ${signed(pnl)} after charges`);
+    }
     if (!due(cyc.expiry)) return;
     const x = await expirySpot(cyc.expiry, today, hhmm, spot);
     if (!x) return;
@@ -319,7 +399,14 @@ function createCcPaper({
     st.cash += net;
     st.optCum += net;
     cyc.costs += sCall.cost + sIns.cost;
-    Object.assign(cyc, { spotOut: r2(sc), beesOut: r2(bc), callPnl: Math.round(sCall.pnl + (cyc.callRealized || 0)), insPnl: Math.round(sIns.pnl) });
+    const w = (cyc.insWeeks || []).find((x) => x.expiry === cyc.expiry);
+    if (w) Object.assign(w, { spotOut: r2(sc), pnl: Math.round(sIns.pnl - w.costs - sIns.cost), costs: w.costs + sIns.cost });
+    Object.assign(cyc, {
+      spotOut: r2(sc),
+      beesOut: r2(bc),
+      callPnl: Math.round(sCall.pnl + (cyc.callRealized || 0)),
+      insPnl: Math.round(sIns.pnl + (cyc.insRealized || 0)), // with the weekly insurance closed earlier in the month
+    });
     cyc.ovlPnl = Math.round(cyc.weeks.reduce((s, w) => s + (w.legs ? w.pnl + w.costs : 0), 0));
     cyc.optNet = Math.round(cyc.callPnl + cyc.insPnl + cyc.ovlPnl - cyc.costs);
     cyc.holdChange = Math.round(cyc.qtyIn * (bc - cyc.beesIn));
@@ -327,7 +414,7 @@ function createCcPaper({
     log(
       'exp',
       `Monthly expiry ${cyc.expiry} settled ${x.how}, Nifty ${sc.toFixed(0)}: call ${signed(sCall.pnl)}` +
-        (cyc.ins.length ? `, insurance ${signed(sIns.pnl)}` : ''),
+        (cyc.ins.length ? `, ${w ? 'weekly ' : ''}insurance ${signed(sIns.pnl)}` : ''),
     );
     const mf = p.hold?.kind === 'mf';
     const etf = (mf ? CC.MF_STAMP_PCT : p.costs.etfPct) / 100;
@@ -436,7 +523,8 @@ function createCcPaper({
         st.lastSpot = spot;
         const canEnter = demo || (open && hhmm >= st.params.entryTime && hhmm < LAST_ENTRY);
         if (!st.cycle && canEnter && today > (st.lastExpiry || '')) await startCycle(today, spot, bees, expiries);
-        if (st.cycle?.call && !st.cycle.ins.length && canEnter) await buyInsurance(today, spot);
+        // monthly insurance: until it is bought; weekly: whenever none runs past today (it checks that itself)
+        if (st.cycle?.call && canEnter && (!st.cycle.ins.length || st.params.ins.expiry === 'weekly')) await buyInsurance(today, spot, expiries);
         if (st.cycle?.call && canEnter) await maybeRollUp(today, spot);
         if (st.cycle?.call && st.params.ovl.on && !st.cycle.ovl && canEnter) await maybeOverlay(today, spot, expiries);
         await mark(today, spot, bees);
@@ -466,7 +554,13 @@ function createCcPaper({
     if (cyc.ovl) bits.push(`the weekly spread settles on ${cyc.ovl.expiry} at ${SETTLE_AT}`);
     else if (p.ovl.on) bits.push(`the next weekly spread opens at the next check from ${p.entryTime} (not on its expiry day)`);
     if (!cyc.ins.length && cyc.insFailed) bits.push('the insurance is tried again at every check');
-    bits.push(`the call${cyc.ins.length ? ' and insurance settle' : ' settles'} on ${cyc.expiry} at ${SETTLE_AT}` + (cyc.expiry === today ? ' (today)' : ''));
+    const insExp = [...new Set(cyc.ins.map((l) => l.expiry))].sort();
+    const weekly = p.ins.expiry === 'weekly' && p.ins.kind !== 'none';
+    if (weekly && insExp[0] && insExp[0] < cyc.expiry)
+      bits.push(`the weekly insurance is closed on ${insExp[0]} at ${SETTLE_AT}, and the next week's bought at the next check from ${p.entryTime}`);
+    else if (weekly && !insExp.length) bits.push(`the weekly insurance is bought at the next check from ${p.entryTime}`);
+    const insMonth = insExp.includes(cyc.expiry);
+    bits.push(`the call${insMonth ? ' and insurance settle' : ' settles'} on ${cyc.expiry} at ${SETTLE_AT}` + (cyc.expiry === today ? ' (today)' : ''));
     return 'Next: ' + bits.join('; ') + '.';
   }
 
@@ -509,6 +603,23 @@ function createCcPaper({
       if (!st) throw new Error('No paper trade');
       st.status = 'running';
       log('resume', 'Resumed');
+      save();
+      await tick();
+    },
+    // Switches a running paper trade between monthly and weekly insurance. Insurance held now is kept to its expiry; the
+    // next one bought follows the new choice.
+    async setInsurance(expiry) {
+      if (!st) throw new Error('No paper trade');
+      const v = expiry === 'weekly' ? 'weekly' : 'monthly';
+      if (st.params.ins.expiry === v) return;
+      st.params.ins.expiry = v;
+      log(
+        'ins',
+        v === 'weekly'
+          ? 'Insurance switched to weekly: the best suited weekly structure, closed at each weekly expiry and the next one bought' +
+              (st.cycle?.ins.some((l) => l.expiry === st.cycle.expiry) ? " (the month's insurance held now is kept to its expiry)" : '')
+          : "Insurance switched to monthly: bought on the month's expiry with the call" + (st.cycle?.ins.length ? " (the weekly one held now runs to its expiry, then the month's is bought)" : ''),
+      );
       save();
       await tick();
     },

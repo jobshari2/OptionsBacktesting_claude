@@ -117,6 +117,57 @@ function insuranceCandidates(chain, spot, p, dte, units, iv) {
   return out;
 }
 
+// Weekly insurance (ins.expiry 'weekly'): the chosen structure (butterfly / debit spread) at every grid distance under
+// spot, priced on the weekly chain. "Best suited" = pays the most per rupee of debit in a bad week: Nifty ending
+// BAD_WEEK weekly standard deviations (from the ATM implied volatility, over the days to that expiry) under spot.
+// When nothing pays there (a very quiet week priced far out), the best pay ÷ cost is taken instead.
+const WINS_UPPER = [0.5, 1, 1.5];
+const WINS_GAP = [0.5, 1, 1.5];
+const BAD_WEEK = 1.5;
+function weeklyInsurance(chain, spot, p, dte, units, iv = atmIv(chain, spot)) {
+  const kind = p.ins.kind === 'none' ? 'butterfly' : p.ins.kind;
+  const sigma = iv * Math.sqrt(Math.max(1, dte) / 365);
+  const bad = spot * (1 - BAD_WEEK * sigma);
+  const seen = new Set();
+  const out = [];
+  for (const upperPct of WINS_UPPER)
+    for (const gap of WINS_GAP) {
+      const bodyPct = upperPct + gap;
+      const want = CC.insuranceLegs(spot, { kind, upperPct, bodyPct });
+      const key = want.map((l) => l.strike).join();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const legs = price(chain, want, units, p.costs.slippage);
+      if (!legs) continue;
+      const debit = -net(legs);
+      if (!(debit > 0)) continue;
+      const upper = want[0].strike;
+      const body = want[1].strike;
+      const maxPay = (upper - body) * units - debit;
+      const lowBE = kind === 'butterfly' ? 2 * body - upper + debit / units : null;
+      const highBE = upper - debit / units;
+      const pZone = (lowBE ? pAbove(spot, lowBE, iv, dte) : 1) - pAbove(spot, highBE, iv, dte);
+      const badPay = legs.reduce((s, l) => s + (l.side === 'B' ? 1 : -1) * CC.intrinsic('PE', l.strike, bad) * l.qty, 0);
+      out.push({
+        kind,
+        upperPct,
+        bodyPct,
+        strikes: want.map((l) => l.strike),
+        legs,
+        debit: Math.round(debit),
+        maxPay: Math.round(maxPay),
+        payRatio: r2(maxPay / debit),
+        zone: [lowBE == null ? null : r2(lowBE), r2(highBE)],
+        pZone: Math.round(Math.max(0, pZone) * 100),
+        badPay: Math.round(badPay),
+        badRatio: r2(badPay / debit),
+      });
+    }
+  const best = out.filter((c) => c.badPay > 0).reduce((b, c) => (!b || c.badRatio > b.badRatio ? c : b), null) || out.reduce((b, c) => (!b || c.payRatio > b.payRatio ? c : b), null);
+  for (const c of out) c.tags = c === best ? ['suited'] : [];
+  return { candidates: out, pick: best ? out.indexOf(best) : null, iv: r2(iv * 100), sigmaPct: r2(sigma * 100), bad: r2(bad), badPct: r2(BAD_WEEK * sigma * 100) };
+}
+
 // Weekly contra spreads for the regime: every short distance × wing width, scored by credit ÷ maximum loss among those
 // with at least MIN_POP % chance of expiring worthless.
 function weeklyCandidates(chain, spot, regime, p, dte, qty, iv) {
@@ -230,12 +281,23 @@ function suggest({ today, spot, bees = null, chains, expiries, params, paper = n
     };
   }
 
+  // weekly insurance: this series' structures ranked, the one the paper trade would buy (or holds)
+  const weeklyIns = p.ins.expiry === 'weekly' && p.ins.kind !== 'none';
+  let insWeek = null;
+  if (weeklyIns && W) {
+    const chain = chains.get(W);
+    const dte = daysBetween(today, W);
+    const wi = weeklyInsurance(chain, spot, p, dte, units);
+    const held = cyc?.ins?.length ? cyc.ins.filter((l) => l.expiry > today) : [];
+    insWeek = { expiry: W, dte, ...wi, held: held.length ? held : null };
+  }
+
   // what to do now, in words
   const now = [];
   const first = months.find((m) => !m.tooSoon);
   const describe = (m) => {
     const c = m.calls.find((x) => x.strike === m.pick.call);
-    const i = m.pick.ins != null ? m.ins[m.pick.ins] : null;
+    const i = weeklyIns ? null : m.pick.ins != null ? m.ins[m.pick.ins] : null;
     return (
       (c ? `sell ${c.strike} CE (${m.expiry}) at about ${c.fill} (${c.flatPct}% time value, breakeven ${Math.round(c.breakeven)})` : 'no call quote') +
       (i ? `, buy the ${i.strikes.join(' / ')} PE ${i.kind === 'debit' ? 'debit spread' : 'butterfly'} for about ₹${i.debit.toLocaleString('en-IN')}` : '')
@@ -257,9 +319,11 @@ function suggest({ today, spot, bees = null, chains, expiries, params, paper = n
   } else if (cyc) {
     now.push({
       kind: 'hold',
-      text: `Keep ${HNt}, the ${cyc.call?.strike} CE${cyc.ins.length ? ' and the insurance' : ''} to ${cyc.expiry}: the threads change nothing inside the month.`,
+      text: weeklyIns
+        ? `Keep ${HNt} and the ${cyc.call?.strike} CE to ${cyc.expiry}: the threads change nothing inside the month.`
+        : `Keep ${HNt}, the ${cyc.call?.strike} CE${cyc.ins.length ? ' and the insurance' : ''} to ${cyc.expiry}: the threads change nothing inside the month.`,
     });
-    if (!cyc.ins.length && p.ins.kind !== 'none') {
+    if (!cyc.ins.length && p.ins.kind !== 'none' && !weeklyIns) {
       const m = months.find((x) => x.expiry === cyc.expiry);
       const i = m?.pick.ins != null ? m.ins[m.pick.ins] : null;
       if (i)
@@ -300,6 +364,22 @@ function suggest({ today, spot, bees = null, chains, expiries, params, paper = n
       text: `Between months: at the next check from ${p.entryTime}, ${first ? describe(first) : 'no monthly expiry far enough away'}.`,
     });
   }
+  if (weeklyIns) {
+    const c = insWeek?.pick != null ? insWeek.candidates[insWeek.pick] : null;
+    const name = (k) => (k === 'debit' ? 'put debit spread' : 'put butterfly');
+    const exp = cyc?.ins?.length ? [...new Set(cyc.ins.map((l) => l.expiry))].sort() : [];
+    if (insWeek?.held) {
+      const e = insWeek.held[0].expiry;
+      now.push({ kind: 'hold', text: `Weekly insurance ${insWeek.held.map((l) => l.strike).join(' / ')} PE open to ${e}: it is closed at its expiry and the next week's bought.` });
+    } else if (c)
+      now.push({
+        kind: 'buy',
+        text:
+          (exp.length && exp[0] === today ? `This week's insurance expires today: ` : 'Weekly insurance: ') +
+          `buy the ${c.strikes.join(' / ')} PE ${name(c.kind)} (${W}) for about ₹${c.debit.toLocaleString('en-IN')}; it pays ₹${c.badPay.toLocaleString('en-IN')} (${c.badRatio}× its cost) if Nifty falls ${insWeek.badPct}% to ${Math.round(insWeek.bad)} by then, at most ₹${c.maxPay.toLocaleString('en-IN')}.`,
+      });
+    else if (W) now.push({ kind: 'info', text: `No weekly insurance (${W}) could be priced on the live chain.` });
+  }
   if (weekly && p.ovl.on) {
     const c = weekly.pick != null ? weekly.candidates[weekly.pick] : null;
     const kind = REGIME_TRADE[weekly.regime];
@@ -312,8 +392,8 @@ function suggest({ today, spot, bees = null, chains, expiries, params, paper = n
       });
     else now.push({ kind: 'info', text: `No ${kind} this week clears the minimum credit (${p.ovl.minCredit} points) and a ${MIN_POP}% chance.` });
   }
-  return { at: Date.now(), today, spot: r2(spot), bees, beesModelled, holdName: HN, mf, qtyBees, units, months, weekly, now, minPop: MIN_POP };
+  return { at: Date.now(), today, spot: r2(spot), bees, beesModelled, holdName: HN, mf, qtyBees, units, months, weekly, insWeek, now, minPop: MIN_POP };
 }
 const REGIME_TRADE = { up: 'put credit spread', down: 'call credit spread', range: 'iron condor' };
 
-module.exports = { suggest, pAbove };
+module.exports = { suggest, pAbove, weeklyInsurance };

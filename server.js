@@ -843,6 +843,7 @@ async function handleCc(req, res, url, p) {
         await ccPaper.start(b.params || {});
       } else if (p === '/api/cc/paper/pause') ccPaper.pause();
       else if (p === '/api/cc/paper/resume') await ccPaper.resume();
+      else if (p === '/api/cc/paper/insurance') await ccPaper.setInsurance(b.expiry);
       else if (p === '/api/cc/paper/reset') {
         if (b.confirm !== true) throw new Error('Resetting deletes the paper trade: it needs confirmation');
         ccPaper.reset();

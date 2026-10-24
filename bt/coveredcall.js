@@ -23,7 +23,10 @@ const DEFAULTS = {
   lotSize: 65, // Nifty units per lot (today's lot by default, so years compare fairly)
   entryTime: '09:30', // the threads enter at 9:30
   call: { rule: 'itm100', value: 0 }, // itm100 | atm | itmPts | otmPts | otmPct
-  ins: { kind: 'butterfly', upperPct: 1.5, bodyPct: 4 }, // butterfly | debit | none; the butterfly's lower wing mirrors the upper
+  // butterfly | debit | none; the butterfly's lower wing mirrors the upper. expiry: monthly (the threads: bought on the
+  // month's expiry with the call) | weekly (paper trade only: bought on the nearest weekly series, the structure best
+  // suited to that week picked from the live chain, closed at its expiry and the next week's bought)
+  ins: { kind: 'butterfly', upperPct: 1.5, bodyPct: 4, expiry: 'monthly' },
   ovl: { on: true, lots: 1, otmPct: 1.5, width: 200, minCredit: 5, lowerPct: 1.5 },
   // reinvest: below (the month closed under its entry) | always | never. upPct: roll the call up when Nifty is this % over
   // its breakeven at a day's entry time (null = never), at most maxUp times a month, not in its last 3 days.
@@ -64,7 +67,12 @@ function normalize(p = {}) {
     lotSize: Math.round(num(p.lotSize, D.lotSize, 1, 200)),
     entryTime: /^\d{2}:\d{2}$/.test(p.entryTime || '') && p.entryTime >= '09:15' && p.entryTime <= '15:00' ? p.entryTime : D.entryTime,
     call: { rule: CALL_RULES.includes(c.rule) ? c.rule : D.call.rule, value: num(c.value, D.call.value, 0, 3000) },
-    ins: { kind: INS_KINDS.includes(i.kind) ? i.kind : D.ins.kind, upperPct, bodyPct: num(i.bodyPct, D.ins.bodyPct, upperPct + 0.5, 20) },
+    ins: {
+      kind: INS_KINDS.includes(i.kind) ? i.kind : D.ins.kind,
+      upperPct,
+      bodyPct: num(i.bodyPct, D.ins.bodyPct, upperPct + 0.5, 20),
+      expiry: i.expiry === 'weekly' ? 'weekly' : 'monthly',
+    },
     ovl: {
       on: o.on === undefined ? D.ovl.on : Boolean(o.on),
       lots: Math.round(num(o.lots, D.ovl.lots, 1, 20)),

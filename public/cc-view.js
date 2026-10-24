@@ -22,6 +22,10 @@
     ['debit', 'Put debit spread'],
     ['none', 'None'],
   ];
+  const INS_EXP = [
+    ['monthly', 'on the monthly expiry (as in the threads)'],
+    ['weekly', 'weekly: best suited each week, closed at its expiry'],
+  ];
   const REINVEST = [
     ['below', 'when the month closed under its entry'],
     ['always', 'every month'],
@@ -33,6 +37,7 @@
     hold: 'NIFTYBEES',
     call: 'Call',
     ins: 'Insurance',
+    'ins-exp': 'Insurance expiry',
     ovl: 'Weekly',
     'ovl-exp': 'Weekly expiry',
     exp: 'Monthly expiry',
@@ -64,7 +69,7 @@
   let paperError = '';
   let sugg = null; // /api/cc/suggest: what the rules would trade on the live chain now
   let suggError = '';
-  const suggSel = { month: null, call: {}, ins: {}, wk: null }; // the rows picked in the suggestion tables (month: null = the one the rules trade)
+  const suggSel = { month: null, call: {}, ins: {}, wk: null, iw: null }; // the rows picked in the suggestion tables (month: null = the one the rules trade)
   let pollTimer = null;
   let started = false;
   // the holding's name on the screens: NIFTYBEES, or "index fund" when the parameters hold a Nifty 50 index fund
@@ -947,7 +952,14 @@
         <span class="lbl">Entry</span><input class="txt" type="time" data-p="entryTime" value="${p.entryTime}">
         <span class="lbl">Call strike</span>${sel('call.rule', CALL_RULES, p.call.rule)}${['itmPts', 'otmPts', 'otmPct'].includes(p.call.rule) ? inp('call.value', p.call.value) : ''}</div>
       <div class="set-row"><b>Insurance</b>${sel('ins.kind', INS, p.ins.kind)}
-        ${p.ins.kind !== 'none' ? `<span class="lbl">bought</span>${inp('ins.upperPct', p.ins.upperPct, 55)}<span class="lbl">% under spot, sold</span>${inp('ins.bodyPct', p.ins.bodyPct, 55)}<span class="lbl">% under</span>` : ''}</div>
+        ${p.ins.kind !== 'none' ? sel('ins.expiry', INS_EXP, p.ins.expiry || 'monthly') : ''}
+        ${
+          p.ins.kind === 'none'
+            ? ''
+            : p.ins.expiry === 'weekly'
+              ? `<span class="muted small">${tab === 'bt' ? 'Paper trade only: the backtest buys the monthly insurance below. ' : ''}Each week the structure that pays the most per rupee if Nifty falls 1.5 weekly σ (from the weekly chain's IV) by its expiry; closed at the expiry and the next week's bought.</span>${tab === 'bt' ? `<span class="lbl">monthly: bought</span>${inp('ins.upperPct', p.ins.upperPct, 55)}<span class="lbl">% under spot, sold</span>${inp('ins.bodyPct', p.ins.bodyPct, 55)}<span class="lbl">% under</span>` : ''}`
+              : `<span class="lbl">bought</span>${inp('ins.upperPct', p.ins.upperPct, 55)}<span class="lbl">% under spot, sold</span>${inp('ins.bodyPct', p.ins.bodyPct, 55)}<span class="lbl">% under</span>`
+        }</div>
       <div class="set-row"><b>Weekly contra spread</b>${chk('ovl.on', p.ovl.on, 'on')}
         <span class="lbl">Lots</span>${inp('ovl.lots', p.ovl.lots, 55, 1)}<span class="lbl">Short strikes % OTM</span>${inp('ovl.otmPct', p.ovl.otmPct, 55)}
         <span class="lbl">Wing points</span>${inp('ovl.width', p.ovl.width, 65, 50)}<span class="lbl">Min credit</span>${inp('ovl.minCredit', p.ovl.minCredit, 55)}
@@ -1217,7 +1229,9 @@
     return `<table class="grid-tbl cc-legs-tbl"><thead><tr><th>Leg</th><th>Expiry</th><th>Qty</th><th>Entry</th>${marks ? '<th>LTP</th><th>P&amp;L</th>' : '<th>Settled</th><th>P&amp;L</th>'}</tr></thead><tbody>${body}</tbody></table>`;
   }
   // A month's legs in their three parts: the covered call, its insurance and the weekly contra spread (if open).
-  const insTitle = (kind) => `Insurance · ${kind === 'debit' ? 'put debit spread' : 'put butterfly 1:2:1'}`;
+  const insTitle = (kind, weekly = false) =>
+    `Insurance · ${weekly ? 'weekly ' : ''}${kind === 'debit' ? 'put debit spread' : 'put butterfly 1:2:1'}${weekly ? ' · closed at its expiry, then the next week’s' : ''}`;
+  const weeklyIns = (c) => c.ins.some((l) => l.expiry !== c.expiry) || Boolean(c.insWeeks?.length);
   // calls bought back on a roll up: the paper trade keeps them, a backtest month lists them in its rolls
   const rolledCalls = (c) =>
     c.closedCalls ||
@@ -1232,7 +1246,7 @@
     }));
   const legGroups = (c, insKind, ovl = null) => [
     { title: `Covered call · sold against ${HN}${c.rolls?.length ? ` · rolled up ${c.rolls.length}×` : ''}`, legs: [...rolledCalls(c), c.call] },
-    { title: insTitle(insKind), legs: c.ins },
+    { title: insTitle(insKind, weeklyIns(c)), legs: c.ins },
     ...(ovl ? [{ title: `Weekly contra spread · ${REGIME_TRADE[ovl.regime] || ''} to ${dayLabel(ovl.expiry)}`, legs: ovl.legs }] : []),
   ];
   // month: the backtest month's expiry, for the weekly "Test in Builder" buttons (none in the paper trade)
@@ -1259,6 +1273,16 @@
               ? `<td>${w.legs?.length ? `<button class="btn-sm ghost cc-sb" data-sbw="${month}|${weeks.indexOf(w)}" title="Replay this weekly spread in the Builder from its entry to its expiry">▶ Replay</button>` : ''}</td>`
               : ''
           }</tr>`,
+      )
+      .join('')}</tbody></table>`;
+  }
+  // The paper month's weekly insurance, one row a week: bought, closed at its expiry.
+  function insWeeksTable(weeks) {
+    return `<table class="grid-tbl"><thead><tr><th>Expiry</th><th>Bought</th><th>Nifty in → out</th><th>Structure (PE)</th><th class="cc-legs-h">Legs: bought / sold at → settled</th><th>Debit</th><th>Pays in a bad week</th><th>P&amp;L</th></tr></thead><tbody>${weeks
+      .map(
+        (w) =>
+          `<tr><th>${dayLabel(w.expiry)}</th><td>${dayLabel(w.entry)}</td><td>${num0(w.spot)}${w.spotOut ? ' → ' + num0(w.spotOut) : ''}</td><td>${w.kind === 'debit' ? 'Debit spread' : 'Butterfly'} ${w.strikes.join(' / ')}</td>
+          <td class="cc-legs">${legLines(w.legs)}</td><td class="neg">${inr(-w.debit)}</td><td title="If Nifty falls ${w.badPct}% by the expiry">${inrS(w.badPay)} <span class="muted small">(−${w.badPct}%)</span></td><td class="${cls(w.pnl)}">${w.pnl == null ? 'open' : inrS(w.pnl)}</td></tr>`,
       )
       .join('')}</tbody></table>`;
   }
@@ -1448,7 +1472,7 @@
         head +
         `<div class="panel res-head">
           <div class="res-title"><b>${P.status === 'running' ? '<span class="pos">● Running</span>' : '<span class="muted">❚❚ Paused</span>'} since ${new Date(P.startedAt).toLocaleString('en-IN')}</b>
-            <span class="muted small">${pp.lots} lot${pp.lots > 1 ? 's' : ''} × ${pp.lotSize} · call ${esc(CALL_RULES.find((x) => x[0] === pp.call.rule)[1])} · ${esc(INS.find((x) => x[0] === pp.ins.kind)[1])} · weekly spreads ${pp.ovl.on ? 'on' : 'off'}${L ? ` · marked ${when(L.at)}${paper.marketOpen ? '' : ' (market closed: last traded prices)'}` : ' · not marked yet'}</span></div>
+            <span class="muted small">${pp.lots} lot${pp.lots > 1 ? 's' : ''} × ${pp.lotSize} · call ${esc(CALL_RULES.find((x) => x[0] === pp.call.rule)[1])} · ${esc(INS.find((x) => x[0] === pp.ins.kind)[1])}${pp.ins.kind !== 'none' && pp.ins.expiry === 'weekly' ? ' (weekly)' : ''} · weekly spreads ${pp.ovl.on ? 'on' : 'off'}${L ? ` · marked ${when(L.at)}${paper.marketOpen ? '' : ' (market closed: last traded prices)'}` : ' · not marked yet'}</span></div>
           ${
             L
               ? `<div class="kpis cc-kpis-main">
@@ -1468,11 +1492,22 @@
             ${tile('Booked / reinvested', `${kinr(h.booked)} / ${kinr(h.reinvested)}`, `${P.cycles.length} month${P.cycles.length === 1 ? '' : 's'} closed`)}
           </div>
           <div class="muted small">${esc(paper.next || '')}</div>
+          ${
+            pp.ins.kind !== 'none'
+              ? `<div class="set-row"><b>Insurance</b><span class="seg sm" id="ccInsExp">${[
+                  ['monthly', 'Monthly, with the call'],
+                  ['weekly', 'Weekly, best suited · closed at each expiry'],
+                ]
+                  .map(([k, l]) => `<button data-ie="${k}" class="${(pp.ins.expiry || 'monthly') === k ? 'on' : ''}">${l}</button>`)
+                  .join('')}</span><span class="muted small">Weekly: each week the ${pp.ins.kind === 'debit' ? 'put debit spread' : 'put butterfly'} that pays the most per rupee if Nifty falls 1.5 weekly σ by its expiry; on its expiry day the next week's is bought from ${esc(pp.entryTime)} and the old one closed at 15:25. Switching keeps the insurance held now to its expiry.</span></div>`
+              : ''
+          }
         </div>
         <div class="panel cc-doc"><h3>Position${c ? ` · month to ${dayLabel(c.expiry)}` : ''}${L ? ` <span class="muted small">· prices at ${when(L.at)}</span>` : ''}</h3>
           ${h.qty ? `<div class="small">${HN}: ${num0(h.qty)} units at avg ${rupee(avg)} = ${inr(h.cost)}${L ? `, now ${rupee(L.bees.px)} = ${inr(h.qty * L.bees.px)} (<span class="${cls(L.holdOpen)}">${inrS(L.holdOpen)}</span>)` : ''}</div>` : `<div class="muted small">No ${HN} yet.</div>`}
           <div class="cc-pos-grid"><div>${c ? legsTable(legGroups(c, pp.ins.kind, c.ovl), L?.legs || []) : '<div class="muted small">No position yet.</div>'}
-            ${c?.weeks.length ? `<h4>Weekly spreads this month</h4>${weeksTable(c.weeks)}` : ''}</div>
+            ${c?.weeks.length ? `<h4>Weekly spreads this month</h4>${weeksTable(c.weeks)}` : ''}
+            ${c?.insWeeks?.length ? `<h4>Weekly insurance this month</h4><div class="tbl-wrap">${insWeeksTable(c.insWeeks)}</div>` : ''}</div>
             ${legs.length && L ? `<div><h4>Payoff diagram (now)</h4><div class="set-row">${viewSeg()}</div>${payBox('ccPaperPay', `Each leg at its own expiry; ${HN} from its price now (${rupee(L.bees.px)}) moving with Nifty, against its average cost. Lines: Nifty now, call breakeven, lower trigger.`)}</div>` : ''}
           </div>
         </div>
@@ -1519,6 +1554,13 @@
             renderPaper(false);
           }),
         );
+      $('ccBody')
+        .querySelectorAll('[data-ie]')
+        .forEach((b) =>
+          b.addEventListener('click', () => {
+            if (b.dataset.ie !== (pp.ins.expiry || 'monthly')) paperAct('insurance', { expiry: b.dataset.ie });
+          }),
+        );
       bindView($('ccBody'), () => renderPaper(false));
     }
     renderSugg();
@@ -1540,6 +1582,7 @@
     rule: ['Rule pick', "The strike the strategy's parameters choose"],
     most: ['Most time value', 'Earns the most if Nifty does not move'],
     best: ['Best ratio', 'Highest payoff for its cost / credit for its risk (weekly: with at least the minimum chance)'],
+    suited: ['Best suited', 'Pays the most per rupee of its cost if Nifty has a bad week (falls 1.5 weekly σ by the expiry)'],
     held: ['Held', 'The paper trade already holds this for the month'],
   };
   const tags = (t) => t.map((k) => `<span class="cc-tag t-${k}" title="${TAG[k][1]}">${TAG[k][0]}</span>`).join(' ');
@@ -1577,14 +1620,19 @@
     const M = S.months[mi];
     const heldHere = Boolean(held && M && held.expiry === M.expiry);
     const heldCall = heldHere && suggSel.call[M.expiry] == null ? held.call : null;
-    const heldIns = heldHere && suggSel.ins[M.expiry] == null && held.ins.length ? held.ins : null;
+    // weekly insurance (the parameters' choice): the month's insurance tables give way to this week's
+    const IW = S.insWeek || null;
+    const wIns = (paper?.paper?.params || params).ins.expiry === 'weekly';
+    const iwI = IW ? (suggSel.iw?.expiry === IW.expiry ? suggSel.iw.i : IW.pick) : null;
+    const iwC = IW && iwI != null ? IW.candidates[iwI] : null;
+    const heldIns = !wIns && heldHere && suggSel.ins[M.expiry] == null && held.ins.length ? held.ins : null;
     const sameStrikes = (c) => heldHere && held.ins.length && c.strikes.join() === held.ins.map((l) => l.strike).join();
     const callK = M ? (suggSel.call[M.expiry] ?? (heldHere ? held.call?.strike : M.pick.call)) : null;
     const insI = M ? (suggSel.ins[M.expiry] ?? (heldHere ? M.ins.findIndex(sameStrikes) : M.pick.ins)) : null;
     const W = S.weekly;
     const wkI = W ? (suggSel.wk?.expiry === W.expiry ? suggSel.wk.i : W.pick) : null;
     const call = M?.calls.find((c) => c.strike === callK);
-    const ins = insI != null && insI >= 0 ? M?.ins[insI] : null;
+    const ins = !wIns && insI != null && insI >= 0 ? M?.ins[insI] : null;
     const net =
       heldCall || heldIns
         ? (heldCall ? heldCall.entry * heldCall.qty : 0) - (heldIns ? heldIns.reduce((a, l) => a + (l.side === 'B' ? l.entry : -l.entry) * l.qty, 0) : 0)
@@ -1604,6 +1652,19 @@
           <td>${c.zone[0] ? num0(c.zone[0]) + ' – ' : 'under '}${num0(c.zone[1])}</td><td>${c.pZone}%</td><td>${tags([...(sameStrikes(c) ? ['held'] : []), ...c.tags])}</td></tr>`,
       )
       .join('');
+    const iwSame = (c) => IW?.held && c.strikes.join() === IW.held.map((l) => l.strike).join();
+    const iwRows = (IW?.candidates || [])
+      .map(
+        (c, i) =>
+          `<tr data-iw="${i}" class="cc-click${i === iwI ? ' on' : ''}"><th>${c.kind === 'debit' ? 'Debit spread' : 'Butterfly'} ${c.upperPct}/${c.bodyPct}%<div><button class="btn-sm ghost cc-sb" data-sb-iw="${i}" title="Open this weekly insurance as a live paper position in the Builder">Add / watch in Builder ▸</button> <button class="btn-sm kite" data-kite-iw="${i}" title="Buy this weekly insurance on Zerodha Kite: real orders at the prices shown, after you confirm">Trade on Kite</button></div></th><td>${c.strikes.join(' / ')}</td><td class="neg">${inr(-c.debit)}</td>
+          <td class="${cls(c.badPay)}">${inrS(c.badPay)}</td><td>${c.badRatio}×</td><td class="pos">${inrS(c.maxPay)}</td><td>${c.zone[0] ? num0(c.zone[0]) + ' – ' : 'under '}${num0(c.zone[1])}</td><td>${c.pZone}%</td><td>${tags([...(iwSame(c) ? ['held'] : []), ...c.tags])}</td></tr>`,
+      )
+      .join('');
+    const iwHtml = IW
+      ? `<div><h4>Weekly insurance${IW.held ? ` · held: ${IW.held.map((l) => l.strike).join(' / ')} PE to ${dayLabel(IW.held[0].expiry)}` : ` to buy · ${dayLabel(IW.expiry)} (${IW.dte} day${IW.dte === 1 ? '' : 's'})`}</h4>
+          <div class="muted small">Ranked by what it pays if Nifty has a bad week: falls ${IW.badPct}% (1.5 × the weekly σ of ${IW.sigmaPct}% at the weekly ATM IV ${IW.iv}%) to ${num0(IW.bad)} by ${dayLabel(IW.expiry)}. The paper trade buys the best suited one, closes it at its expiry and buys the next week's.</div>
+          ${IW.held ? '<details class="cc-alt"><summary class="muted small">This week’s structures at today’s prices, for comparison</summary>' : ''}<div class="tbl-wrap"><table class="grid-tbl cc-pick"><thead><tr><th>Structure</th><th>Strikes (PE)</th><th>Debit</th><th>Pays in a bad week</th><th>÷ cost</th><th>Max pay</th><th>Pays between</th><th>Chance it pays</th><th></th></tr></thead><tbody>${iwRows || '<tr><td colspan="9" class="muted">No structure could be priced on the weekly chain.</td></tr>'}</tbody></table></div>${IW.held ? '</details>' : ''}</div>`
+      : `<div><h4>Weekly insurance</h4><div class="muted small">No weekly series before the monthly expiry to price.</div></div>`;
     const wkRows = (W?.candidates || [])
       .map(
         (c, i) =>
@@ -1640,7 +1701,15 @@
                 : `At the ${dayLabel(M.expiry)} expiry: the selected call and insurance${S.qtyBees ? `, with ${HN} bought now` : ''}. Click rows to compare. Lines: Nifty now, call breakeven.`,
             )}</div>
         </div>
-        <div class="cc-sugg-grid ins">
+        ${
+          wIns
+            ? `<div class="cc-sugg-grid ins">${iwHtml}<div>${
+                IW?.held || iwC
+                  ? `<h4>Payoff of the ${IW.held ? 'held ' : ''}weekly insurance · ${(IW.held || iwC.legs).map((l) => l.strike).join(' / ')} PE</h4>
+            ${payBox('ccSuggInsPay', `The weekly insurance legs alone at the ${dayLabel((IW.held || iwC.legs)[0].expiry || IW.expiry)} expiry${IW.held ? ', at their paper entry prices' : ''}. Lines: its strikes and the bad-week level.`)}`
+                  : ''
+              }</div></div>`
+            : `<div class="cc-sugg-grid ins">
           <div>${
             heldHere && held.ins.length
               ? `<h4>Insurance · held: ${insName(held.ins.length === 3 ? 'butterfly' : 'debit')} ${held.ins.map((l) => l.strike).join(' / ')} PE (${dayLabel(M.expiry)})</h4>
@@ -1661,6 +1730,7 @@
                 : ''
           }</div>
         </div>`
+        }`
       : '<div class="muted small">No monthly expiry in the live list.</div>';
     const weekHtml = W
       ? `<h4>This week's contra spread · ${dayLabel(W.expiry)} (${W.dte} day${W.dte === 1 ? '' : 's'}) · Nifty ${REGIME[W.regime].toLowerCase()} → ${REGIME_TRADE[W.regime]}</h4>
@@ -1725,24 +1795,48 @@
       toKite(M.expiry, legs, `Covered call: ${call ? call.strike + ' CE' : ''}${ins ? ' + ' + ins.strikes.join('/') + ' PE' : ''}`);
     });
     bindView(box, () => renderPaper(false));
-    const insLegs = heldIns || ins?.legs || null;
+    box.querySelectorAll('tr[data-iw]').forEach((tr) =>
+      tr.addEventListener('click', () => {
+        suggSel.iw = { expiry: IW.expiry, i: Number(tr.dataset.iw) };
+        renderSugg();
+      }),
+    );
+    const iwTitle = (c) => `Covered call weekly insurance: ${c.kind === 'debit' ? 'put debit spread' : 'put butterfly'} ${c.strikes.join('/')} (${dayLabel(IW.expiry)})`;
+    box.querySelectorAll('[data-sb-iw]').forEach((b) =>
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const c = IW.candidates[Number(b.dataset.sbIw)];
+        toBuilder(IW.expiry, c.legs, iwTitle(c));
+      }),
+    );
+    box.querySelectorAll('[data-kite-iw]').forEach((b) =>
+      b.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const c = IW.candidates[Number(b.dataset.kiteIw)];
+        toKite(IW.expiry, c.legs, iwTitle(c));
+      }),
+    );
+    const insLegs = wIns ? IW?.held || iwC?.legs || null : heldIns || ins?.legs || null;
     if (insLegs)
       // the insurance legs alone: no NIFTYBEES, no call; its strikes marked
       payoffChart($('ccSuggInsPay'), {
         legs: insLegs,
         hold: null,
         label: 'Insurance',
-        marks: insLegs.map((l) => ({
-          x: l.strike,
-          label: `${l.side === 'B' ? 'Bought' : 'Sold'}${l.qty > S.units ? ' ×' + Math.round(l.qty / S.units) : ''} ${num0(l.strike)} PE`,
-          color: l.side === 'B' ? BT.COLORS[2] : BT.COLORS[3],
-        })),
+        marks: [
+          ...insLegs.map((l) => ({
+            x: l.strike,
+            label: `${l.side === 'B' ? 'Bought' : 'Sold'}${l.qty > S.units ? ' ×' + Math.round(l.qty / S.units) : ''} ${num0(l.strike)} PE`,
+            color: l.side === 'B' ? BT.COLORS[2] : BT.COLORS[3],
+          })),
+          ...(wIns && IW ? [{ x: IW.bad, label: `Bad week −${IW.badPct}% ${num0(IW.bad)}`, color: BT.COLORS[4] }] : []),
+        ],
       });
     if (M && (call || ins || heldCall || heldIns)) {
       const callLeg = heldCall || (call ? { type: 'CE', side: 'S', strike: call.strike, qty: S.units, entry: call.fill } : null);
       const be = heldCall ? held.callBE : call?.breakeven;
       payoffChart($('ccSuggPay'), {
-        legs: [callLeg, ...(insLegs || [])].filter(Boolean),
+        legs: [callLeg, ...((!wIns && insLegs) || [])].filter(Boolean),
         // a held month: the NIFTYBEES bought at the month's entry; otherwise NIFTYBEES bought now
         hold: heldHere
           ? { qty: held.qtyIn, spot: S.spot, bees: S.bees, cost: held.beesIn }
@@ -1889,7 +1983,7 @@
   // the call and the insurance under their own labels
   const legParts = (c, insKind, line) =>
     (c.call ? `<div class="cc-grp-l">Covered call</div>${line(c.call)}` : '') +
-    (c.ins.length ? `<div class="cc-grp-l">${insTitle(insKind)}</div>${c.ins.map(line).join('')}` : '');
+    (c.ins.length ? `<div class="cc-grp-l">${insTitle(insKind, weeklyIns(c))}</div>${c.ins.map(line).join('')}` : '');
   const monthName = (d) => new Date(d + 'T00:00:00Z').toLocaleDateString('en-IN', { month: 'long', year: 'numeric', timeZone: 'UTC' });
   function bindCcTrades(el, P) {
     el.querySelector('[data-cct="open"]')?.addEventListener('click', () => {

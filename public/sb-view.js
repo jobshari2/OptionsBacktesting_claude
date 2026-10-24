@@ -1352,17 +1352,16 @@
       const pos = h ? `<span class="sb-held ${h > 0 ? 'pos' : 'neg'}" title="Open position">${h > 0 ? '+' : ''}${h}</span>` : '';
       const parts = [
         `<td class="${itm ? 'itm' : ''} sb-ltp">${px == null ? '—' : num(px)}${pos}</td>`,
+        `<td class="${itm ? 'itm' : ''}">${btns}</td>`, // Buy / Sell right beside the LTP
         `<td class="muted ${itm ? 'itm' : ''}">${d == null ? '—' : d.toFixed(2)}</td>`,
         `<td class="muted ${itm ? 'itm' : ''}">${iv ? (iv * 100).toFixed(1) : '—'}</td>`,
       ];
       if (S.src === 'live') parts.push(`<td class="muted ${itm ? 'itm' : ''}">${q?.oi ? window.app.compact(q.oi) : '—'}</td>`);
-      parts.push(`<td class="${itm ? 'itm' : ''}">${btns}</td>`);
       return call ? parts.reverse().join('') : parts.join('');
     };
     const head = (call) => {
-      const h = ['LTP', 'Δ', 'IV'];
+      const h = ['LTP', '', 'Δ', 'IV'];
       if (S.src === 'live') h.push('OI');
-      h.push('');
       return (call ? h.reverse() : h).map((x) => `<th>${x}</th>`).join('');
     };
     let spotDone = false;
@@ -1423,7 +1422,7 @@
         const g = l.open ? A.legs.find((x) => x.id === l.id)?.g : null;
         return `<tr class="${l.open ? '' : 'closed'}${picked(l) ? '' : ' unpicked'}" ${picked(l) ? '' : 'style="opacity:.45"'}>
         <td><input type="checkbox" data-pick="${l.id}" ${picked(l) ? 'checked' : ''} title="Include this leg in the payoff, Greeks, P&amp;L and suggestions"></td>
-        <td><button class="btn-sm ghost sb-side ${l.action === 'B' ? 'pos' : 'neg'}" data-flip="${l.id}" title="Click to change this leg to a ${l.action === 'B' ? 'SELL' : 'BUY'} (same strike, lots and prices)"><b>${l.action === 'B' ? 'BUY' : 'SELL'}</b> ⇄</button><div class="sb-sub">${l.open ? `<input class="num xs" type="number" min="1" step="1" data-lots="${l.id}" value="${l.lots}" title="Change the number of lots of this leg">` : l.lots} <span class="muted">lot${l.lots === 1 ? '' : 's'}</span></div></td><td class="nowrap">${l.open ? `<button class="icon sb-kbtn" data-shift="${l.id}" data-d="-1" ${nextStrike(l, -1, M) == null ? 'disabled' : ''} title="Change to the next lower strike (edits this leg as if entered there; no exit trade)">−</button>` : ''}<b>${l.strike} ${l.type}</b>${l.open ? `<button class="icon sb-kbtn" data-shift="${l.id}" data-d="1" ${nextStrike(l, 1, M) == null ? 'disabled' : ''} title="Change to the next higher strike (edits this leg as if entered there; no exit trade)">+</button>` : ''}
+        <td><button class="btn-sm ghost sb-side ${l.action === 'B' ? 'pos' : 'neg'}" data-flip="${l.id}" title="Click to change this leg to a ${l.action === 'B' ? 'SELL' : 'BUY'} (same strike, lots and prices)"><b>${l.action === 'B' ? 'BUY' : 'SELL'}</b> ⇄</button><div class="sb-sub">${l.open ? `<input class="num xs" type="number" min="1" step="1" data-lots="${l.id}" value="${l.lots}" title="Change the number of lots of this leg">` : l.lots} <span class="muted">lot${l.lots === 1 ? '' : 's'}</span></div></td><td class="nowrap">${l.open ? `<button class="icon sb-kbtn" data-shift="${l.id}" data-d="-1" ${nextStrike(l, -1, M) == null ? 'disabled' : ''} title="Change to the next lower strike (edits this leg as if entered there; no exit trade)">−</button>` : ''}<b>${l.strike}</b> ${l.open ? `<button class="btn-sm ghost sb-cepe" data-cepe="${l.id}" title="Click to change this leg to a ${l.type === 'CE' ? 'PUT (PE)' : 'CALL (CE)'} at the same strike, lots and expiry (re-priced as if entered there; no exit trade)"><b>${l.type}</b> ⇄</button>` : `<b>${l.type}</b>`}${l.open ? `<button class="icon sb-kbtn" data-shift="${l.id}" data-d="1" ${nextStrike(l, 1, M) == null ? 'disabled' : ''} title="Change to the next higher strike (edits this leg as if entered there; no exit trade)">+</button>` : ''}
           <div class="sb-sub">${l.open ? expirySelect(l) : `<span class="muted small">${dayShort(legExp(l))}</span>`}</div></td>
         <td><input class="num xs sb-px" type="number" min="0" step="0.05" data-entry="${l.id}" value="${px2(l.entryPx)}" title="Entry price of this leg: edit it to the price you actually got">${l.avg ? ' <span class="sb-avg" title="Average entry price: this strike was added more than once">avg</span>' : ''}
           <div class="sb-sub"><input class="sb-when" type="datetime-local" data-entered="${l.id}" value="${l.entryDay ? `${l.entryDay}T${l.entryClock || hhmm(l.entryMin ?? 0)}` : ''}" title="Entered: ${esc(l.entryAt)}. Edit the date and time this leg was entered (the entry price is not changed)"></div></td>
@@ -1440,11 +1439,20 @@
     $('sbPnlHead').innerHTML = S.legs.length
       ? `<span class="tot">Realised <b class="${cls(A.P.realised)}">${inrS(A.P.realised)}</b></span><span class="tot">Open <b class="${cls(A.P.open)}">${inrS(A.P.open)}</b></span><span class="tot total">Total <b class="${cls(A.P.total)}">${inrS(A.P.total)}</b></span>${S.from?.bt ? `<span class="tot" title="Brokerage and taxes of the backtest trade (${inr(S.from.bt.costs)}); its fills already include the slippage. With the backtest's adjustments replayed to the end this is the trade's Net P&amp;L in the backtest (${inrS(S.from.bt.net)}).">After costs <b class="${cls(A.P.total - S.from.bt.costs)}">${inrS(Math.round(A.P.total - S.from.bt.costs))}</b></span>` : ''} ${openLegs().length ? '<button class="btn-sm ghost" id="sbExitAll">Exit all</button>' : ''}`
       : '';
+    const nPicked = S.legs.filter(picked).length;
+    if (S.legs.length)
+      $('sbPnlHead').insertAdjacentHTML(
+        'beforeend',
+        `${nPicked && nPicked < S.legs.length ? ` <button class="btn-sm ghost" id="sbDeleteSel" title="Delete the ticked strikes from the position (as if never added; not an exit, so no P&amp;L is booked)">Delete selected (${nPicked})</button>` : ''} <button class="btn-sm ghost" id="sbDeleteAll" title="Delete every strike from the position (as if never added; not an exit, so no P&amp;L is booked)">Delete all</button>`,
+      );
     const typing = !forceRebuild && document.activeElement?.closest?.('#sbPos') && ['INPUT', 'SELECT'].includes(document.activeElement.tagName);
-    if (!typing)
+    if (!typing) {
       $('sbPos').innerHTML = S.legs.length
-        ? `<div class="tbl-wrap"><table class="grid-tbl sb-pos-tbl"><thead><tr><th></th><th>Side / lots</th><th>Strike / expiry</th><th>Entry</th><th>Now / exit</th><th>P&amp;L</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
+        ? `<div class="tbl-wrap"><table class="grid-tbl sb-pos-tbl"><thead><tr><th><input type="checkbox" data-pickall="1" ${nPicked === S.legs.length ? 'checked' : ''} title="${nPicked === S.legs.length ? 'Unselect all strikes' : 'Select all strikes'}"></th><th>Side / lots</th><th>Strike / expiry</th><th>Entry</th><th>Now / exit</th><th>P&amp;L</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
         : '<div class="muted pad">No trades yet. Click <b>B</b> or <b>S</b> next to a price in the chain, or pick a strategy and press <b>Apply</b>.</div>';
+      const all = $('sbPos').querySelector('input[data-pickall]');
+      if (all) all.indeterminate = nPicked > 0 && nPicked < S.legs.length;
+    }
   }
 
   // ---------- suggestions ----------
@@ -1810,6 +1818,18 @@
     save();
     render();
   }
+  // Delete several legs at once (Delete all / Delete selected): same as ✕ on each, one log line.
+  function removeLegs(ls, what, M) {
+    S.legs = S.legs.filter((l) => !ls.includes(l));
+    if (!openLegs().length) {
+      S.atmIvEntry = null;
+      S.spotEntry = null;
+    }
+    log(`Deleted ${what} from the position`, M);
+    record();
+    save();
+    render();
+  }
   function setArbWidth(w) {
     S.arbWidth = w;
     save();
@@ -2019,6 +2039,10 @@
       const l = S.legs.find((x) => x.id === Number(b.dataset.shift) && x.open);
       if (l) await shiftStrike(l, Number(b.dataset.d), M);
     }
+    if (b.dataset.cepe) {
+      const l = S.legs.find((x) => x.id === Number(b.dataset.cepe) && x.open);
+      if (l) await moveLeg(l, l.strike, legExp(l), M, l.type === 'CE' ? 'PE' : 'CE');
+    }
     if (b.dataset.roll) {
       const l = S.legs.find((x) => x.id === Number(b.dataset.roll));
       const Ml = l && mk(l, M);
@@ -2073,10 +2097,11 @@
     const to = ks.reduce((b, k) => (Math.abs(k - l.strike) < Math.abs(b - l.strike) ? k : b), ks[0]); // same strike, or the nearest
     await moveLeg(l, to, exp, M);
   }
-  async function moveLeg(l, to, exp, M) {
-    const from = { strike: l.strike, expiry: legExp(l) };
+  async function moveLeg(l, to, exp, M, type = l.type) {
+    const from = { strike: l.strike, expiry: legExp(l), type: l.type };
     l.strike = to;
     l.expiry = exp;
+    l.type = type;
     let px = null;
     if (S.src === 'hist' && l.entryDay && l.entryMin != null) {
       try {
@@ -2093,15 +2118,19 @@
       px = Ml?.px(to, l.type) ?? null;
       if (px == null) {
         Object.assign(l, from);
-        flash(`${to} ${l.type} ${dayShort(exp)} has no price now`);
+        flash(`${to} ${type} ${dayShort(exp)} has no price now`);
         render();
         return;
       }
       Object.assign(l, { entryAt: Ml.label, entryDay: Ml.day, entryMin: Ml.minute, spotIn: Ml.spot });
     }
     l.entryPx = px;
-    const what = [from.strike !== to ? `${from.strike} → ${to}` : `${to}`, from.expiry !== exp ? `${dayShort(from.expiry)} → ${dayShort(exp)}` : dayShort(exp)];
-    log(`Moved ${l.action === 'B' ? 'long' : 'short'} ${l.lots} × ${what[0]} ${l.type} (${what[1]}) @ ${px.toFixed(2)}, entry ${l.entryAt}; no exit trade`, M);
+    const what = [
+      from.strike !== to ? `${from.strike} → ${to}` : `${to}`,
+      from.expiry !== exp ? `${dayShort(from.expiry)} → ${dayShort(exp)}` : dayShort(exp),
+      from.type !== type ? `${from.type} → ${type}` : type,
+    ];
+    log(`Moved ${l.action === 'B' ? 'long' : 'short'} ${l.lots} × ${what[0]} ${what[2]} (${what[1]}) @ ${px.toFixed(2)}, entry ${l.entryAt}; no exit trade`, M);
     record();
     save();
     forceRebuild = true;
@@ -2178,6 +2207,14 @@
       commitLots(Number(lotsId), e.target.value);
       return;
     }
+    if (e.target.dataset?.pickall) {
+      // Header box: ticks every strike, or unticks them all when every strike is already ticked
+      const on = S.legs.some((l) => !picked(l));
+      for (const l of S.legs) l.off = !on;
+      save();
+      render();
+      return;
+    }
     const id = e.target.dataset?.pick;
     if (!id) return;
     const l = S.legs.find((x) => x.id === Number(id));
@@ -2215,6 +2252,13 @@
   });
   $('sbPnlHead').addEventListener('click', (e) => {
     if (e.target.id === 'sbExitAll') exitDialog(openLegs(), 'exit all');
+    else if (e.target.id === 'sbDeleteAll' || e.target.id === 'sbDeleteSel') {
+      const all = e.target.id === 'sbDeleteAll';
+      const ls = all ? S.legs.slice() : S.legs.filter(picked);
+      const what = `${all ? 'all ' : ''}${ls.length} ${all ? '' : 'selected '}strike${ls.length === 1 ? '' : 's'}`;
+      if (!ls.length || !confirm(`Delete ${what} from the position?\n\nThis deletes them as if they were never added. It is not an exit, so no P&L is booked.`)) return;
+      removeLegs(ls, what, market());
+    }
   });
   // Set a leg's entry / exit date and time from a datetime-local value ("2026-10-01T10:30"); false when it is not one.
   function setWhen(l, which, value) {

@@ -388,3 +388,60 @@ test('holding a Nifty 50 index fund: modelled NAV at the close, stamp duty only,
   assert.equal(mf.stats.call, etf.stats.call, 'the same calls');
   assert.ok(CC.mfNav(25000, { divPct: 1.2, expPct: 0.2 }, '2025-01-01', '2026-01-01') > 250, 'the NAV grows by dividends less expenses');
 });
+
+// ---------- weekly insurance (paper trade option) ----------
+test('weekly insurance: the best suited structure pays the most per rupee in a bad week', () => {
+  const { weeklyInsurance } = require('../bt/ccsuggest');
+  const spot = 25030;
+  const chain = suggChains(spot, ['w'])
+    .get('w');
+  const p = CC.normalize({ lotSize: 65, ins: { expiry: 'weekly' } });
+  assert.equal(p.ins.expiry, 'weekly');
+  assert.equal(CC.normalize({ ins: { expiry: 'daily' } }).ins.expiry, 'monthly');
+  const wi = weeklyInsurance(chain, spot, p, 7, 65);
+  assert.ok(wi.candidates.length > 3 && wi.candidates.every((c) => c.legs.length === 3 && c.debit > 0));
+  const best = wi.candidates[wi.pick];
+  assert.deepEqual(best.tags, ['suited']);
+  assert.ok(best.badPay > 0);
+  assert.ok(wi.candidates.every((c) => c.badPay <= 0 || c.badRatio <= best.badRatio));
+  // 12 % IV over a week: 1.5 σ is about 2.5 % under spot
+  assert.ok(wi.badPct > 2 && wi.badPct < 3, String(wi.badPct));
+  const s = suggest({ today: '2026-10-21', spot, bees: 280, chains: suggChains(spot, ['2026-10-27', '2026-11-24']), expiries: ['2026-10-27', '2026-11-24'], params: { lotSize: 65, ins: { expiry: 'weekly' } } });
+  assert.equal(s.insWeek.expiry, '2026-10-27');
+  assert.match(s.now.map((n) => n.text).join(' '), /Weekly insurance: buy the .* PE put butterfly \(2026-10-27\)/);
+});
+
+test('paper trade: weekly insurance is closed at its expiry and the next week bought', async () => {
+  const { p, expiries } = paperSetup();
+  await p.start({ ins: { expiry: 'weekly' } });
+  let c = p.state().paper.cycle;
+  assert.ok(c.expiry > expiries[0]);
+  assert.equal(c.ins.length, 3);
+  assert.ok(c.ins.every((l) => l.expiry === expiries[0]), 'on the nearest weekly series');
+  assert.equal(c.insWeeks.length, 1);
+  // the day after the first weekly expiry: it settled at its close and the next series was bought
+  await p.tick(Date.parse(addDays(expiries[0], 1) + 'T10:00:00+05:30'));
+  c = p.state().paper.cycle;
+  assert.equal(c.insWeeks.length, 2);
+  assert.ok(c.insWeeks[0].pnl != null && c.insWeeks[0].spotOut === 25030, 'closed at the expiry close');
+  assert.ok(c.insWeeks[0].pnl < 0, 'Nifty did not fall: the debit is lost');
+  assert.ok(c.ins.every((l) => l.expiry === expiries[1]));
+  assert.ok(p.state().paper.log.some((l) => l.kind === 'ins-exp'));
+  // the month: its insurance P&L counts every week's
+  await p.tick(Date.parse(addDays(c.expiry, 1) + 'T10:00:00+05:30'));
+  const m = p.state().paper.cycles[0];
+  assert.ok(m.insWeeks.every((w) => w.pnl != null));
+  const legsPnl = m.insWeeks.flatMap((w) => w.legs).reduce((s, l) => s + CC.legPnl(l, l.exit), 0);
+  assert.equal(m.insPnl, Math.round(legsPnl));
+});
+
+test('paper trade: switching to weekly insurance keeps the month’s insurance to its expiry', async () => {
+  const { p } = paperSetup();
+  await p.start({});
+  const E = p.state().paper.cycle.expiry;
+  await p.setInsurance('weekly');
+  const { paper } = p.state();
+  assert.equal(paper.params.ins.expiry, 'weekly');
+  assert.ok(paper.cycle.ins.length === 3 && paper.cycle.ins.every((l) => l.expiry === E), 'no weekly bought over the held monthly');
+  assert.match(paper.log[paper.log.length - 1].text, /switched to weekly/);
+});
