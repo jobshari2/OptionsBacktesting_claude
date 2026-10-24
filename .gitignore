@@ -20,6 +20,10 @@ bt-data/feedcmp-config-demo.json
 bt-data/cc-backtest.json
 bt-data/cc-paper.json
 bt-data/cc-paper-demo.json
+bt-data/mcc-backtest.json
+bt-data/mcc-study.json
+bt-data/mcc-paper.json
+bt-data/mcc-paper-demo.json
 bt-data/live-source.json
 bt-data/kite-prev-oi.json
 bt-data/surge-scan.json

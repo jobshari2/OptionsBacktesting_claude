@@ -27,6 +27,8 @@ const { createKiteData } = require('./lib/kitedata');
 const { createKiteBasket } = require('./kitebasket');
 const { createCcPaper } = require('./ccpaper');
 const { runCoveredCall, modelPath: ccModelPath, DEFAULTS: CC_DEFAULTS } = require('./bt/coveredcall');
+const { runMcc, runMccStudy, runMccModel, DEFAULTS: MCC_DEFAULTS, STUDY: MCC_STUDY } = require('./bt/mcc');
+const { createMccPaper } = require('./mccpaper');
 const { suggest: ccSuggest } = require('./bt/ccsuggest');
 const { createFeedCompare } = require('./feedcmp');
 const { createTickStore } = require('./lib/ticks');
@@ -857,6 +859,134 @@ async function handleCc(req, res, url, p) {
   }
 }
 
+// ---------- Trading Ideas › Covered call › Modified covered call (bt/mcc.js, mccpaper.js) ----------
+// Backtest (current settings + the same without adjustments) and the adjustment study run as jobs the page polls; the
+// last of each is kept in bt-data/mcc-backtest.json / mcc-study.json. The paper trade is checked every 30 s. No orders.
+const MCC_FILES = { backtest: path.join(__dirname, 'bt-data', 'mcc-backtest.json'), study: path.join(__dirname, 'bt-data', 'mcc-study.json') };
+const mccPaper = createMccPaper({
+  file: path.join(__dirname, 'bt-data', DEMO ? 'mcc-paper-demo.json' : 'mcc-paper.json'),
+  demo: DEMO,
+  isMarketOpen: () => DEMO || isMarketOpen(),
+  getExpiries,
+  getChain: (expiry) => restChain(expiry, 30_000),
+  closeOf: async (day) => {
+    await backtester.data.loadIndex(day, day);
+    const a = backtester.data.spotDay(day);
+    return a ? a[a.length - 1] : null;
+  },
+  beesPrice: ccBeesPrice,
+  getLot: () => contracts.lot,
+  logError,
+});
+setInterval(() => {
+  if (liveLoggedIn()) mccPaper.tick();
+}, 30_000);
+const mccJobs = new Map();
+function mccJob(kind, run) {
+  const id = Math.random().toString(36).slice(2, 10);
+  const job = { id, kind, status: 'running', progress: { phase: 'Starting', done: 0, total: 0 }, startedAt: Date.now() };
+  mccJobs.set(id, job);
+  while (mccJobs.size > 6) mccJobs.delete(mccJobs.keys().next().value);
+  run({ onProgress: (x) => (job.progress = { ...x, api: backtester.data.apiStats() }), stopped: () => Boolean(job.stop) })
+    .then((r) => {
+      job.result = r;
+      job.status = 'done';
+      if (!MCC_FILES[kind]) return; // 'run': a study rule opened on the Backtest tab, not kept
+      fs.mkdirSync(path.dirname(MCC_FILES[kind]), { recursive: true });
+      fs.writeFileSync(MCC_FILES[kind] + '.tmp', JSON.stringify(r));
+      fs.renameSync(MCC_FILES[kind] + '.tmp', MCC_FILES[kind]);
+    })
+    .catch((e) => {
+      job.status = 'error';
+      job.error = e.message;
+      logError('mcc-' + kind, e);
+    });
+  return job;
+}
+async function handleMcc(req, res, url, p) {
+  lastClientAt = Date.now();
+  try {
+    if (p === '/api/mcc/meta') {
+      const cal = await backtester.data.expiryCalendar().catch(() => null);
+      const monthly = cal ? [...cal.monthly].filter((e) => cal.expiredSet.has(e)).sort() : [];
+      return sendJson(res, 200, {
+        defaults: MCC_DEFAULTS,
+        study: MCC_STUDY.map(([id, label]) => ({ id, label })),
+        lot: contracts.lot || MCC_DEFAULTS.lotSize,
+        monthly,
+        demo: DEMO,
+      });
+    }
+    if ((p === '/api/mcc/backtest' || p === '/api/mcc/study') && req.method !== 'POST') return sendJson(res, 200, { saved: readJson(MCC_FILES[p.slice(9)]) });
+    // backtest: the settings and the same without adjustments, saved; run: the same for one study rule, not saved
+    if ((p === '/api/mcc/backtest' || p === '/api/mcc/run') && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req, 50_000)).toString('utf8') || '{}');
+      const range = { from: b.from, to: b.to };
+      const params = b.params || {};
+      const job = mccJob(p.slice(9), async ({ onProgress, stopped }) => {
+        const withAdj = await runMcc(backtester.data, params, range, { onProgress: (x) => onProgress({ ...x, phase: 'With adjustments' }), stopped });
+        const off = { ...params, adj: { ...(params.adj || {}), on: false }, up: { ...(params.up || {}), mode: 'none' } };
+        const without = await runMcc(backtester.data, off, range, { onProgress: (x) => onProgress({ ...x, phase: 'Without adjustments' }), stopped });
+        return { at: Date.now(), range, withAdj, without };
+      });
+      return sendJson(res, 200, { id: job.id, status: job.status });
+    }
+    if (p === '/api/mcc/study' && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req, 50_000)).toString('utf8') || '{}');
+      const job = mccJob('study', (o) => runMccStudy(backtester.data, b.params || {}, { from: b.from, to: b.to }, o));
+      return sendJson(res, 200, { id: job.id, status: job.status });
+    }
+    if (p === '/api/mcc/job') {
+      const job = mccJobs.get(url.searchParams.get('id'));
+      if (!job) return sendJson(res, 404, { error: 'Job not found (the server may have restarted): run it again' });
+      return sendJson(res, 200, {
+        id: job.id,
+        status: job.status,
+        progress: job.progress,
+        error: job.error,
+        result: job.status === 'done' ? job.result : undefined,
+      });
+    }
+    if (p === '/api/mcc/job/stop' && req.method === 'POST') {
+      const job = mccJobs.get(JSON.parse((await readBody(req, 2_000)).toString('utf8') || '{}').id);
+      if (job) job.stop = true;
+      return sendJson(res, 200, { ok: Boolean(job) });
+    }
+    if (p === '/api/mcc/model' && req.method === 'POST') {
+      // Strategy & rules › Month by month: the model path, every month priced by Black-Scholes (nothing saved)
+      const b = JSON.parse((await readBody(req, 50_000)).toString('utf8') || '{}');
+      const o = b.opts || {};
+      const clamp = (v, lo, hi, d) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d);
+      const opts = {
+        S0: clamp(o.S0, 5000, 100000, 24000),
+        pct: clamp(o.pct, -60, 100, 10),
+        months: Math.round(clamp(o.months, 1, 36, 12)),
+        iv: clamp(o.iv, 5, 60, 13),
+        swings: o.swings !== false,
+      };
+      return sendJson(res, 200, runMccModel(b.params || {}, opts));
+    }
+    if (p === '/api/mcc/paper') return sendJson(res, 200, { ...mccPaper.state(), demo: DEMO });
+    if (p.startsWith('/api/mcc/paper/') && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req, 50_000)).toString('utf8') || '{}');
+      if (p === '/api/mcc/paper/start') {
+        if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the paper trade follows the live chain`);
+        await mccPaper.start(b.params || {});
+      } else if (p === '/api/mcc/paper/pause') mccPaper.pause();
+      else if (p === '/api/mcc/paper/resume') await mccPaper.resume();
+      else if (p === '/api/mcc/paper/reset') {
+        if (b.confirm !== true) throw new Error('Resetting deletes the paper trade: it needs confirmation');
+        mccPaper.reset();
+      } else return sendJson(res, 404, { error: 'Not found' });
+      return sendJson(res, 200, { ...mccPaper.state(), demo: DEMO });
+    }
+    return sendJson(res, 404, { error: 'Not found' });
+  } catch (e) {
+    logError('mcc', e);
+    return sendJson(res, 400, { error: e.message });
+  }
+}
+
 // ---------- Trading Ideas › Option surges (bt/surge.js, bt/surgevol.js, surgeradar.js) ----------
 const SURGE_CACHE = env.BT_CACHE_DIR ? path.resolve(env.BT_CACHE_DIR) : path.join(__dirname, 'bt-cache');
 const SURGE_FILES = {
@@ -1313,6 +1443,8 @@ const server = http.createServer(async (req, res) => {
   if (p.startsWith('/api/hedge/')) return handleHedge(req, res, p);
 
   if (p.startsWith('/api/cc/')) return handleCc(req, res, url, p);
+
+  if (p.startsWith('/api/mcc/')) return handleMcc(req, res, url, p);
 
   if (p.startsWith('/api/surge/')) return handleSurge(req, res, url, p);
 

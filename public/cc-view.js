@@ -9,7 +9,10 @@
     ['bt', 'Backtest'],
     ['paper', 'Paper trade'],
   ];
-  const IDEAS = [['cc', 'Covered call', 'NIFTYBEES + monthly call, put butterfly, weekly contra spreads']];
+  const IDEAS = [
+    ['cc', 'Covered call', 'NIFTYBEES + monthly call, put butterfly, weekly contra spreads'],
+    ['mcc', 'Modified covered call', 'NIFTYBEES + call ratio 1×2, put 2-3-1 butterfly, rolls of the sold strikes'],
+  ];
   const CALL_RULES = [
     ['itm100', 'ITM: the 100-point strike under spot (as in the thread)'],
     ['atm', 'ATM'],
@@ -1499,7 +1502,9 @@
                   ['weekly', 'Weekly, best suited · closed at each expiry'],
                 ]
                   .map(([k, l]) => `<button data-ie="${k}" class="${(pp.ins.expiry || 'monthly') === k ? 'on' : ''}">${l}</button>`)
-                  .join('')}</span><span class="muted small">Weekly: each week the ${pp.ins.kind === 'debit' ? 'put debit spread' : 'put butterfly'} that pays the most per rupee if Nifty falls 1.5 weekly σ by its expiry; on its expiry day the next week's is bought from ${esc(pp.entryTime)} and the old one closed at 15:25. Switching keeps the insurance held now to its expiry.</span></div>`
+                  .join(
+                    '',
+                  )}</span><span class="muted small">Weekly: each week the ${pp.ins.kind === 'debit' ? 'put debit spread' : 'put butterfly'} that pays the most per rupee if Nifty falls 1.5 weekly σ by its expiry; on its expiry day the next week's is bought from ${esc(pp.entryTime)} and the old one closed at 15:25. Switching keeps the insurance held now to its expiry.</span></div>`
               : ''
           }
         </div>
@@ -1801,7 +1806,8 @@
         renderSugg();
       }),
     );
-    const iwTitle = (c) => `Covered call weekly insurance: ${c.kind === 'debit' ? 'put debit spread' : 'put butterfly'} ${c.strikes.join('/')} (${dayLabel(IW.expiry)})`;
+    const iwTitle = (c) =>
+      `Covered call weekly insurance: ${c.kind === 'debit' ? 'put debit spread' : 'put butterfly'} ${c.strikes.join('/')} (${dayLabel(IW.expiry)})`;
     box.querySelectorAll('[data-sb-iw]').forEach((b) =>
       b.addEventListener('click', (e) => {
         e.stopPropagation();
