@@ -56,6 +56,8 @@
     speed: 1000,
     lots: 1,
     width: 10,
+    greeks: false, // the chain's Greeks columns
+    liquid: false, // the chain shows liquid strikes only
     legs: [],
     log: [],
     mtm: [],
@@ -74,6 +76,10 @@
   let inited = false;
   let cal = null; // { days, lot } of the historical expiry
   const dayCache = new Map(); // `${expiry}|${day}` -> day data
+  // `${expiry}|${day}` -> { strike: { CE: { v, o }, PE } }: the replay day's volume so far and open interest per minute
+  // (/api/sb/vo), null for a contract that could not be read; asked for the strikes the chain shows
+  const voCache = new Map();
+  const voAsked = new Set(); // `${expiry}|${day}|${strike}` asked for (or being fetched)
   const liveMap = new Map(); // expiry -> { at, spot, rows }
   const loadingKeys = new Set();
   const failedKeys = new Set(); // viewed expiries with no data for the current day
@@ -198,6 +204,9 @@
           return v > 0 ? v : null;
         },
         quote: () => null,
+        // the day's volume so far / the open interest at this minute; null while not loaded (loadVo) or unreadable
+        vol: (k, t) => voCache.get(`${exp}|${S.day}`)?.[k]?.[t]?.v[m] ?? null,
+        oi: (k, t) => voCache.get(`${exp}|${S.day}`)?.[k]?.[t]?.o[m] ?? null,
         T: Math.max(1e-6, (Date.parse(exp + 'T15:30:00+05:30') - Date.parse(`${S.day}T${hhmm(m)}:00+05:30`)) / (365 * 86400_000)),
         label: `${WD[new Date(S.day + 'T00:00:00Z').getUTCDay()]} ${dayShort(S.day)} ${hhmm(m)}`,
       };
@@ -222,6 +231,14 @@
       quote: (k, t) => {
         const r = row(k);
         return r ? (t === 'CE' ? r.ce : r.pe) : null;
+      },
+      vol: (k, t) => {
+        const r = row(k);
+        return r ? ((t === 'CE' ? r.ce : r.pe).vol ?? null) : null;
+      },
+      oi: (k, t) => {
+        const r = row(k);
+        return r ? ((t === 'CE' ? r.ce : r.pe).oi ?? null) : null;
       },
       T: Math.max(1e-6, (Date.parse(exp + 'T15:30:00+05:30') - Date.now()) / (365 * 86400_000)),
       label: `Live ${window.app.istClock(live.at)}`,
@@ -1318,10 +1335,54 @@
     box.scrollTop += r.top - box.getBoundingClientRect().top - (box.clientHeight - r.height) / 2;
     atmPending = false;
   }
+  // The replay day's volume / OI for the strikes not asked for yet, in batches; the chain is drawn again as they come.
+  // A contract the server cannot read comes back null (shown "—"), and is not asked for again.
+  async function loadVo(exp, ks) {
+    const day = S.day;
+    const want = ks.filter((k) => !voAsked.has(`${exp}|${day}|${k}`));
+    if (S.src !== 'hist' || !day || !want.length) return;
+    for (const k of want) voAsked.add(`${exp}|${day}|${k}`);
+    for (let i = 0; i < want.length; i += 40) {
+      const part = want.slice(i, i + 40);
+      let r;
+      try {
+        r = await BT.api(`/api/sb/vo?expiry=${exp}&day=${day}&ks=${part.join(',')}`);
+      } catch {
+        for (const k of want.slice(i)) voAsked.delete(`${exp}|${day}|${k}`); // the server is away: asked again later
+        return;
+      }
+      const box = voCache.get(`${exp}|${day}`) || {};
+      r.ks.forEach((k, j) => (box[k] = { CE: r.ce[j], PE: r.pe[j] }));
+      voCache.set(`${exp}|${day}`, box);
+      if (voCache.size > 30) voCache.delete(voCache.keys().next().value);
+      if (S.src === 'hist' && S.day === day) render();
+    }
+  }
+
+  // Liquidity of one side of a strike: a price, and live a bid and an ask and trades today (with no order book on the
+  // chain — after the close — trades in the last session), on a replay trades that day up to the replay time.
+  // null: not known yet (the replay's volume still loading, or not readable).
+  function liquidOf(M, book) {
+    return (k, t) => {
+      if (!(M.px(k, t) > 0)) return false;
+      const v = M.vol(k, t);
+      if (S.src === 'live') {
+        const q = M.quote(k, t);
+        return book ? q?.bid > 0 && q?.ask > 0 && v > 0 : v > 0;
+      }
+      return v == null ? null : v > 0;
+    };
+  }
+
   function renderChain(M) {
     const atm = atmOf(M);
     const idx = M.ks.indexOf(atm);
-    const ks = M.ks.slice(Math.max(0, idx - S.width), idx + S.width + 1);
+    const near = M.ks.slice(Math.max(0, idx - S.width), idx + S.width + 1);
+    if (S.src === 'hist') loadVo(M.expiry, near);
+    const book = S.src === 'live' && M.ks.some((k) => M.quote(k, 'CE')?.bid > 0 && M.quote(k, 'CE')?.ask > 0);
+    const liquid = liquidOf(M, book);
+    // Liquid only: strikes liquid on at least one side (or not known yet)
+    const ks = S.liquid ? near.filter((k) => liquid(k, 'CE') !== false || liquid(k, 'PE') !== false) : near;
     const held = new Map();
     const heldAny = new Set(
       openLegs()
@@ -1340,46 +1401,62 @@
       const r = h[0].price > M.spot;
       return `<span class="lv-tag ${r ? 'r' : 's'}${h.some((x) => x.cls === 'major') ? ' major' : ''}" title="${esc(h.map((x) => `${x.price} ${x.cls} · ${x.src}`).join('\n'))}">${r ? 'R' : 'S'}</span>`;
     };
+    const compact = (x) => (x == null ? '—' : window.app.compact(x));
     const cell = (k, t) => {
       const px = M.px(k, t);
       const call = t === 'CE';
-      const iv = ivOf(px, M.spot, k, M.T, call);
-      const d = iv ? greeks(M.spot, k, M.T, iv, call).delta : null;
-      const q = M.quote(k, t);
       const h = held.get(k + t);
       const itm = call ? k < M.spot : k > M.spot;
+      const dim = liquid(k, t) === false && px > 0 ? ' illiq' : ''; // priced, but no liquidity
       const btns = `<span class="sb-bs"><button data-add="B" data-k="${k}" data-t="${t}" title="Buy ${k} ${t}">B</button><button data-add="S" data-k="${k}" data-t="${t}" title="Sell ${k} ${t}">S</button>${heldAny.has(k + t) ? `<button data-rm="1" data-k="${k}" data-t="${t}" title="Remove the last added ${k} ${t} leg (deletes the entry, no trade)">✕</button>` : ''}</span>`;
       const pos = h ? `<span class="sb-held ${h > 0 ? 'pos' : 'neg'}" title="Open position">${h > 0 ? '+' : ''}${h}</span>` : '';
+      const c = (x) => `<td class="muted ${itm ? 'itm' : ''}${dim}">${x}</td>`;
+      // LTP, Buy / Sell right beside it, volume, OI; then the Greeks when ticked
       const parts = [
-        `<td class="${itm ? 'itm' : ''} sb-ltp">${px == null ? '—' : num(px)}${pos}</td>`,
-        `<td class="${itm ? 'itm' : ''}">${btns}</td>`, // Buy / Sell right beside the LTP
-        `<td class="muted ${itm ? 'itm' : ''}">${d == null ? '—' : d.toFixed(2)}</td>`,
-        `<td class="muted ${itm ? 'itm' : ''}">${iv ? (iv * 100).toFixed(1) : '—'}</td>`,
+        `<td class="${itm ? 'itm' : ''} sb-ltp${dim}">${px == null ? '—' : num(px)}${pos}</td>`,
+        `<td class="${itm ? 'itm' : ''}">${btns}</td>`,
+        c(compact(M.vol(k, t))),
+        c(compact(M.oi(k, t))),
       ];
-      if (S.src === 'live') parts.push(`<td class="muted ${itm ? 'itm' : ''}">${q?.oi ? window.app.compact(q.oi) : '—'}</td>`);
+      if (S.greeks) {
+        const iv = ivOf(px, M.spot, k, M.T, call);
+        const g = iv ? greeks(M.spot, k, M.T, iv, call) : null;
+        const f = (v, n) => (g ? v.toFixed(n) : '—');
+        parts.push(c(iv ? (iv * 100).toFixed(1) : '—'), c(f(g?.delta, 2)), c(f(g?.gamma, 4)), c(f(g?.theta, 2)), c(f(g?.vega, 2)));
+      }
       return call ? parts.reverse().join('') : parts.join('');
     };
-    const head = (call) => {
-      const h = ['LTP', '', 'Δ', 'IV'];
-      if (S.src === 'live') h.push('OI');
-      return (call ? h.reverse() : h).map((x) => `<th>${x}</th>`).join('');
+    const cols = ['LTP', '', 'Vol', 'OI', ...(S.greeks ? ['IV', 'Δ', 'Γ', 'Θ', 'Vega'] : [])];
+    const TIPS = {
+      Vol: S.src === 'live' ? 'Volume traded today' : 'Volume traded that day up to the replay time',
+      OI: 'Open interest',
+      IV: 'Implied volatility, %',
+      Θ: 'Theta: change in the option price per calendar day',
+      Vega: 'Vega: change in the option price per 1 vol point',
+      Γ: 'Gamma: change in delta per Nifty point',
     };
+    const head = (call) => (call ? [...cols].reverse() : cols).map((x) => `<th${TIPS[x] ? ` title="${TIPS[x]}"` : ''}>${x}</th>`).join('');
     let spotDone = false;
     const rows = ks
       .map((k) => {
         let pre = '';
         if (!spotDone && k > M.spot) {
-          pre = `<tr class="spot-row"><td colspan="${S.src === 'live' ? 11 : 9}"></td></tr>`;
+          pre = `<tr class="spot-row"><td colspan="${cols.length * 2 + 1}"></td></tr>`;
           spotDone = true;
         }
         return `${pre}<tr class="${k === atm ? 'atm' : ''}">${cell(k, 'CE')}<td class="strike">${k}${tag(k)}</td>${cell(k, 'PE')}</tr>`;
       })
       .join('');
     $('sbChain').innerHTML =
-      `<table class="chain sb-chain-tbl"><thead><tr class="side-head"><th colspan="${S.src === 'live' ? 5 : 4}" class="ce-h">CALLS</th><th></th><th colspan="${S.src === 'live' ? 5 : 4}" class="pe-h">PUTS</th></tr><tr>${head(true)}<th class="strike-h">Strike</th>${head(false)}</tr></thead><tbody>${rows}</tbody></table>`;
+      `<table class="chain sb-chain-tbl"><thead><tr class="side-head"><th colspan="${cols.length}" class="ce-h">CALLS</th><th></th><th colspan="${cols.length}" class="pe-h">PUTS</th></tr><tr>${head(true)}<th class="strike-h">Strike</th>${head(false)}</tr></thead><tbody>${rows}</tbody></table>` +
+      (S.liquid && !ks.length
+        ? '<div class="muted small pad">No strike in this range has liquidity right now: widen the range (All strikes) or untick Liquid only.</div>'
+        : '');
     centreAtm();
     renderArb(M);
-    $('sbChainInfo').textContent = `· ${dayShort(M.expiry)} · lot ${M.lot} · ATM IV ${((atmIv(M) || 0) * 100).toFixed(1)}%`;
+    $('sbChainInfo').textContent =
+      `· ${dayShort(M.expiry)} · lot ${M.lot} · ATM IV ${((atmIv(M) || 0) * 100).toFixed(1)}%` +
+      (S.liquid ? ` · ${ks.length} of ${near.length} strikes liquid${S.src === 'live' && !book ? ' (no order book: by trades in the last session)' : ''}` : '');
   }
 
   // Nearest support / resistance at the current spot, marked on the payoff chart.
@@ -1923,6 +2000,21 @@
   });
   if (![...$('sbWidth').options].some((o) => Number(o.value) === S.width)) S.width = 10; // saved width no longer offered
   $('sbWidth').value = String(S.width);
+  // the chain's Greeks columns and Liquid only filter
+  $('sbGreeks').checked = !!S.greeks;
+  $('sbLiquid').checked = !!S.liquid;
+  for (const [id, key] of [
+    ['sbGreeks', 'greeks'],
+    ['sbLiquid', 'liquid'],
+  ])
+    $(id).addEventListener('change', (e) => {
+      S[key] = e.target.checked;
+      atmPending = true;
+      save();
+      render();
+    });
+  // S.width: strikes either side of ATM in the chain; ALL_STRIKES ("All strikes") is wider than any expiry's list
+  const ALL_STRIKES = 999;
   $('sbWidth').addEventListener('change', async (e) => {
     S.width = Number(e.target.value) || 10;
     atmPending = true;
@@ -1930,6 +2022,7 @@
     render();
     if (S.src !== 'hist' || !S.day) return;
     // a wider chain than the downloaded strikes: fetch the extra ones for the main and the other shown / held expiries
+    if (S.width === ALL_STRIKES) flash('Loading every strike of the expiry: the ones not cached yet are downloaded from Upstox once (can take a minute)…');
     busy = true;
     try {
       for (const exp of [S.expiry, ...extraExps()]) await loadDay(S.day, false, exp).catch(() => {});
@@ -2256,7 +2349,8 @@
       const all = e.target.id === 'sbDeleteAll';
       const ls = all ? S.legs.slice() : S.legs.filter(picked);
       const what = `${all ? 'all ' : ''}${ls.length} ${all ? '' : 'selected '}strike${ls.length === 1 ? '' : 's'}`;
-      if (!ls.length || !confirm(`Delete ${what} from the position?\n\nThis deletes them as if they were never added. It is not an exit, so no P&L is booked.`)) return;
+      if (!ls.length || !confirm(`Delete ${what} from the position?\n\nThis deletes them as if they were never added. It is not an exit, so no P&L is booked.`))
+        return;
       removeLegs(ls, what, market());
     }
   });

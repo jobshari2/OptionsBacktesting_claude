@@ -143,9 +143,14 @@
       legs.reduce((s, l) => s + (l.side === 'S' ? 1 : -1) * (l.entry - Math.max(0, l.type === 'CE' ? S - l.strike : l.strike - S)) * l.qty, 0);
     const holdAt = (S) => (hold ? hold.qty * ((hold.bees * S) / hold.spot - hold.cost) : 0);
     const refs = [...legs.map((l) => l.strike), ...marks.map((m) => m.x), hold?.spot].filter((x) => x > 0);
-    const lo = Math.floor(Math.min(range?.[0] ?? Infinity, Math.min(...refs) * 0.965) / 50) * 50;
-    const hi = Math.ceil(Math.max(range?.[1] ?? -Infinity, Math.max(...refs) * 1.03) / 50) * 50;
-    const step = Math.max(10, Math.round((hi - lo) / 160 / 10) * 10);
+    const home = [
+      Math.floor(Math.min(range?.[0] ?? Infinity, Math.min(...refs) * 0.965) / 50) * 50,
+      Math.ceil(Math.max(range?.[1] ?? -Infinity, Math.max(...refs) * 1.03) / 50) * 50,
+    ];
+    // the chart opens on home; the curve goes a home's width further each way, to zoom out (bt-common.js payZoom)
+    const lo = Math.max(50, home[0] - (home[1] - home[0]));
+    const hi = home[1] + (home[1] - home[0]);
+    const step = Math.max(10, Math.round((home[1] - home[0]) / 160 / 10) * 10);
     const xs = [];
     for (let s = lo; s <= hi; s += step) xs.push(s);
     for (const r of refs) if (!xs.includes(Math.round(r))) xs.push(Math.round(r));
@@ -169,13 +174,14 @@
       sets.push({
         label: m.label,
         data: [
-          { x: m.x, y: yMin },
-          { x: m.x, y: yMax },
+          { x: m.x, y: yMin - (yMax - yMin) }, // past the y axis however it is zoomed (the line is clipped there)
+          { x: m.x, y: yMax + (yMax - yMin) },
         ],
         borderColor: m.color || 'rgba(150,160,175,.8)',
         borderWidth: 1,
         borderDash: [2, 3],
         cc_mark: true,
+        pz_skip: true,
       });
     sets.push({
       label: 'zero',
@@ -187,6 +193,7 @@
       borderWidth: 1,
       cc_mark: true,
       cc_hide: true,
+      pz_skip: true,
     });
     BT.chart(canvas, {
       type: 'line',
@@ -196,14 +203,15 @@
         scales: {
           x: {
             type: 'linear',
-            min: lo,
-            max: hi,
+            min: home[0],
+            max: home[1],
             ticks: { maxTicksLimit: 10, callback: (v) => Number(v).toLocaleString('en-IN') },
             title: { display: true, text: 'Nifty at expiry' },
           },
           y: { ticks: { callback: (v) => kinr(v) } },
         },
         plugins: {
+          payZoom: { on: true, home },
           legend: { labels: { filter: (i, d) => !d.datasets[i.datasetIndex].cc_hide } },
           tooltip: {
             filter: (i) => !i.dataset.cc_mark,

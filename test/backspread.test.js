@@ -24,10 +24,13 @@ test('every leg of every candidate lies within ATM ± the window, the centre on 
     }
   // ±5 strikes (250 pts) only fits a 100-wide back spread: its wings are 150 from the centre
   assert.deepEqual([...new Set(BS.geometries(ks, ai, 'PE', 5).map((g) => g.W))], [100]);
-  assert.ok(BS.geometries(ks, ai, 'PE', 20).some((g) => g.W === 400), 'a wide window allows wide spreads');
+  assert.ok(
+    BS.geometries(ks, ai, 'PE', 20).some((g) => g.W === 400),
+    'a wide window allows wide spreads',
+  );
 });
 
-test("the Opstra example: put back spread 14900/14800 + 2 iron butterflies at 14850", () => {
+test('the Opstra example: put back spread 14900/14800 + 2 iron butterflies at 14850', () => {
   const g = { W: 100, m: 14850, k1: 14900, k2: 14800, lo: 14700, hi: 15000 };
   const px = { '14850PE': 23.2, '14850CE': 394, '14700PE': 12.6, '15000CE': 266.6, '14900PE': 29.2, '14800PE': 18.8 };
   const L = BS.legsOf(g, 'PE', 'iron').map((l) => ({ ...l, px: px[l.k + l.type] }));
@@ -67,7 +70,7 @@ test('the backtest strategy picks every leg from the window and survives normali
     'iron fly: CE and PE strikes',
   );
   const s = normalizeStrategy(strategyOf({ ...sel, form: 'same', side: 'PE', win: 10, dte: 2 }));
-  assert.deepEqual(s.pick, { kind: 'backfly', side: 'PE', win: 10, widths: [100], form: 'same', rank: 'pop', fresh: 15 });
+  assert.deepEqual(s.pick, { kind: 'backfly', side: 'PE', win: 10, widths: [100], form: 'same', rank: 'pop', fresh: 15, maxLoss: 0 });
   assert.deepEqual(
     s.legs.map((l) => `${l.action}${l.lots}${l.type}:${l.strike.by}/${l.strike.role}`),
     ['S8PE:pick/m', 'B4PE:pick/lo', 'B4PE:pick/hi', 'S2PE:pick/k1', 'B4PE:pick/k2'],
@@ -98,7 +101,13 @@ function calendarData({ untraded = new Set() } = {}) {
     return bars.get(k + type);
   };
   return {
-    expiryCalendar: async () => ({ expired: [E0, E1, E2, E3], all: [E0, E1, E2, E3], expiredSet: new Set([E0, E1, E2, E3]), monthly: new Set([E0, E3]), liveLot: 65 }),
+    expiryCalendar: async () => ({
+      expired: [E0, E1, E2, E3],
+      all: [E0, E1, E2, E3],
+      expiredSet: new Set([E0, E1, E2, E3]),
+      monthly: new Set([E0, E3]),
+      liveLot: 65,
+    }),
     loadIndex: async (from, to) => DAYS.filter((d) => d >= from && d <= to),
     spotDay: () => sp,
     vixDay: () => null,
@@ -125,7 +134,10 @@ test('expiry start enters the day after the previous expiry: weekly series and m
     [`${DAYS[1]}>${E3}`],
     'the day after the previous monthly expiry, held to the monthly expiry',
   );
-  assert.ok(mo.trades[0].legs.every((l) => l.expiry === E3), 'monthly legs trade the monthly expiry');
+  assert.ok(
+    mo.trades[0].legs.every((l) => l.expiry === E3),
+    'monthly legs trade the monthly expiry',
+  );
 });
 
 test('the picker keeps every leg inside the window, pays a tick at least, and skips options that did not trade', async () => {
@@ -140,4 +152,32 @@ test('the picker keeps every leg inside the window, pays a tick at least, and sk
   const avoid = await runBacktest(calendarData({ untraded: used }), pickStrat({}), OPTS);
   assert.ok(avoid.trades.length > 0, 'another set of strikes is picked');
   for (const l of avoid.trades[0].legs) assert.ok(!used.has(l.strike + l.type), `${l.strike}${l.type} had no trade before entry`);
+});
+
+// Worst case at expiry of a trade's legs at their entry fills, ₹ (the picker's own figure also takes off exit costs).
+const worstOf = (t) => {
+  const pl = (S) =>
+    t.legs.reduce((a, x) => a + (x.action === 'B' ? 1 : -1) * x.qty * (Math.max(0, x.type === 'CE' ? S - x.strike : x.strike - S) - x.entryFill), 0);
+  return Math.min(...t.legs.map((x) => pl(x.strike)));
+};
+test('max loss: the picker leaves out strikes that could lose more, and skips the entry when none is left', async () => {
+  const strikes = (r) => r.trades.map((t) => t.legs.map((l) => l.strike + l.type).join(' '));
+  const free = await runBacktest(calendarData(), pickStrat({}), OPTS);
+  const wide = await runBacktest(calendarData(), pickStrat({ maxLoss: 1e9 }), OPTS);
+  assert.deepEqual(strikes(wide), strikes(free), 'a limit nothing reaches changes nothing');
+
+  const tight = await runBacktest(calendarData(), pickStrat({ maxLoss: 1 }), OPTS);
+  assert.equal(tight.trades.length, 0);
+  assert.ok(tight.skipped.length > 0 && tight.skipped.every((s) => /could lose more than ₹1 a unit/.test(s.reason)), tight.skipped[0]?.reason);
+
+  // ranked by chance of profit the picker would take bigger risks: the limit keeps every trade within it
+  const limit = Math.round(-worstOf(free.trades[0]) * 2);
+  const pop = await runBacktest(calendarData(), pickStrat({ rank: 'pop', maxLoss: limit }), OPTS);
+  assert.ok(pop.trades.length > 0);
+  for (const t of pop.trades) assert.ok(worstOf(t) >= -limit, `${t.entryDay}: worst ${Math.round(worstOf(t))} within −${limit}`);
+
+  // the selection's limit is for the whole trade: the engine gets it per unit
+  assert.equal(pickStrat({ maxLoss: 9000, units: 3 }).pick.maxLoss, 3000);
+  assert.equal(cleanSel({ maxLoss: '12500.4' }).maxLoss, 12500);
+  assert.equal(cleanSel({}).maxLoss, 0);
 });

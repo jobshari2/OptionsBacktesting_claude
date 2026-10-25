@@ -33,6 +33,9 @@
 .cc-month { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 14px; padding: 6px 12px 14px; background: var(--panel-2); }
 .cc-month-ev { grid-column: 1 / -1; }
 .cc-ev { max-height: 360px; }
+/* Modified covered call paper trade: Nifty every 100 points at expiry (mcc-view.js scenarioHtml) */
+.mcc-scen { max-height: 480px; }
+.mcc-scen tr.sel td { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .cc-ev td, .cc-ev th { text-align: left !important; }
 .cc-ev-text { white-space: normal !important; width: 100%; }
 .cc-kind { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 10.5px; background: var(--panel-2); border: 1px solid var(--line); color: var(--muted); }

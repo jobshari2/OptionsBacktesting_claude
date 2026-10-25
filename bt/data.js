@@ -288,8 +288,11 @@ function createData({ getToken, upstox = createUpstox({ getToken }), cacheDir, l
     return { from: c.from, to: c.to, days };
   }
 
+  // Candles of one contract over [from, to]: raw = OHLC per day; vo = [volume, open interest] per minute per day
+  // (-1 = no candle), which the Builder's chain shows (kept apart from the OHLC: see optionVo).
   async function fetchCandles(key, from, to) {
     const raw = new Map();
+    const vo = new Map();
     for (let a = from; a <= to; a = addDays(a, CHUNK_DAYS + 1)) {
       const b = addDays(a, CHUNK_DAYS) < to ? addDays(a, CHUNK_DAYS) : to;
       const data = await api(`/v2/expired-instruments/historical-candle/${encodeURIComponent(key)}/1minute/${b}/${a}`);
@@ -302,9 +305,72 @@ function createData({ getToken, upstox = createUpstox({ getToken }), cacheDir, l
           [c[1], c[2], c[3], c[4]].map((v) => Math.round(v * 100)),
           m * 4,
         );
+        if (!vo.has(day)) vo.set(day, new Int32Array(MPD * 2).fill(-1));
+        vo.get(day).set([Math.round(Number(c[5]) || 0), Math.round(Number(c[6]) || 0)], m * 2);
       }
     }
-    return raw;
+    return { raw, vo };
+  }
+
+  // ---------- volume and open interest (the Builder's chain) ----------
+  // Kept in files of their own (vo/<expiry>/<strike><type>.json.gz: { spans: [[from, to]...] fetched, days: {day:
+  // b64 Int32Array(MPD*2)} }), so backtests never load them. Downloads of candles store them too; a contract cached
+  // before that gets them when the Builder asks (one request: the day asked and up to CHUNK_DAYS after it).
+  const voMem = new Map();
+  const voFile = (expiry, strike, type) => path.join(cacheDir, 'vo', expiry, `${strike}${type}.json.gz`);
+  // from memory, else the file (not kept in memory: a bulk download writes thousands of these)
+  function voRead(expiry, strike, type) {
+    const v = voMem.get(`${expiry}|${strike}|${type}`) || { spans: [], days: new Map() };
+    if (voMem.has(`${expiry}|${strike}|${type}`)) return v;
+    try {
+      const saved = readGz(voFile(expiry, strike, type));
+      v.spans = saved.spans || [];
+      for (const [d, b64] of Object.entries(saved.days || {})) {
+        const buf = Buffer.from(b64, 'base64');
+        v.days.set(d, new Int32Array(buf.buffer, buf.byteOffset, buf.length / 4).slice());
+      }
+    } catch {
+      /* none yet */
+    }
+    return v;
+  }
+  // read and kept in memory (the Builder reads the same contracts again as the replay moves on)
+  function voLoad(expiry, strike, type) {
+    const id = `${expiry}|${strike}|${type}`;
+    const v = voRead(expiry, strike, type);
+    voMem.delete(id);
+    voMem.set(id, v);
+    while (voMem.size > 600) voMem.delete(voMem.keys().next().value);
+    return v;
+  }
+  // what was fetched over [from, to] joins the file (days without a candle are known empty from the span)
+  function voAdd(expiry, strike, type, vo, from, to) {
+    const v = voRead(expiry, strike, type);
+    for (const [d, a] of vo) v.days.set(d, a);
+    v.spans.push([from, to]);
+    const days = {};
+    for (const [d, a] of v.days) days[d] = Buffer.from(a.buffer, a.byteOffset, a.byteLength).toString('base64');
+    try {
+      writeGz(voFile(expiry, strike, type), { spans: v.spans, days });
+    } catch (e) {
+      logError('bt-cache', e, voFile(expiry, strike, type));
+    }
+  }
+  // [volume, OI] per minute of a day (Int32Array(MPD*2), -1 = no candle that minute), or null when it never traded
+  // that day; fetched from Upstox when the cache does not know that day yet.
+  async function optionVo(expiry, strike, type, day) {
+    const has = (v) => v.spans.some(([a, b]) => a <= day && day <= b);
+    let v = voLoad(expiry, strike, type);
+    if (!has(v))
+      await once(`vo|${expiry}|${strike}|${type}|${day}`, async () => {
+        if (has(voLoad(expiry, strike, type))) return;
+        const key = (await contracts(expiry)).keys.get(strike)?.[type];
+        if (!key) throw new Error(`No ${strike} ${type} contract for expiry ${expiry}`);
+        const to = addDays(day, CHUNK_DAYS) < expiry ? addDays(day, CHUNK_DAYS) : expiry;
+        voAdd(expiry, strike, type, (await fetchCandles(key, day, to)).vo, day, to);
+      });
+    v = voLoad(expiry, strike, type);
+    return v.days.get(day) || null;
   }
 
   // Candles of one contract, covering at least [needFrom, expiry].
@@ -339,7 +405,8 @@ function createData({ getToken, upstox = createUpstox({ getToken }), cacheDir, l
       if (!key) throw new Error(`No ${strike} ${type} contract for expiry ${expiry}`);
       const want = needFrom < addDays(expiry, -LOOKBACK_DAYS) ? needFrom : addDays(expiry, -LOOKBACK_DAYS);
       const fetchTo = c ? addDays(c.from, -1) : expiry;
-      const raw = await fetchCandles(key, want, fetchTo);
+      const { raw, vo } = await fetchCandles(key, want, fetchTo);
+      voAdd(expiry, strike, type, vo, want, fetchTo);
       if (c) for (const [d, a] of c.raw) raw.set(d, a);
       c = { from: want, to: expiry, raw };
       writeGz(optFile(expiry, strike, type), encode(c));
@@ -474,7 +541,9 @@ function createData({ getToken, upstox = createUpstox({ getToken }), cacheDir, l
   function clearCache(what) {
     if (what === 'options' || what === 'all') {
       fs.rmSync(path.join(cacheDir, 'opt'), { recursive: true, force: true });
+      fs.rmSync(path.join(cacheDir, 'vo'), { recursive: true, force: true });
       optMem.clear();
+      voMem.clear();
     }
     if (what === 'index' || what === 'all') {
       fs.rmSync(path.join(cacheDir, 'index'), { recursive: true, force: true });
@@ -499,6 +568,7 @@ function createData({ getToken, upstox = createUpstox({ getToken }), cacheDir, l
     optionDay,
     optionCached,
     optionRaw,
+    optionVo,
     optionExpiries,
     optionFiles,
     optionRequests,

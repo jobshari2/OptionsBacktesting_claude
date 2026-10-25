@@ -651,6 +651,7 @@
             },
           },
           plugins: {
+            payZoom: { on: true }, // zoom / pan within the moves the server sends (bt-common.js)
             legend: { position: 'top', align: 'end', labels: { filter: (l) => l.datasetIndex < 3 } },
             tooltip: {
               filter: (c) => c.datasetIndex < 2,

@@ -4,6 +4,14 @@
 .chart-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 10px 14px 0; flex-wrap: wrap; }
 .chart-head h3 { margin: 0; font-size: 13px; }
 .chart-box { position: relative; min-height: 0; padding: 6px 12px 10px; }
+/* payoff zoom (bt-common.js payZoom): + / − / ⟲ in the chart's bottom-left corner, faint until the chart is hovered */
+.pz-ctl { position: absolute; left: 4px; bottom: 4px; z-index: 2; display: flex; gap: 2px; opacity: .45; transition: opacity .15s; }
+:hover > .pz-ctl, .pz-ctl.zoomed, .pz-ctl:focus-within { opacity: 1; }
+@media (hover: none) { .pz-ctl { opacity: .8; } }
+.pz-ctl button { width: 20px; height: 20px; padding: 0; border: 1px solid var(--line); border-radius: 4px; background: var(--panel-2); color: var(--text); font: 600 13px/1 system-ui, sans-serif; cursor: pointer; }
+.pz-ctl button:hover { border-color: var(--accent); }
+.pz-ctl.zoomed [data-pz="home"] { border-color: var(--accent); color: var(--accent); }
+.pz-ctl .pz-k { align-self: center; margin-left: 4px; font-size: 10px; color: var(--muted); }
 .btn-sm {
   background: var(--accent); color: #0b1220; border: 1px solid transparent; border-radius: 6px; padding: 4px 12px;
   font: inherit; font-weight: 600; cursor: pointer; white-space: nowrap;
@@ -543,6 +551,8 @@ body.nc-window { height: 100vh; padding: 8px; }
 .sb-chain-tbl th, .sb-chain-tbl td { padding: 2px 6px; font-size: 12px; height: 22px; }
 .sb-chain-tbl thead tr:nth-child(2) th { top: 22px; }
 .sb-ltp { font-weight: 600; }
+.sb-chain-tbl td.illiq { opacity: .45; } /* priced, but no liquidity (Liquid only) */
+#sbChainHead label.mini { margin-right: 8px; }
 .sb-bs { display: inline-flex; gap: 2px; }
 .sb-bs button { border: 1px solid var(--line); background: var(--panel-2); color: var(--muted); border-radius: 4px; font: inherit; font-size: 10.5px; font-weight: 700; padding: 0 5px; cursor: pointer; line-height: 16px; }
 .sb-bs button[data-rm]:hover { color: #fff; background: var(--down); border-color: var(--down); }
@@ -642,6 +652,8 @@ body.nc-window { height: 100vh; padding: 8px; }
 
 /* ---------- Strategies › Back spread (bs-view.js) ---------- */
 .bs-screen { grid-template-columns: minmax(0, 1fr); }
+/* the column scrolls as a whole: tall results must not squeeze the settings and selection panels */
+.bs-screen .bt-main > * { flex: none; }
 .bs-sel { padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; }
 .bs-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
 .bs-row .lbl { color: var(--muted); font-size: 12px; min-width: 96px; }
@@ -654,3 +666,19 @@ body.nc-window { height: 100vh; padding: 8px; }
 .bs-tbl .id-sort.on { color: var(--text); }
 .bs-eq { height: 220px; position: relative; }
 .bs-trades { max-height: 420px; overflow: auto; }
+/* payoff shown on hover over a result row or a trade */
+.bs-pay { position: fixed; z-index: 1000; pointer-events: none; width: 400px; max-width: calc(100vw - 8px); box-sizing: border-box; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35); font-size: 12px; display: flex; flex-direction: column; gap: 6px; }
+.bs-pay.hidden { display: none; }
+.bs-pay svg { display: block; max-width: 100%; height: auto; }
+.bs-pay-up { fill: color-mix(in srgb, var(--up) 22%, transparent); }
+.bs-pay-dn { fill: color-mix(in srgb, var(--down) 22%, transparent); }
+.bs-pay-line { fill: none; stroke: var(--text); stroke-width: 1.6; }
+.bs-pay-zero { stroke: var(--muted); stroke-width: 1; }
+.bs-pay-tick { stroke: var(--muted); }
+.bs-pay-lbl { fill: var(--muted); font-size: 10px; }
+line.bs-pay-in { stroke: var(--muted); stroke-dasharray: 3 3; }
+line.bs-pay-out { stroke: var(--accent); }
+text.bs-pay-out { fill: var(--accent); }
+.bs-pay-dot { fill: var(--accent); stroke: var(--panel); stroke-width: 1.5; }
+.bs-pay-kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; }
+.bs-pay-kv span { color: var(--muted); }

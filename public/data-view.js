@@ -47,7 +47,8 @@
       dates: `<span class="muted">expiring from</span><input type="date" id="syFrom" value="${form.from}" min="${exp[0]}" max="${last}"><span class="muted">to</span><input type="date" id="syTo" value="${form.to}" min="${exp[0]}" max="${last}">`,
       expiries: `<select id="syExpFrom">${opts(form.expFrom)}</select><span class="muted">→</span><select id="syExpTo">${opts(form.expTo)}</select>`,
     };
-    const s = sync?.settings || { band: 20, daysBefore: 5 };
+    const s = sync?.settings || { band: 20, daysBefore: 5, monthlyMonths: 0 };
+    const mm = s.monthlyMonths || 6;
     return `
       <section class="panel data-card wide" id="syCard">
         <h3>Download data <span class="muted small">option candles the cache does not have yet</span></h3>
@@ -73,6 +74,12 @@
         <div class="set-row">
           <span class="lbl">Strikes</span><span class="muted">±</span><input id="syBand" class="num xs" type="number" value="${s.band}" min="2" max="80"><span class="muted">around the Nifty range of the last</span>
           <input id="syDays" class="num xs" type="number" value="${s.daysBefore}" min="0" max="30"><span class="muted">trading days before each expiry (calls and puts)</span>
+        </div>
+        <div class="set-row" title="A monthly contract trades for months before its expiry. Ticked: every monthly expiry is downloaded from this many months before it (the strikes around Nifty's range over all of it), in this selection and in the automatic update. Weekly expiries keep the trading days above.">
+          <span class="lbl">Monthly</span>
+          <label class="chk"><input type="checkbox" id="syMoOn" ${s.monthlyMonths ? 'checked' : ''}> reach back</label>
+          <input id="syMoMonths" class="num xs" type="number" value="${mm}" min="1" max="12"><span class="muted">months before each monthly expiry</span>
+          <button class="btn-sm ghost" id="syMoAll" title="Pick every monthly expiry Upstox has, ${mm} months back each; the line below then shows how much that is before you download">All monthly expiries · ${mm} months back</button>
         </div>
         <div class="sy-sum" id="sySum">Checking what is missing…</div>
         <div class="set-row">
@@ -208,6 +215,8 @@
         cls = plan.missing ? cls : 'bad';
         html += ` <span class="err">${some(bad.length, 'expiry', 'expiries')} could not be checked (${esc(dayLabel(bad[0].expiry) + ': ' + bad[0].error)}).</span>`;
       }
+      if (plan.monthlyMonths && es.length)
+        html += ` <span class="muted">Monthly expiries from ${plan.monthlyMonths} month${plan.monthlyMonths === 1 ? '' : 's'} before each (Upstox has candles only for the days the contract traded).</span>`;
       if (plan.stale) html += ' <span class="muted">Upstox could not be reached, so this is checked against the saved list of expiries.</span>';
       const rows = new Map(es.map((e) => [e.expiry, e]));
       for (const c of $('dataBody').querySelectorAll('.cov-cell')) {
@@ -242,6 +251,10 @@
     if (sync) {
       set('syBand', sync.settings.band);
       set('syDays', sync.settings.daysBefore);
+      $('syMoOn').checked = sync.settings.monthlyMonths > 0;
+      if (sync.settings.monthlyMonths) set('syMoMonths', sync.settings.monthlyMonths);
+      const m = $('syMoMonths').value;
+      $('syMoAll').textContent = `All monthly expiries · ${m} month${m === '1' ? '' : 's'} back`;
     }
     $('syRun').disabled = running || a?.state === 'demo' || !plan?.missing;
     $('syRun').title = a?.state === 'demo' ? 'Not available in demo mode' : '';
@@ -358,6 +371,11 @@
       if (!req.error) send('/api/bt/sync/start', req);
     }
     if (t.id === 'syStop') send('/api/bt/sync/stop', {});
+    // every monthly expiry Upstox has, with the monthly depth switched on: picked, then checked (not started)
+    if (t.id === 'syMoAll') {
+      Object.assign(form, { scope: 'recent', months: 0, kind: 'monthly' });
+      if (await send('/api/bt/sync/settings', { monthlyMonths: $('syMoMonths').value })) picked(true);
+    }
     const what = t.dataset.clear;
     if (what && confirm(`Delete the cached ${what} data? It will be downloaded again when needed.`)) {
       await BT.api('/api/bt/cache/clear', { what });
@@ -375,6 +393,10 @@
     if (t.id === 'syAuto') send('/api/bt/sync/settings', { auto: t.checked });
     // The depth is saved on the server: the automatic update downloads with it too.
     if ((t.id === 'syBand' || t.id === 'syDays') && (await send('/api/bt/sync/settings', { band: $('syBand').value, daysBefore: $('syDays').value }))) check();
+    // the monthly depth: saved while ticked (unticked, the months box only sets what ticking it will use)
+    if (t.id === 'syMoOn' || (t.id === 'syMoMonths' && $('syMoOn').checked)) {
+      if (await send('/api/bt/sync/settings', { monthlyMonths: $('syMoOn').checked ? $('syMoMonths').value : 0 })) check();
+    } else if (t.id === 'syMoMonths') paintSync();
   });
 
   function init() {

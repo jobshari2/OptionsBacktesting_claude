@@ -74,9 +74,11 @@
       }, 0);
     const atH = (x) => valueAt(x, Th);
     const sd = spot * iv0 * Math.sqrt(Math.max(Th, 0.5 / 365));
-    const lo = spot - Math.max(4 * sd, spot * 0.03);
-    const hi = spot + Math.max(4 * sd, spot * 0.03);
-    const N = 241;
+    // the chart opens on home (±4σ, at least ±3%); the curves go 3× as far so it can zoom out (bt-common.js payZoom)
+    const home = [spot - Math.max(4 * sd, spot * 0.03), spot + Math.max(4 * sd, spot * 0.03)];
+    const lo = Math.max(spot * 0.4, spot - 3 * (spot - home[0]));
+    const hi = Math.min(spot * 1.6, spot + 3 * (home[1] - spot));
+    const N = 721;
     const xs = Array.from({ length: N }, (_, i) => lo + ((hi - lo) * i) / (N - 1));
     const exp = xs.map(atH);
     const t0 = xs.map((x) => valueAt(x, 0));
@@ -113,6 +115,7 @@
     return {
       legs: withG,
       spot,
+      home,
       xs,
       exp,
       t0,
@@ -286,9 +289,10 @@
             },
           },
           payv: { marks },
+          payZoom: { on: true, home: A.home },
         },
         scales: {
-          x: { type: 'linear', min: A.xs[0], max: A.xs[A.xs.length - 1], ticks: { callback: (v) => Math.round(v) } },
+          x: { type: 'linear', min: A.home[0], max: A.home[1], ticks: { callback: (v) => Math.round(v) } },
           y: { ticks: { callback: (v) => kinr(v) } },
         },
       },

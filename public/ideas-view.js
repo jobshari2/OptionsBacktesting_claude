@@ -53,6 +53,7 @@
     bsRank: 'loss',
     bsAll: false,
     bsForm: 'best',
+    bsMaxLoss: 0, // ₹ a back spread may lose at worst after charges, at the lots shown; 0 = any
     ...stored,
   };
   if (stored.basisV !== 2) Object.assign(C, { basis: 'ltp', basisV: 2 }); // Prices were bid / ask by default before: LTP now
@@ -459,8 +460,11 @@
     const peakOf = (I) => BS.pay(I.legs, I.g.m) * I.E.qty - I.E.charges;
     const lossOf = (I) => Math.max(1, -I.E.netMaxL);
     const key = { loss: (I) => I.E.netMaxL, pop: (I) => I.E.pop ?? 0, peak: (I) => peakOf(I) / lossOf(I) }[rank];
+    // max loss: trades whose worst case after charges (at the lots shown) loses more are left out
+    const maxLoss = Math.max(0, Number(C.bsMaxLoss) || 0);
     let fits = 0;
     let untradable = 0;
+    let overLoss = 0;
     const lists = [];
     for (const t of ['PE', 'CE']) {
       const word = t === 'CE' ? 'call' : 'put';
@@ -489,6 +493,7 @@
           if (!pick || I.E.netMaxL > pick.E.netMaxL) pick = I;
         }
         if (!pick) untradable++;
+        else if (maxLoss && -pick.E.netMaxL > maxLoss) overLoss++;
         else if (peakOf(pick) > 0) found.push(pick);
       }
       found.sort((a, b) => key(b) - key(a) || b.E.netMaxL - a.E.netMaxL);
@@ -538,6 +543,7 @@
         formSel,
         Object.entries(BS_FORMS).map(([k, l]) => [k, l]),
       )}</span>` +
+      `<label class="id-ctl" title="Only trades whose worst case at expiry, after charges, loses at most this much at the lots shown (${lots()} lot${lots() === 1 ? '' : 's'}). 0 = any.">Max loss ₹ <input class="num" type="number" min="0" step="500" id="idBsMaxLoss" value="${maxLoss}"></label>` +
       `<span class="id-ctl" title="The best ${BS_SHOW} of each side, or every trade that fits the window">Show ${seg('bsall', C.bsAll ? 1 : 0, [
         [0, `Best ${BS_SHOW}`],
         [1, 'All'],
@@ -546,10 +552,13 @@
     out.info =
       `${fits * forms.length} combinations fit ATM ±${win} (widths ${BS.WIDTHS.join(' / ')}, every centre from the money to the edge of the window, ${formSel === 'best' ? 'iron and single-type butterflies, the cheaper kept' : formSel === 'iron' ? 'iron flies only' : 'single-type butterflies only'})` +
       (untradable ? `; ${untradable} left out because a leg has no ${book ? `two-sided quote within ${QSPREAD} pts` : 'price'}` : '') +
+      (overLoss ? `; ${overLoss} left out because they could lose more than ${inr(maxLoss)}` : '') +
       `. ${book ? 'Priced at the touch: buy at the ask, sell at the bid.' : 'No bid / ask on this chain (market closed?): priced at the last trades, which may not be fillable.'} Ranked by ${BS.RANKS[rank][0].toLowerCase()}. Payoff shapes from the live prices, not a forecast: no proven edge.`;
     if (!out.length)
       out.empty = fits
-        ? `None of the ${fits * forms.length} combinations within ATM ±${win} is fully tradable and in profit at its centre right now: widen the window.`
+        ? overLoss
+          ? `None of the ${fits * forms.length} combinations within ATM ±${win} is tradable, in profit at its centre and within the max loss of ${inr(maxLoss)} right now: raise the max loss or widen the window.`
+          : `None of the ${fits * forms.length} combinations within ATM ±${win} is fully tradable and in profit at its centre right now: widen the window.`
         : `No back spread with its butterflies fits within ATM ±${win} on this chain: widen the window.`;
     return out;
   }
@@ -1039,15 +1048,16 @@
 
   // ---------- cards ----------
   // Payoff at expiry, green above zero and red below, with Nifty now marked. An idea built from parts (I.ghosts) also
-  // draws each part's payoff faintly, on the same scale.
+  // draws each part's payoff faintly, on the same scale. Zoomable (BT.svgZoom, per idea): the range drawn is the
+  // idea's view of its usual range, and the y scale fits what is in it.
   function spark(I, M) {
     const L = I.legs;
     const G = I.ghosts || [];
     const ks = [...L, ...G.flatMap((g) => g.legs)].map((l) => l.k);
     const span = Math.max(C.wing * 2, (Math.max(...ks) - Math.min(...ks)) * 0.9, M.step * 6);
-    const x0 = Math.min(Math.min(...ks), M.spot) - span / 2;
-    const x1 = Math.max(Math.max(...ks), M.spot) + span / 2;
-    const xs = [x0, ...[...new Set(ks)].sort((a, b) => a - b), x1];
+    const home = [Math.min(Math.min(...ks), M.spot) - span / 2, Math.max(Math.max(...ks), M.spot) + span / 2];
+    const [x0, x1] = BT.svgZoom.view(I.id, home);
+    const xs = [x0, ...[...new Set(ks)].filter((k) => k > x0 && k < x1).sort((a, b) => a - b), x1];
     const pts = xs.map((x) => [x, unitPay(L, x)]);
     const gpts = G.map((g) => xs.map((x) => [x, unitPay(g.legs, x)]));
     const ys = [...pts, ...gpts.flat()].map((p) => p[1]);
@@ -1064,14 +1074,14 @@
     const area = `${sx(x0).toFixed(1)},${zero} ${line} ${sx(x1).toFixed(1)},${zero}`;
     const cid = 'idc' + Math.abs([...I.id].reduce((h, c) => (h * 31 + c.charCodeAt(0)) | 0, 7));
     const spot = sx(M.spot).toFixed(1);
-    return `<svg class="id-spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-label="Payoff at expiry">
+    return `<div class="id-spark-box"><svg class="id-spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-label="Payoff at expiry" data-pzk="${esc(I.id)}" data-x0="${x0}" data-x1="${x1}">
       <defs><clipPath id="${cid}u"><rect x="0" y="0" width="${W}" height="${zero}"/></clipPath><clipPath id="${cid}d"><rect x="0" y="${zero}" width="${W}" height="${H}"/></clipPath></defs>
       <polygon points="${area}" class="up" clip-path="url(#${cid}u)"/><polygon points="${area}" class="dn" clip-path="url(#${cid}d)"/>
       <line x1="0" x2="${W}" y1="${zero}" y2="${zero}" class="zero"/>
-      <line x1="${spot}" x2="${spot}" y1="0" y2="${H}" class="spot"/>
+      ${M.spot > x0 && M.spot < x1 ? `<line x1="${spot}" x2="${spot}" y1="0" y2="${H}" class="spot"/>` : ''}
       ${gpts.map((g, i) => `<polyline points="${g.map(([x, y]) => `${sx(x).toFixed(1)},${sy(y).toFixed(1)}`).join(' ')}" class="ghost ${G[i].cls || ''}" vector-effect="non-scaling-stroke"/>`).join('')}
       <polyline points="${line}" class="pay" vector-effect="non-scaling-stroke"/>
-    </svg>`;
+    </svg>${BT.svgZoom.ctl(I.id)}</div>`;
   }
   const kpi = (label, value, cls = '', tip = '', box = '') =>
     `<div class="id-kpi ${box}"${tip ? ` title="${esc(tip)}"` : ''}><span>${label}</span><b class="${cls}">${value}</b></div>`;
@@ -1110,8 +1120,11 @@
   }
   const ACTIONS = `<button class="btn-sm kite" data-kite="1" title="Send the legs to Zerodha Kite as real orders (limit orders: buys first, sells only after the buys fill). Asks you to confirm first.">Trade with Zerodha Kite</button><button class="btn-sm ghost" data-open="1" title="Open the legs in the Builder as a live paper position at the prices shown, to review the payoff or adjust it before saving">Open in Builder</button><button class="btn-sm" data-save="1" title="Fill the legs as a live paper trade at the prices shown and save it (listed on the Trades tab and below)">＋ Save paper trade</button>`;
   const tagsHtml = (I) => I.tags.map(([t, c]) => `<span class="id-tag ${c}">${esc(t)}</span>`).join('');
+  // not while a box inside is being typed in (a section's own controls, e.g. the back spreads' max loss): the next
+  // redraw after it loses focus paints it
   const setHtml = (n, html) => {
-    if (n._html !== html) ((n.innerHTML = html), (n._html = html));
+    const typing = document.activeElement?.tagName === 'INPUT' && n.contains(document.activeElement);
+    if (n._html !== html && !typing) ((n.innerHTML = html), (n._html = html));
   };
   function cardShell(I) {
     const el = document.createElement('article');
@@ -1957,6 +1970,12 @@
       toggleSection(head.closest('.id-sec').dataset.sec);
     }
   });
+  // a card's payoff zoomed / panned: that picture painted again (the rest of the card follows on the next redraw)
+  BT.svgZoom.bind(root, (id) => {
+    const I = ideas.get(id);
+    const box = [...root.querySelectorAll('.id-card')].find((c) => c.dataset.id === id)?.querySelector('.id-spark-box');
+    if (I?.ok && !I.calendar && box) box.outerHTML = spark(I, I.M);
+  });
   root.addEventListener('click', (e) => {
     const b = e.target.closest('button');
     if (b?.dataset.chart && M) {
@@ -2025,6 +2044,7 @@
         wins: [BS.WINDOWS.includes(C.bsWin) ? C.bsWin : 10],
         rank: C.bsRank || 'loss',
         forms: C.bsForm === 'iron' || C.bsForm === 'same' ? [C.bsForm] : ['same', 'iron'],
+        maxLossPerUnit: (Number(C.bsMaxLoss) || 0) / lots(), // here it is for the lots shown, there per trade of its units
       });
       return window.app.setView('bs');
     } else if (b.dataset.basis) C.basis = b.dataset.basis;
@@ -2052,7 +2072,10 @@
     if (e.target.id === 'idLots') C.lots = Math.max(1, Math.floor(Number(e.target.value)) || 1);
     else if (e.target.id === 'idCap') C.capital = Math.max(0, Number(e.target.value) || 0);
     else if (e.target.id === 'idRisk') C.riskCap = Math.max(0.1, Number(e.target.value) || 2);
-    else return;
+    else if (e.target.id === 'idBsMaxLoss') {
+      C.bsMaxLoss = Math.max(0, Math.round(Number(e.target.value) || 0));
+      e.target.blur(); // the section is repainted with the new list (it is not while the box has the focus)
+    } else return;
     saveC();
     draw(true);
   });

@@ -97,6 +97,44 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
     };
   }
 
+  // Volume and open interest of strikes on a replay day, for the Builder's chain: per strike and side, per minute, the
+  // day's volume so far and the latest open interest (0 before the first candle). Downloads what the cache lacks
+  // (data.optionVo). A contract that cannot be read gives nulls.
+  async function builderVo(expiry, day, ks) {
+    const run = (a) => {
+      if (!a) return { v: new Array(MPD).fill(0), o: new Array(MPD).fill(0) };
+      const v = new Array(MPD);
+      const o = new Array(MPD);
+      let vol = 0;
+      let oi = 0;
+      for (let m = 0; m < MPD; m++) {
+        if (a[m * 2] > 0) vol += a[m * 2];
+        if (a[m * 2 + 1] > 0) oi = a[m * 2 + 1];
+        v[m] = vol;
+        o[m] = oi;
+      }
+      return { v, o };
+    };
+    const tasks = ks.flatMap((k) => ['CE', 'PE'].map((t) => [k, t]));
+    const res = new Map();
+    let next = 0;
+    await Promise.all(
+      Array.from({ length: 8 }, async () => {
+        while (next < tasks.length) {
+          const [k, t] = tasks[next++];
+          res.set(
+            k + t,
+            await data
+              .optionVo(expiry, k, t, day)
+              .then(run)
+              .catch(() => null),
+          );
+        }
+      }),
+    );
+    return { expiry, day, ks, ce: ks.map((k) => res.get(k + 'CE')), pe: ks.map((k) => res.get(k + 'PE')) };
+  }
+
   // ---------- Builder: saved trades ----------
   // Positions built in the Builder (live paper trades and replays), each with its whole Builder state (legs with
   // their entries and exits, log, P&L curve) so it can be loaded back, adjusted and saved again. bt-data/paper-trades.json.
@@ -749,7 +787,7 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
 
   // ---------- the Bi-weekly screen ----------
   const bw = createBiweekly({ data, ext, dir: path.dirname(storeFile), startJob, settle, breathe, findStrategy, library, logError });
-  const bsp = createBackspread({ data, ext, startJob, settle });
+  const bsp = createBackspread({ data, ext, startJob, settle, dir: path.dirname(storeFile), logError });
 
   // ---------- live deployment on the current chain ----------
   // The REST chain of a live expiry, at most 15 s old (fetched and cached by the server, shared with its screens).
@@ -922,6 +960,14 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
       if (p === '/api/bt/scan/tapes') return sendJson(res, 200, { days: tapeDir ? tapeDays(tapeDir) : [] }); // sessions with recorded quotes
       if (p === '/api/bt/scan' && req.method === 'POST') return sendJson(res, 200, await settle(startScan(await readJson(req)), 3000));
       if (p === '/api/sb/days') return sendJson(res, 200, await builderDays(url.searchParams.get('expiry'), url.searchParams.get('from')));
+      if (p === '/api/sb/vo') {
+        const ks = (url.searchParams.get('ks') || '')
+          .split(',')
+          .map(Number)
+          .filter((x) => x > 0)
+          .slice(0, 400);
+        return sendJson(res, 200, await builderVo(url.searchParams.get('expiry'), url.searchParams.get('day'), ks));
+      }
       if (p === '/api/sb/day') {
         const extra = (url.searchParams.get('extra') || '')
           .split(',')
@@ -930,7 +976,8 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
         return sendJson(
           res,
           200,
-          await builderDay(url.searchParams.get('expiry'), url.searchParams.get('day'), Math.min(30, Number(url.searchParams.get('width')) || 15), extra),
+          // width: strikes beyond the day's Nifty range each way; the Builder's "All strikes" sends more than any list has
+          await builderDay(url.searchParams.get('expiry'), url.searchParams.get('day'), Math.min(999, Number(url.searchParams.get('width')) || 15), extra),
         );
       }
       if (p === '/api/sb/trades' && req.method !== 'POST') return sendJson(res, 200, { trades: readTrades() });

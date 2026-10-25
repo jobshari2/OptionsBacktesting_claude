@@ -1,7 +1,8 @@
 // Keeps the historical-data cache complete. For a selection of expired expiries it works out which option candles
 // the cache does not hold yet (calls and puts of every strike within `band` strikes of the Nifty range over the
-// last `daysBefore` trading days before the expiry), downloads them as one job, and, while the server runs, does
-// that by itself for newly expired expiries. Steered from the Data screen (public/data-view.js).
+// last `daysBefore` trading days before the expiry — or, for a monthly expiry when `monthlyMonths` is set, over the
+// last `monthlyMonths` calendar months before it), downloads them as one job, and, while the server runs, does that
+// by itself for newly expired expiries. Steered from the Data screen (public/data-view.js).
 const fs = require('fs');
 const path = require('path');
 const { addDays } = require('./data');
@@ -13,7 +14,8 @@ const AUTO_TICK_MS = 20_000;
 const NEW_MAX = 8; // "new" never reaches back further than this many expiries
 const FAIL_HOLD_MS = 6 * 3600_000; // the automatic update leaves a contract Upstox refused alone for this long
 const FAIL_STREAK = 20; // downloads failing in a row before a job gives up (offline, logged out)
-const DEFAULTS = { auto: true, band: 20, daysBefore: 5 };
+const DEFAULTS = { auto: true, band: 20, daysBefore: 5, monthlyMonths: 0 };
+const MONTH_DAYS = 30.44; // a calendar month, in days
 
 const int = (v, lo, hi, d) => (v == null || v === '' || !Number.isFinite(Number(v)) ? d : Math.max(lo, Math.min(hi, Math.round(Number(v)))));
 const isDay = (s) => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
@@ -35,11 +37,13 @@ async function pool(items, n, fn) {
 
 // file: where the settings are kept (bt-data/data-sync.json).
 function createSync({ data, getToken, file, logError = () => {} }) {
-  // band / daysBefore are the depth of every download (the Data screen's two boxes); auto = the automatic update.
+  // band / daysBefore are the depth of every download (the Data screen's two boxes); monthlyMonths (0 = off) the
+  // deeper one of monthly expiries, in calendar months before the expiry; auto = the automatic update.
   const clean = (s, d) => ({
     auto: s?.auto == null ? d.auto : Boolean(s.auto),
     band: int(s?.band, 2, 80, d.band),
     daysBefore: int(s?.daysBefore, 0, 30, d.daysBefore),
+    monthlyMonths: int(s?.monthlyMonths, 0, 12, d.monthlyMonths),
   });
   let settings = { ...DEFAULTS };
   try {
@@ -90,15 +94,19 @@ function createSync({ data, getToken, file, logError = () => {} }) {
   // take; `tasks` lists the missing ones, newest expiry first. Reads (downloading what is not cached) the Nifty
   // candles and the contract lists it needs. skipFailed: leave out contracts whose download failed lately.
   async function plan(o, { skipFailed = false, say = () => {} } = {}) {
-    const { band, daysBefore } = clean(o, settings);
+    const { band, daysBefore, monthlyMonths } = clean(o, settings);
     const cal = await data.expiryCalendar();
     const list = select(cal, o);
-    const out = { band, daysBefore, stale: cal.stale, index: null, rows: [], tasks: [], contracts: 0, missing: 0, requests: 0 };
+    const out = { band, daysBefore, monthlyMonths, stale: cal.stale, index: null, rows: [], tasks: [], contracts: 0, missing: 0, requests: 0 };
     if (!list.length) return out;
     say('Loading Nifty history');
     const last = list[list.length - 1];
-    // A selection that reaches the newest expiry brings the index candles up to today as well.
-    out.index = [addDays(list[0], -60), last === cal.expired[cal.expired.length - 1] ? istToday() : last];
+    // a monthly expiry's window when it reaches back months: from this day (calendar), else null
+    const monthsFrom = (e) => (monthlyMonths && cal.monthly.has(e) ? addDays(e, -Math.round(monthlyMonths * MONTH_DAYS)) : null);
+    // Nifty candles from the earliest window on (60 days before an expiry covers `daysBefore` trading days); a
+    // selection that reaches the newest expiry brings them up to today as well.
+    const first = list.map((e) => monthsFrom(e) || addDays(e, -60)).sort()[0];
+    out.index = [first, last === cal.expired[cal.expired.length - 1] ? istToday() : last];
     const days = await data.loadIndex(...out.index);
     const at = new Map(days.map((d, i) => [d, i]));
     say('Checking what is missing');
@@ -108,7 +116,9 @@ function createSync({ data, getToken, file, logError = () => {} }) {
         await breathe();
         if (!at.has(e)) throw new Error('no Nifty candles for the expiry day');
         const info = await data.contracts(e);
-        const win = days.slice(Math.max(0, at.get(e) - daysBefore), at.get(e) + 1);
+        const from = monthsFrom(e);
+        const win = from ? days.slice(0, at.get(e) + 1).filter((d) => d >= from) : days.slice(Math.max(0, at.get(e) - daysBefore), at.get(e) + 1);
+        row.from = win[0];
         let lo = Infinity;
         let hi = -Infinity;
         for (const d of win) {
@@ -230,6 +240,7 @@ function createSync({ data, getToken, file, logError = () => {} }) {
         kind: o?.kind,
         band: o?.band,
         daysBefore: o?.daysBefore,
+        monthlyMonths: o?.monthlyMonths,
       },
     };
     job = j;

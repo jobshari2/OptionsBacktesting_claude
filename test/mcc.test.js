@@ -142,6 +142,11 @@ test('paper trade calendar: monthly expiry is the last of its month; weekdays le
   const ex = ['2026-10-27', '2026-11-03', '2026-11-09', '2026-11-17', '2026-11-23', '2026-12-01', '2026-12-29'];
   assert.equal(monthlyFor(ex, '2026-10-24'), '2026-10-27');
   assert.equal(monthlyFor(ex, '2026-10-27'), '2026-11-23'); // on the expiry day itself: next month's
+  // fewer than 15 calendar days to this month's expiry: next month's series (the user's rule)
+  assert.equal(monthlyFor(ex, '2026-10-24', 15), '2026-11-23', '3 days left');
+  assert.equal(monthlyFor(ex, '2026-10-12', 15), '2026-10-27', '15 days left: this month');
+  assert.equal(monthlyFor(ex, '2026-10-13', 15), '2026-11-23', '14 days left');
+  assert.equal(M.DEFAULTS.minDays, 15);
   assert.equal(weekdaysLeft('2026-10-23', '2026-10-27'), 2); // Mon, Tue
 });
 
@@ -169,4 +174,81 @@ test('model path: months enter afresh, end on the trend, and run with and withou
     true,
   );
   for (const m of r.withAdj) assert.ok(Math.abs(m.callPnl + m.putPnl - m.opt) <= 1);
+});
+
+// ---------- the ideal trade: a flat zone of params.target.amount ----------
+const { bsm } = require('../lib/pricing');
+// a monthly series: 20 trading days left, 13 % IV, Nifty 24,800
+const bsPrice = (S) => (type, K) => Math.max(0.05, bsm(S, K, 20 / 252, 0.13, type === 'CE'));
+test('ideal trade: strikes and gaps picked so the flat zone is the target, the downside never under it, the upside loss as far up as it can', () => {
+  const S = 24800;
+  const p = M.merge();
+  assert.deepEqual(p.target, { on: true, amount: 15000 }, 'on by default, ₹15,000');
+  const pick = M.pickLegs(S, p, strikes, bsPrice(S), 65);
+  const s = pick.shape;
+  assert.ok(s.hit, 'reachable');
+  assert.ok(Math.abs(s.flat - 15000) <= 750, `flat zone ${s.flat}`);
+  assert.ok(s.minDown >= s.flat - 1 && s.tail >= s.flat - 1, `downside ${s.minDown}, tail ${s.tail}, flat ${s.flat}`);
+  // the flat zone is the P&L at expiry with every option worthless: booked exactly as the backtest books it
+  const pos = M.newPosition('x', S);
+  const b = { slip: p.costs.slipPct / 100, brokerage: p.costs.brokerage, taxes: p.costs.taxes, lot: 65, day: null, cash: 0, costs: 0 };
+  assert.ok(M.openLegs(pos, pick.legs, bsPrice(S), b, {}));
+  assert.equal(Math.round(b.cash - b.costs), s.flat);
+  const k = Object.fromEntries(pick.legs.map((l) => [l.role, l.strike]));
+  assert.ok(k.peW < k.peS && k.peS < k.peL && k.peL <= 24800 && 24800 <= k.ceL && k.ceL < k.ceS, JSON.stringify(k));
+  // the month's parameters carry the shape, so its rolls keep it
+  assert.equal(pick.p.ce.buyOff, s.ce.buyOff);
+  assert.deepEqual(M.withShape(p, s).pe, { ...p.pe, ...s.pe });
+  assert.equal(M.withShape(p, null), p);
+  // every shape of the search booked exactly: none within 5 % with the downside never under its flat zone starts its
+  // upside loss higher
+  const intr = (l, x) => Math.max(0, l.type === 'CE' ? x - l.strike : l.strike - x);
+  const B = [0, 50, 100, 150, 200, 250, 300, 350, 400];
+  const G = [50, 100, 150, 200, 250, 300];
+  let bestUp = -Infinity;
+  for (const cb of B)
+    for (const cg of G)
+      for (const pb of B)
+        for (const pg of G)
+          for (const wg of G) {
+            const legs = M.legsAt(S, M.deepMerge(p, { ce: { buyOff: cb, sellGap: cg }, pe: { buyOff: pb, sellGap: pg, wingGap: wg } }), strikes);
+            const bk = { ...b, cash: 0, costs: 0 };
+            M.openLegs(M.newPosition('x', S), legs, bsPrice(S), bk, {});
+            const f = bk.cash - bk.costs;
+            if (Math.abs(f - 15000) > 750) continue;
+            const at = (x) => f + legs.reduce((sum, l) => sum + l.side * intr(l, x) * l.lots * 65, 0);
+            const lo = Math.min(...legs.map((l) => l.strike));
+            if (Math.min(at(lo - 50), ...legs.filter((l) => l.strike <= S).map((l) => at(l.strike))) < f - 1) continue;
+            const hi = Math.max(...legs.map((l) => l.strike));
+            bestUp = Math.max(bestUp, hi + at(hi) / 65); // the call ratio loses 1 lot a point above its top strike
+          }
+  assert.equal(s.upBE, Math.round(bestUp), 'the best shape of the whole search');
+  // target off: the fixed distances
+  const off = M.pickLegs(S, M.deepMerge(p, { target: { on: false } }), strikes, bsPrice(S), 65);
+  assert.equal(off.shape, null);
+  assert.deepEqual(
+    off.legs.map((l) => l.strike),
+    M.legsAt(S, p, strikes).map((l) => l.strike),
+  );
+  assert.match(M.shapeText(s, 15000), /flat zone [\d,]+ ₹ \(target 15,000\)/);
+});
+
+test('ideal trade: an amount out of reach takes the closest shape, and says so', () => {
+  const S = 24800;
+  const pick = M.pickLegs(S, M.deepMerge(M.merge(), { target: { amount: 400000 } }), strikes, bsPrice(S), 65);
+  assert.equal(pick.shape.hit, false);
+  assert.match(M.shapeText(pick.shape, 400000), /not reachable/);
+  assert.ok(pick.shape.minDown >= pick.shape.flat - 1, 'still the downside never under its flat zone');
+  // two days before expiry the premiums cannot make ₹15,000: the largest flat zone that keeps the shape
+  const late = (type, K) => Math.max(0.05, bsm(S, K, 2 / 252, 0.13, type === 'CE'));
+  const l = M.pickLegs(S, M.merge(), strikes, late, 65).shape;
+  assert.equal(l.hit, false);
+  assert.ok(l.flat > 0 && l.minDown >= l.flat - 1, JSON.stringify(l));
+  // no prices at all: the fixed distances
+  const none = M.pickLegs(S, M.merge(), strikes, () => null, 65);
+  assert.equal(none.shape, null);
+  assert.deepEqual(
+    none.legs.map((l) => l.strike),
+    M.legsAt(S, M.merge(), strikes).map((l) => l.strike),
+  );
 });

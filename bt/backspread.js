@@ -5,7 +5,10 @@
 // after the previous expiry of that cycle) or n trading days before it, 09:20, held to expiry (15:20). At every
 // entry the engine picks the best strikes inside the window from that minute's prices (strategy.pick,
 // lib/backspread.js), so each trade can use a different width and centre. Only options that traded in the 15 minutes
-// up to entry are picked, and every fill pays at least a tick of slippage. Nothing is saved: the result is the job's.
+// up to entry are picked, and every fill pays at least a tick of slippage. The last result is saved in
+// bt-data/backspread.json and shown again when the screen opens.
+const fs = require('fs');
+const path = require('path');
 const { runBacktest: runRaw, wholeStrategyStops } = require('./engine');
 const { computeStats } = require('./metrics');
 const BS = require('../lib/backspread');
@@ -25,10 +28,11 @@ const MIN_SLIP = 0.05;
 
 // The strategy of one selection; units = lots of the whole structure (sell 1 / buy 2 back spread + 2 butterflies).
 const entryName = (dte) => (dte === 'start' ? 'expiry start' : dte === 0 ? 'expiry day' : `${dte}d before expiry`);
-function strategyOf({ side, win, widths, form, rank, dte, expiry = 'weekly', units = 1, sl = 0 }) {
+// maxLoss: ₹ for the whole trade (all units) the picked strikes may lose at worst at expiry, costs included; 0 = any.
+function strategyOf({ side, win, widths, form, rank, dte, expiry = 'weekly', units = 1, sl = 0, maxLoss = 0 }) {
   return {
     name: `${SIDES[side]} + ${FORM[form]} · ATM ±${win} · ${expiry} · ${entryName(dte)}`,
-    desc: `Back spread + 2 butterflies, every leg within ATM ± ${win} strikes, the best strikes picked at entry by ${BS.RANKS[rank][0].toLowerCase()} (widths ${widths.join(' / ')}).`,
+    desc: `Back spread + 2 butterflies, every leg within ATM ± ${win} strikes, the best strikes picked at entry by ${BS.RANKS[rank][0].toLowerCase()} (widths ${widths.join(' / ')})${maxLoss ? `, only those that lose at most ₹${maxLoss} at worst` : ''}.`,
     category: 'Back spread',
     mode: 'positional',
     expiry,
@@ -42,7 +46,7 @@ function strategyOf({ side, win, widths, form, rank, dte, expiry = 'weekly', uni
       expiry: expiry === 'monthly' ? 'mcur' : 'cur',
       strike: { by: 'pick', role: r.role },
     })),
-    pick: { kind: 'backfly', side, win, widths, form, rank, fresh: FRESH },
+    pick: { kind: 'backfly', side, win, widths, form, rank, fresh: FRESH, maxLoss: maxLoss / units }, // the engine's limit is per unit
     risk: sl > 0 ? { unit: 'pct', sl } : {},
   };
 }
@@ -67,6 +71,7 @@ function cleanSel(b) {
     rank: BS.RANKS[b?.rank] ? b.rank : 'loss',
     units: Math.max(1, Math.min(20, Math.round(Number(b?.units) || 1))),
     sl: Math.max(0, Math.min(50, Number(b?.sl) || 0)),
+    maxLoss: Math.max(0, Math.round(Number(b?.maxLoss) || 0)),
   };
 }
 
@@ -93,6 +98,14 @@ function tradeRow(t, side) {
     net: Math.round(t.net),
     margin: t.margin ? Math.round(t.margin) : null,
     reason: t.reason,
+    // for the replay in the Builder (BTView.replay): the expiry, entry minute, costs and every execution at its fills
+    ref: t.ref,
+    entryDay: t.entryDay,
+    entryTime: t.entryTime,
+    exitDay: t.exitDay,
+    gross: t.gross,
+    costs: t.costs,
+    legs: t.legs.map(({ pnl, cost, entryPx, exitPx, ...x }) => x),
   };
 }
 // A trade leg's role: the leg definitions are BS.roles() in order, so the leg index gives it.
@@ -100,7 +113,31 @@ function pickRole(t, l) {
   return t.roles?.[l.leg] ?? null;
 }
 
-function createBackspread({ data, ext, startJob, settle }) {
+function createBackspread({ data, ext, startJob, settle, dir, logError }) {
+  const file = dir ? path.join(dir, 'backspread.json') : null;
+  let saved; // undefined = not read yet, null = none
+  function load() {
+    if (saved === undefined) {
+      try {
+        saved = file ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
+      } catch {
+        saved = null;
+      }
+    }
+    return saved;
+  }
+  function save(v) {
+    saved = v;
+    if (!file) return;
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(file + '.tmp', JSON.stringify(v));
+      fs.renameSync(file + '.tmp', file);
+    } catch (e) {
+      logError?.('bs-save', e);
+    }
+  }
+
   function startRun(b) {
     return startJob('bs-run', async (job) => {
       const sel = cleanSel(b.sel);
@@ -148,11 +185,14 @@ function createBackspread({ data, ext, startJob, settle }) {
         }
       }
       if (!rows.some((r) => !r.error)) throw new Error(rows.find((r) => r.error)?.error || 'Nothing could be backtested');
-      return { view: { at: Date.now(), sel, opts: optsN, rows, stopped: Boolean(job.stop) } };
+      const view = { at: Date.now(), sel, opts: optsN, rows, stopped: Boolean(job.stop) };
+      save(view);
+      return { view };
     });
   }
 
   async function handle(req, res, p, sendJson, readJson) {
+    if (p === '/api/bt/bs/state') return sendJson(res, 200, { state: load() });
     if (req.method !== 'POST') return sendJson(res, 404, { error: 'Not found' });
     const b = await readJson(req);
     if (p === '/api/bt/bs/run') return sendJson(res, 200, await settle(startRun(b)));

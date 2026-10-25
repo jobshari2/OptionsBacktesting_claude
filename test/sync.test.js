@@ -170,9 +170,34 @@ test('automatic update: downloads the new expiry by itself, once, and can be swi
 
   sync.saveSettings({ auto: false });
   assert.strictEqual(sync.status().auto.state, 'off');
-  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(dir, 'data-sync.json'), 'utf8')), { auto: false, band: 2, daysBefore: 5 });
-  sync.saveSettings({ band: 500, daysBefore: -3 });
-  assert.deepStrictEqual(sync.status().settings, { auto: false, band: 80, daysBefore: 0 });
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(dir, 'data-sync.json'), 'utf8')), { auto: false, band: 2, daysBefore: 5, monthlyMonths: 0 });
+  sync.saveSettings({ band: 500, daysBefore: -3, monthlyMonths: 40 });
+  assert.deepStrictEqual(sync.status().settings, { auto: false, band: 80, daysBefore: 0, monthlyMonths: 12 });
+});
+
+test('monthly expiries can reach back months before the expiry; weekly ones keep their trading days', async (t) => {
+  const { sync, calls } = setup(t);
+  sync.saveSettings({ monthlyMonths: 6 });
+  const firstWeekday = (d) => (weekday(d) % 6 ? d : firstWeekday(addDays(d, 1)));
+  const mo = await sync.plan({ scope: 'recent', months: 0, kind: 'monthly' });
+  assert.ok(mo.rows.length >= 2);
+  for (const r of mo.rows) assert.strictEqual(r.from, firstWeekday(addDays(r.expiry, -183)), `${r.expiry}: from 6 months before`);
+  // 184 days in chunks of 29: seven requests a contract (none of it cached)
+  assert.strictEqual(mo.requests, mo.missing * 7);
+  assert.ok(mo.index[0] <= addDays(mo.rows[0].expiry, -183), 'Nifty candles loaded for the whole window');
+  const wk = await sync.plan({ scope: 'recent', months: 0, kind: 'weekly' });
+  for (const r of wk.rows) assert.ok(r.from >= addDays(r.expiry, -9), `${r.expiry}: weekly keeps 5 trading days`);
+
+  // a download fetches the whole window, and then nothing is missing
+  const job = sync.start({ scope: 'range', from: mo.rows.at(-1).expiry, to: mo.rows.at(-1).expiry, kind: 'monthly' });
+  await job.promise;
+  assert.strictEqual(job.result.contracts, 10);
+  assert.strictEqual(calls.length, 70);
+  const after = await sync.plan({ scope: 'range', from: mo.rows.at(-1).expiry, to: mo.rows.at(-1).expiry, kind: 'monthly' });
+  assert.strictEqual(after.missing, 0);
+  // switched off again: the usual depth, already covered
+  sync.saveSettings({ monthlyMonths: 0 });
+  assert.strictEqual((await sync.plan({ scope: 'range', from: mo.rows.at(-1).expiry, to: mo.rows.at(-1).expiry })).missing, 0);
 });
 
 test('a download asked for on the Data screen takes over from the automatic one', async (t) => {

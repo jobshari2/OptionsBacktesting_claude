@@ -83,7 +83,7 @@
     }
     const stored = BT.store.get('mcc-params', {});
     params = { ...deep(meta.defaults), ...stored };
-    for (const k of ['ce', 'pe', 'adj', 'up', 'costs']) params[k] = { ...meta.defaults[k], ...(stored[k] || {}) };
+    for (const k of ['ce', 'pe', 'adj', 'up', 'costs', 'target']) params[k] = { ...meta.defaults[k], ...(stored[k] || {}) };
     params.lotSize = meta.lot;
     const [b, s] = await Promise.all([BT.api('/api/mcc/backtest').catch(() => ({})), BT.api('/api/mcc/study').catch(() => ({}))]);
     saved = { backtest: b.saved || null, study: s.saved || null };
@@ -161,8 +161,10 @@
   // with Nifty, ₹1 per 100 pts in the model) or null.
   const optAt = (legs, x, lot) => legs.reduce((s, l) => s + l.side * (Math.max(0, l.type === 'CE' ? x - l.strike : l.strike - x) - l.entry) * l.lots * lot, 0);
   function payoffChart(canvas, legs, lot, spot, etf, extraNote) {
-    const lo = Math.floor((spot * 0.9) / 50) * 50;
-    const hi = Math.ceil((spot * 1.1) / 50) * 50;
+    // opens on ±10 %; the curve goes to ±30 % to zoom out (bt-common.js payZoom)
+    const home = [Math.floor((spot * 0.9) / 50) * 50, Math.ceil((spot * 1.1) / 50) * 50];
+    const lo = Math.floor((spot * 0.7) / 50) * 50;
+    const hi = Math.ceil((spot * 1.3) / 50) * 50;
     const xs = [];
     for (let x = lo; x <= hi; x += 25) xs.push(x);
     const opt = xs.map((x) => ({ x, y: Math.round(optAt(legs, x, lot)) }));
@@ -198,16 +200,19 @@
         borderWidth: 2,
         pointRadius: 0,
       });
+    const yAll = sets.flatMap((s) => s.data.map((p) => p.y));
+    const [y0, y1] = [Math.min(...yAll), Math.max(...yAll)];
     sets.push({
       label: `Nifty ${num0(spot)}`,
       data: [
-        { x: spot, y: Math.min(...sets.flatMap((s) => s.data.map((p) => p.y))) },
-        { x: spot, y: Math.max(...sets.flatMap((s) => s.data.map((p) => p.y))) },
+        { x: spot, y: y0 - (y1 - y0) }, // past the y axis however it is zoomed (the line is clipped there)
+        { x: spot, y: y1 + (y1 - y0) },
       ],
       borderColor: '#9aa5b1',
       borderDash: [4, 4],
       borderWidth: 1,
       pointRadius: 0,
+      pz_skip: true,
     });
     BT.chart(canvas, {
       type: 'line',
@@ -216,10 +221,16 @@
         parsing: true,
         interaction: { mode: 'nearest', axis: 'x', intersect: false },
         scales: {
-          x: { type: 'linear', min: lo, max: hi, title: { display: true, text: 'Nifty at expiry' + (extraNote ? ' · ' + extraNote : '') } },
+          x: { type: 'linear', min: home[0], max: home[1], title: { display: true, text: 'Nifty at expiry' + (extraNote ? ' · ' + extraNote : '') } },
           y: { ticks: { callback: (v) => kinr(v) } },
         },
-        plugins: { tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${inrS(c.parsed.y)}`, title: (c) => 'Nifty ' + num0(c[0].parsed.x) } } },
+        plugins: {
+          payZoom: { on: true, home },
+          tooltip: {
+            filter: (i) => !i.dataset.pz_skip,
+            callbacks: { label: (c) => `${c.dataset.label}: ${inrS(c.parsed.y)}`, title: (c) => 'Nifty ' + num0(c[0].parsed.x) },
+          },
+        },
       },
     });
   }
@@ -399,6 +410,11 @@
         <table class="grid-tbl cc-rules"><tbody>
           <tr><th>Entry</th><td>First trading day of each monthly series (the day after the previous monthly expiry), 09:30. Monthly expiries only.</td></tr>
           <tr><th>Holding</th><td>NIFTYBEES worth 65 × Nifty. Tested both ways: <b>bought once and held</b>, and <b>sold at each expiry and rebought</b> at the next series start.</td></tr>
+          ${
+            params.target?.on
+              ? `<tr><th>Ideal trade</th><td>At every new series the strikes and gaps below are not fixed: they are picked on that day's prices so that the flat zone between the put butterfly and the call ratio (all options expiring worthless: the net credit after fills and costs) is <b>${inr(params.target.amount)}</b> within 5 %, the downside never goes under it, and the upside loss starts as far above Nifty as possible. The month's rolls keep the shape picked. The distances below apply when this is switched off (Backtest tab).</td></tr>`
+              : ''
+          }
           <tr><th>1 · Call ratio spread</th><td>Buy ${params.ce.buy} lot CE at ATM + ${params.ce.buyOff}, sell ${params.ce.sell} lots at ATM + ${params.ce.buyOff + params.ce.sellGap}. Above the sold strike the extra call is covered by the ETF, so the whole position stops gaining there.
             <br><b>Adjustment (market down):</b> close the sold calls and sell calls at a lower strike (200 pts over the new ATM), never under the bought call.</td></tr>
           <tr><th>2 · Put 2-3-1 butterfly</th><td>Buy ${params.pe.buy} lots PE at ATM − ${params.pe.buyOff}, sell ${params.pe.sell} at ATM − ${params.pe.buyOff + params.pe.sellGap}, buy ${params.pe.wing} at ATM − ${params.pe.buyOff + params.pe.sellGap + params.pe.wingGap}. You confirmed the far wing is bought, so the loss is capped.
@@ -507,8 +523,10 @@
     );
     $('mccAnZone').innerHTML = zoneText(src, x);
     if (full || !anim.chart) {
+      // opens on the slider's ±25 %; the curves go to ±40 % to zoom out (bt-common.js payZoom)
       const xs = [];
-      for (let m = -25; m <= 25; m += 0.5) xs.push(src.spot * (1 + m / 100));
+      for (let m = -40; m <= 40; m += 0.5) xs.push(src.spot * (1 + m / 100));
+      const home = [src.spot * 0.75, src.spot * 1.25];
       const line = (label, f, color, extra = {}) => ({
         label,
         data: xs.map((xx) => ({ x: xx, y: Math.round(f(parts(src, xx))) })),
@@ -532,10 +550,13 @@
         options: {
           interaction: { mode: 'nearest', axis: 'x', intersect: false },
           scales: {
-            x: { type: 'linear', min: xs[0], max: xs[xs.length - 1], title: { display: true, text: 'Nifty at expiry' } },
+            x: { type: 'linear', min: home[0], max: home[1], title: { display: true, text: 'Nifty at expiry' } },
             y: { ticks: { callback: (n) => kinr(n) } },
           },
-          plugins: { tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${inrS(c.parsed.y)}`, title: (c) => 'Nifty ' + num0(c[0].parsed.x) } } },
+          plugins: {
+            payZoom: { on: true, home },
+            tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${inrS(c.parsed.y)}`, title: (c) => 'Nifty ' + num0(c[0].parsed.x) } },
+          },
         },
       });
     }
@@ -939,6 +960,15 @@
               [false, 'may pass them'],
             ])}</div>
           <div class="set-row"><b></b><span class="lbl">none in the last</span>${inp('adj.lastDays', p.adj.lastDays, 40)}<span class="lbl">trading days · at most</span>${inp('adj.maxPerSide', p.adj.maxPerSide, 40)}<span class="lbl">rolls per side a month</span></div>
+          <div class="set-row" title="At every new series (backtest and paper trade) the strike placement and the gaps are picked so that the flat zone between the put butterfly and the call ratio — the P&amp;L at expiry with every option worthless, i.e. the net credit after fills and costs — is this amount (within 5 %), the downside never goes under it, and the upside loss starts as far above Nifty as possible. The month's rolls keep that shape. Off: the fixed distances in the two rows below."><b>Ideal trade</b>${sel(
+            'target.on',
+            p.target?.on ?? true,
+            [
+              [true, 'pick strikes and gaps for a flat zone of'],
+              [false, 'off: use the fixed distances below'],
+            ],
+          )}<span class="lbl">₹</span>${inp('target.amount', p.target?.amount ?? 15000, 70)}<span class="lbl">at expiry between the put butterfly and the call ratio</span></div>
+          <div class="set-row" title="When the paper trade opens a series (Start, or after an expiry) and this month's monthly expiry is fewer than this many calendar days away, it skips it and builds the strategy on next month's strikes. The backtest enters every series on its first trading day, always further out."><b>Paper series</b><span class="lbl">skip this month when fewer than</span>${inp('minDays', p.minDays ?? 15, 40)}<span class="lbl">calendar days are left to its expiry: use next month's</span></div>
           <div class="set-row"><b>Call ratio spread</b><span class="lbl">buy</span>${inp('ce.buy', p.ce.buy, 36)}<span class="lbl">lot at ATM +</span>${inp('ce.buyOff', p.ce.buyOff, 50)}<span class="lbl">· sell</span>${inp('ce.sell', p.ce.sell, 36)}<span class="lbl">lots</span>${inp('ce.sellGap', p.ce.sellGap, 50)}<span class="lbl">pts above (1 × 1 = no extra sold call)</span></div>
           <div class="set-row"><b>Put butterfly</b><span class="lbl">buy</span>${inp('pe.buy', p.pe.buy, 36)}<span class="lbl">at ATM −</span>${inp('pe.buyOff', p.pe.buyOff, 50)}<span class="lbl">· sell</span>${inp('pe.sell', p.pe.sell, 36)}${inp('pe.sellGap', p.pe.sellGap, 50)}<span class="lbl">pts under · buy</span>${inp('pe.wing', p.pe.wing, 36)}${inp('pe.wingGap', p.pe.wingGap, 50)}<span class="lbl">pts under the sold strike</span></div>
           <div class="set-row"><b>Up-market extra</b> ${sel('up.mode', p.up.mode, [
@@ -1284,15 +1314,16 @@
     if (!P) {
       el.innerHTML =
         head +
-        '<div class="panel empty"><h3>No paper trade running</h3><p>Start opens the position now on the current monthly series at the live prices, buys the NIFTYBEES (65 × Nifty), and then runs month after month: rolls at the check times, settlement at each monthly expiry and a new series at 09:30 on the next trading day.</p></div>';
+        `<div class="panel empty"><h3>No paper trade running</h3><p>Start opens the position now on the current monthly series (next month's when this one has fewer than ${params.minDays ?? 15} days left) at the live prices, buys the NIFTYBEES (65 × Nifty), and then runs month after month: rolls at the check times, settlement at each monthly expiry and a new series at 09:30 on the next trading day.</p></div>`;
     } else {
       const c = P.cycle;
       const done = P.months || [];
       const tot = (k) => done.reduce((s, m) => s + (m[k] || 0), 0);
+      const scenTop = el.querySelector('.mcc-scen')?.scrollTop; // the 100-point table keeps its scroll through the 30 s redraws
       el.innerHTML =
         head +
         (c
-          ? `<div class="panel cc-doc"><h3>${monthName(c.expiry)} series · expiry ${dayLabel(c.expiry)}</h3>
+          ? `<div class="panel cc-doc"><h3>${monthName(c.expiry)} series · expiry ${dayLabel(c.expiry)} <button class="btn-sm ghost" data-a="builder" title="Open this series' open option legs in the Builder as a live paper position at their paper entry prices: payoff on any date, Greeks, P&amp;L and adjustments. Options only (the Builder holds no NIFTYBEES); the paper trade itself carries on unchanged.">▶ Open in Builder</button></h3>
           <div class="kpis cc-kpis-main">
             <div class="kpi"><span class="k-l">Nifty</span><span class="k-v">${num0(c.spot)}</span><span class="muted small">entry ${num0(c.spot0)} · ${pct(((c.spot - c.spot0) / c.spot0) * 100)}</span></div>
             <div class="kpi"><span class="k-l">Call ratio spread</span><span class="k-v ${cls(c.callPnl)}">${inrS(c.callPnl)}</span><span class="muted small">at LTP, its costs included</span></div>
@@ -1318,6 +1349,7 @@
             <div class="muted small">Updated ${c.markAt ? new Date(c.markAt).toLocaleTimeString('en-IN') : '—'} · rolls this month: puts ${c.n.put}, calls ${c.n.call}${c.n.up ? `, calls up ${c.n.up}` : ''}</div></div>
             <div class="cc-pay"><div class="cc-pay-chart"><canvas id="mccPapPay"></canvas></div><div class="muted small">At expiry, entry premiums included.</div></div>
           </div>
+          ${c.legs.length && c.etf ? scenarioHtml(P, c, lot) : ''}
           <h4>Events</h4><table class="grid-tbl cc-ev"><tbody>${c.events.map((e) => `<tr><td>${dayLabel(e.day)} ${e.time}</td><td><span class="cc-kind">${KIND[e.kind] || e.kind}</span></td><td>${num0(e.spot)}</td><td class="cc-ev-text">${esc(e.text)}</td></tr>`).join('')}</tbody></table>
         </div>`
           : `<div class="panel empty"><h3>Between series</h3><p>The last series expired ${P.lastExpiry ? dayLabel(P.lastExpiry) : ''}. The next one opens at 09:30 on the next trading day.</p></div>`) +
@@ -1327,17 +1359,75 @@
             </tbody><tfoot><tr><th class="l">Total</th><td></td><td></td><th class="${cls(tot('callPnl'))}">${inrS(tot('callPnl'))}</th><th class="${cls(tot('putPnl'))}">${inrS(tot('putPnl'))}</th><th class="${cls(tot('opt'))}">${inrS(tot('opt'))}</th><th class="${cls(tot('etfOnce'))}">${inrS(tot('etfOnce'))}</th><th class="${cls(tot('withOnce'))}">${inrS(tot('withOnce'))}</th><th class="${cls(tot('withMonthly'))}">${inrS(tot('withMonthly'))}</th></tr></tfoot></table></div></div>`
           : '');
       if (c?.legs.length) payoffChart($('mccPapPay'), c.legs, lot, c.spot || c.spot0, { qty: P.etfOnce?.qty || 0, b0: c.etf.b0, s0: c.spot0 });
+      const scen = el.querySelector('.mcc-scen');
+      const now = scen?.querySelector('tr.sel');
+      if (scen) scen.scrollTop = scenTop ?? (now ? now.offsetTop - (scen.clientHeight - now.offsetHeight) / 2 : 0); // first time: Nifty now in the middle
     }
     el.querySelectorAll('[data-a]').forEach((b) => b.addEventListener('click', () => paperAction(b.dataset.a)));
+  }
+  // The paper series at its expiry with Nifty every 100 points from 2,000 below to 2,000 above now: NIFTYBEES (its price
+  // moving with Nifty from the live one) and the open option legs at intrinsic value, each structure's P&L as the
+  // paper counts it (legs closed by rolls + open legs from their entry − its costs) and the total. Before the costs of
+  // closing anything at expiry.
+  function scenarioHtml(P, c, lot) {
+    const intr = (l, x) => Math.max(0, l.type === 'CE' ? x - l.strike : l.strike - x);
+    const closed = (t) => c.closed.filter((x) => x.type === t).reduce((s, x) => s + x.pnl, 0);
+    const pnlOf = (t, x) =>
+      closed(t) + c.legs.filter((l) => l.type === t).reduce((s, l) => s + l.side * (intr(l, x) - l.entry) * l.lots * lot, 0) - (c.costsBy?.[t] || 0);
+    const qty = P.etfOnce?.qty || 0;
+    const spot = c.spot || c.spot0;
+    const beesNow = c.bees || spot / 100;
+    const base = Math.round(spot / 100) * 100;
+    const rows = [];
+    for (let i = 20; i >= -20; i--) {
+      const x = base + i * 100;
+      const bees = (beesNow * x) / spot;
+      const etf = qty * (bees - c.etf.onceFrom) - (c.etf.firstOnce ? P.etfOnce.cost : 0);
+      const value = c.legs.reduce((s, l) => s + l.side * intr(l, x) * l.lots * lot, 0);
+      const call = pnlOf('CE', x);
+      const put = pnlOf('PE', x);
+      rows.push({ x, bees, beesValue: qty * bees, etf, value, call, put, opt: call + put, total: etf + call + put });
+    }
+    const td = (v) => `<td class="${cls(v)}">${inrS(Math.round(v))}</td>`;
+    const move = (x) => (x === base ? 'now' : `${x > spot ? '+' : '−'}${num0(Math.abs(x - spot))} · ${pct(((x - spot) / spot) * 100)}`);
+    return `<h4>If Nifty is here at expiry <span class="muted small">every 100 points, 2,000 either way · NIFTYBEES ${num0(qty)} units moving with Nifty from ₹${beesNow.toFixed(2)} · options at intrinsic value · P&amp;L as above (rolls and costs so far included), before the costs of closing at expiry</span></h4>
+      <div class="tbl-wrap mcc-scen"><table class="grid-tbl"><thead><tr><th>Nifty</th><th class="l">Move</th><th>NIFTYBEES price</th><th>NIFTYBEES value</th><th title="NIFTYBEES units bought, at ₹${c.etf.onceFrom.toFixed(2)} each (the P&amp;L is against that price)">NIFTYBEES bought</th><th>NIFTYBEES P&amp;L</th><th>Options value</th><th>Call ratio P&amp;L</th><th>Put butterfly P&amp;L</th><th>Options P&amp;L</th><th>Combined P&amp;L</th></tr></thead><tbody>
+      ${rows
+        .map(
+          (r) =>
+            `<tr class="${r.x === base ? 'sel' : ''}"><td><b>${num0(r.x)}</b></td><td class="l muted small">${move(r.x)}</td><td>₹${r.bees.toFixed(2)}</td><td>${inr(Math.round(r.beesValue))}</td><td>${num0(qty)}</td>${td(r.etf)}<td class="${cls(r.value)}">${inrS(Math.round(r.value))}</td>${td(r.call)}${td(r.put)}${td(r.opt)}<td class="${cls(r.total)}"><b>${inrS(Math.round(r.total))}</b></td></tr>`,
+        )
+        .join('')}
+      </tbody></table></div>`;
   }
   function settingsLine(p) {
     const a = p.adj.on
       ? `${p.adj.legs === 'all' ? 'whole spread' : 'sold strikes'} rolled at ${p.adj.trigger === 'decay' ? p.adj.decayPct + ' % premium' : p.adj.movePct + ' % move'}, ${p.adj.check === 'hourly' ? 'hourly' : '15:00'} checks`
       : 'no adjustments';
     const u = { none: '', roll: ', call ratio rolled up', buyBack: ', sold call bought back', hedge: ', hedge call' }[p.up.mode] || '';
-    return `${a}${u}, NIFTYBEES ${p.etf === 'real' ? 'live price' : '= Nifty ÷ 100'}`;
+    const t =
+      (p.target?.on ? `ideal trade: flat zone ₹${Number(p.target.amount).toLocaleString('en-IN')}, ` : 'fixed strike distances, ') +
+      `next month's series when this one has under ${p.minDays ?? 15} days left, `;
+    return `${t}${a}${u}, NIFTYBEES ${p.etf === 'real' ? 'live price' : '= Nifty ÷ 100'}`;
+  }
+  // The series' open legs in the Builder as a live paper position at their paper entry prices (as Covered call's paper
+  // trade and Live Ideas do): the Builder follows them on the live chain with P&L, payoff on any date and adjustments.
+  // Options only: the Builder holds no NIFTYBEES.
+  function toBuilder() {
+    const P = paper?.paper;
+    const c = P?.cycle;
+    if (!c?.legs.length) return;
+    const sb = BT.store.get('sb', {});
+    if (sb.legs?.some((l) => l.open) && !sb.tradeId && !confirm('The Builder holds a position that is not saved. Replace it with this one?')) return;
+    BT.emit('open-builder', {
+      src: 'live',
+      expiry: c.expiry,
+      note: `Modified covered call paper trade · ${monthName(c.expiry)} series (options only; ${num0(P.etfOnce?.qty)} NIFTYBEES not in the Builder)`,
+      legs: c.legs.map((l) => ({ action: l.side > 0 ? 'B' : 'S', type: l.type, strike: l.strike, expiry: c.expiry, lots: l.lots, px: l.entry })),
+    });
   }
   async function paperAction(a) {
+    if (a === 'builder') return toBuilder();
     const msg = $('mccPapMsg');
     try {
       if (a === 'reset' && !confirm('Delete the Modified covered call paper trade and its history?')) return;

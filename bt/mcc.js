@@ -15,6 +15,9 @@ const DEFAULTS = {
   lotSize: 65,
   lots: 1, // multiplier on every quantity below (and on the ETF)
   entryMin: 15, // minutes after 09:15 on the series' first day (09:30)
+  // paper trade: a series opened with fewer calendar days than this to its expiry is skipped for next month's (the
+  // user's rule). The backtest enters every series on its first day, always further out than this.
+  minDays: 15,
   ce: { buyOff: 100, sellGap: 100, buy: 1, sell: 2 },
   pe: { buyOff: 100, sellGap: 200, wingGap: 100, buy: 2, sell: 3, wing: 1 },
   adj: {
@@ -38,7 +41,15 @@ const DEFAULTS = {
   // like one lot of Nifty); 'real' = its recorded prices (bt-cache, from Sep 2024)
   etf: 'model',
   costs: { slipPct: 0.5, brokerage: 20, taxes: true, etfSlipPct: 0.05 },
+  // The ideal trade (the user's rule): at every new series the strike placement and gaps are picked so that the flat
+  // zone between the put butterfly and the call ratio — every option expiring worthless, i.e. the net credit after
+  // fills and costs — is `amount` ₹ (within TARGET_TOL), the downside never goes under it (else at least never under
+  // 0), and the upside loss starts as far above Nifty as it can. Off: the fixed distances above.
+  target: { on: true, amount: 15000 },
 };
+// The shapes the ideal-trade search tries (points), and how close to the amount its flat zone must come.
+const SHAPES = { buyOff: [0, 50, 100, 150, 200, 250, 300, 350, 400], gap: [50, 100, 150, 200, 250, 300] };
+const TARGET_TOL = 0.05;
 
 const CHECK_MINS = { close: [345], hourly: [75, 135, 195, 255, 315, 345] };
 const STEP = 50;
@@ -51,7 +62,7 @@ const timeOf = (m) => {
 };
 const merge = (p = {}) => {
   const out = { ...DEFAULTS, ...p };
-  for (const k of ['ce', 'pe', 'adj', 'up', 'costs']) out[k] = { ...DEFAULTS[k], ...(p[k] || {}) };
+  for (const k of ['ce', 'pe', 'adj', 'up', 'costs', 'target']) out[k] = { ...DEFAULTS[k], ...(p[k] || {}) };
   return out;
 };
 
@@ -82,6 +93,107 @@ function legsAt(S, p, strikes) {
     .filter((l) => l.lots > 0)
     .map((l) => ({ ...l, type: typeOf(l.role), side: sideOf(l.role) }));
 }
+
+// How far the options' expiry payoff falls under the flat zone from Nifty S down (₹, 0 = never under it): the legs'
+// intrinsic values, so it does not depend on the prices. The payoff bends only at strikes.
+function dipOf(legs, S, lot) {
+  const intr = (l, x) => Math.max(0, l.type === 'CE' ? x - l.strike : l.strike - x);
+  const at = (x) => legs.reduce((s, l) => s + l.side * intr(l, x) * l.lots * lot, 0);
+  const lo = Math.min(...legs.map((l) => l.strike));
+  return Math.min(0, at(lo - STEP), ...legs.filter((l) => l.strike <= S).map((l) => at(l.strike)));
+}
+
+// Strikes the ideal-trade search may price, for Nifty at S: [{ type, strike }].
+function shapeStrikes(S, strikes) {
+  const A = atmOf(S);
+  const top = Math.max(...SHAPES.buyOff) + Math.max(...SHAPES.gap);
+  const out = [];
+  for (let k = A; k <= A + top; k += STEP) out.push({ type: 'CE', strike: snap(strikes, k) });
+  for (let k = A; k >= A - top - Math.max(...SHAPES.gap); k -= STEP) out.push({ type: 'PE', strike: snap(strikes, k) });
+  return out;
+}
+
+// The opening legs and the parameters the month runs with (its rolls keep the shape), for Nifty at S and prices from
+// price(type, strike). Without the target, or when no shape can be priced: legsAt with p as it is.
+//   { legs, p, shape: null | { ce: {buyOff, sellGap}, pe: {buyOff, sellGap, wingGap}, flat, tail, upBE, hit } }
+// flat: the ₹ P&L at expiry with every option worthless (net credit after fills and costs); tail: with Nifty under
+// every strike; minDown: the lowest from Nifty now down; upBE: the Nifty level above which the call ratio makes the
+// whole options position lose; hit: a shape within the tolerance was found.
+function pickLegs(S, p, strikes, price, lot) {
+  if (!p.target?.on || !(p.target.amount > 0)) return { legs: legsAt(S, p, strikes), p, shape: null };
+  const px = new Map();
+  const pr = (type, k) => {
+    const id = k + type;
+    if (!px.has(id)) px.set(id, price(type, k));
+    return px.get(id);
+  };
+  const slip = p.costs.slipPct / 100;
+  const rough = []; // credit with slippage and brokerage only: fast, then the best are booked exactly
+  for (const cb of SHAPES.buyOff)
+    for (const cg of SHAPES.gap)
+      for (const pb of SHAPES.buyOff)
+        for (const pg of SHAPES.gap)
+          for (const wg of SHAPES.gap) {
+            const q = { ...p, ce: { ...p.ce, buyOff: cb, sellGap: cg }, pe: { ...p.pe, buyOff: pb, sellGap: pg, wingGap: wg } };
+            const legs = legsAt(S, q, strikes);
+            const k = Object.fromEntries(legs.map((l) => [l.role, l.strike]));
+            if (k.ceL >= k.ceS || k.peS >= k.peL || k.peW >= k.peS) continue; // strikes ran off the list
+            let cash = 0;
+            let ok = true;
+            for (const l of legs) {
+              const v = pr(l.type, l.strike);
+              if (!(v > 0)) ok = false;
+              else cash += (l.side > 0 ? -v * (1 + slip) : v * (1 - slip)) * l.lots * lot;
+            }
+            if (ok) rough.push({ q, legs, flat: cash - legs.length * p.costs.brokerage, dip: dipOf(legs, S, lot) });
+          }
+  if (!rough.length) return { legs: legsAt(S, p, strikes), p, shape: null };
+  const amount = p.target.amount;
+  const off = (c) => Math.abs(c.flat - amount);
+  rough.sort((a, b) => off(a) - off(b));
+  const intr = (l, x) => Math.max(0, l.type === 'CE' ? x - l.strike : l.strike - x);
+  // booked exactly (taxes too), with the figures the choice and the screen use
+  const exact = (c) => {
+    const book = { slip, brokerage: p.costs.brokerage, taxes: p.costs.taxes, lot, day: null, cash: 0, costs: 0 };
+    openLegs(newPosition('pick', S), c.legs, pr, book, {});
+    const flat = book.cash - book.costs;
+    const at = (x) => flat + c.legs.reduce((s, l) => s + l.side * intr(l, x) * l.lots * lot, 0);
+    const lo = Math.min(...c.legs.map((l) => l.strike));
+    const hi = Math.max(...c.legs.map((l) => l.strike));
+    const slope = c.legs.filter((l) => l.type === 'CE').reduce((s, l) => s + l.side * l.lots * lot, 0); // ₹ per point above hi
+    return { ...c, flat, tail: at(lo - STEP), minDown: flat + c.dip, upBE: slope < 0 ? hi + at(hi) / -slope : Infinity };
+  };
+  const highest = (list) => list.reduce((a, b) => (b.upBE > a.upBE ? b : a));
+  const closest = (list) => list.reduce((a, b) => (off(b) < off(a) || (off(b) === off(a) && b.upBE > a.upBE) ? b : a));
+  // the downside never under the flat zone (the user's picture), else at least never a loss
+  const keepsUp = (c) => c.dip >= -1;
+  const noLoss = (c) => c.flat + c.dip >= 0;
+  // within the tolerance: of the shapes with the best downside, the one whose upside loss starts highest
+  const near = rough
+    .filter((c) => off(c) <= amount * (TARGET_TOL + 0.05))
+    .slice(0, 4000)
+    .map(exact)
+    .filter((c) => off(c) <= amount * TARGET_TOL);
+  const pool = [near.filter(keepsUp), near.filter(noLoss)].find((x) => x.length);
+  // out of reach: the closest flat zone, still with the best downside the shapes allow
+  const best = pool ? highest(pool) : closest(([rough.filter(keepsUp), rough.filter(noLoss)].find((x) => x.length) || rough).slice(0, 40).map(exact));
+  const shape = {
+    ce: { buyOff: best.q.ce.buyOff, sellGap: best.q.ce.sellGap },
+    pe: { buyOff: best.q.pe.buyOff, sellGap: best.q.pe.sellGap, wingGap: best.q.pe.wingGap },
+    flat: Math.round(best.flat),
+    tail: Math.round(best.tail),
+    minDown: Math.round(best.minDown),
+    upBE: Math.round(best.upBE),
+    hit: Boolean(pool),
+  };
+  return { legs: best.legs, p: best.q, shape };
+}
+// p with a picked shape's distances (what a month's rolls use); p itself without one
+const withShape = (p, s) => (s ? { ...p, ce: { ...p.ce, buyOff: s.ce.buyOff, sellGap: s.ce.sellGap }, pe: { ...p.pe, ...s.pe } } : p);
+const shapeText = (s, amount) =>
+  s
+    ? `Ideal trade: flat zone ${Math.round(s.flat).toLocaleString('en-IN')} ₹ (target ${amount.toLocaleString('en-IN')}${s.hit ? '' : ', not reachable within 5 %: closest'}), calls ATM+${s.ce.buyOff}/+${s.ce.buyOff + s.ce.sellGap}, puts ATM−${s.pe.buyOff}/−${s.pe.buyOff + s.pe.sellGap}/−${s.pe.buyOff + s.pe.sellGap + s.pe.wingGap}, loses above ${s.upBE.toLocaleString('en-IN')}`
+    : '';
 
 // A new position (no fills yet): what decide() and apply() work on.
 function newPosition(expiry, S) {
@@ -369,7 +481,11 @@ async function runMonth(data, p, { P, E }, once) {
   const book = { slip: p.costs.slipPct / 100, brokerage: p.costs.brokerage, taxes: p.costs.taxes, lot, day: d0, cash: 0, costs: 0, costsBy: { CE: 0, PE: 0 } };
   const S0 = spotAt(d0, p.entryMin);
   const pos = newPosition(E, S0);
-  const legs = legsAt(S0, p, strikes);
+  // the ideal trade prices every strike its search may use; the month then rolls with the shape it picked
+  if (p.target?.on) await Promise.all(shapeStrikes(S0, strikes).map((x) => load(x.type, x.strike)));
+  const pick = pickLegs(S0, p, strikes, priceOn(d0, p.entryMin), lot);
+  const legs = pick.legs;
+  p = pick.p;
   await Promise.all(legs.map((l) => load(l.type, l.strike)));
   const at0 = { day: d0, time: timeOf(p.entryMin) };
   if (!openLegs(pos, legs, priceOn(d0, p.entryMin), book, at0)) {
@@ -377,8 +493,13 @@ async function runMonth(data, p, { P, E }, once) {
     month.skip = 'No price at entry for ' + miss.join(', ');
     return { month };
   }
-  month.entry = { ...at0, spot: S0, legs: pos.legs.map((l) => ({ ...l })) };
-  month.events.push({ ...at0, kind: 'entry', spot: S0, text: 'Opened ' + pos.legs.map(legText).join(' · ') });
+  month.entry = { ...at0, spot: S0, legs: pos.legs.map((l) => ({ ...l })), shape: pick.shape };
+  month.events.push({
+    ...at0,
+    kind: 'entry',
+    spot: S0,
+    text: 'Opened ' + pos.legs.map(legText).join(' · ') + (pick.shape ? ' · ' + shapeText(pick.shape, p.target.amount) : ''),
+  });
 
   // the ETF
   const b0 = beesAt(d0, p.entryMin) || (once ? once.last * (S0 / once.lastSpot) : null);
@@ -626,12 +747,13 @@ function runMccModel(params = {}, opts = {}) {
         costsBy: { CE: 0, PE: 0 },
       };
       const pos = newPosition('model', S0);
-      openLegs(pos, legsAt(S0, p, strikes), priceAt(S0, MODEL_DAYS), book, { day: 0 });
+      const pick = pickLegs(S0, p, strikes, priceAt(S0, MODEL_DAYS), lot); // the month rolls with the shape it picked
+      openLegs(pos, pick.legs, priceAt(S0, MODEL_DAYS), book, { day: 0 });
       const events = [];
       for (let d = 1; d < MODEL_DAYS; d++) {
         const S = days[d];
         const px = priceAt(S, MODEL_DAYS - d);
-        for (const a of decide(pos, S, { daysLeft: MODEL_DAYS - d, strikes, px: (l) => px(l.type, l.strike) }, p))
+        for (const a of decide(pos, S, { daysLeft: MODEL_DAYS - d, strikes, px: (l) => px(l.type, l.strike) }, pick.p))
           if (apply(pos, a, px, book, { day: d })) events.push({ day: d, kind: a.kind, spot: S, text: a.reason });
       }
       const SE = days[MODEL_DAYS];
@@ -660,6 +782,9 @@ module.exports = {
   atmOf,
   snap,
   legsAt,
+  pickLegs,
+  shapeText,
+  withShape,
   newPosition,
   decide,
   needs,

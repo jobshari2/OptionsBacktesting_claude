@@ -36,7 +36,8 @@
 // back spread + 2 butterflies whose strikes all lie within ATM ± win strikes is priced at that minute's open, and the
 // best by rank (smallest worst-case loss after slippage and brokerage, chance of profit, or peak ÷ loss) gives the
 // strikes of the legs whose strike is { by: 'pick', role } (m, lo, hi, k1, k2). Only candidates whose every option
-// really traded in the pick.fresh minutes up to entry (default 15) count. None: no trade.
+// really traded in the pick.fresh minutes up to entry (default 15) count, and with pick.maxLoss (₹ per unit) only those
+// whose worst case at expiry, costs included, loses no more than that. None: no trade.
 //
 // Adjustments on market movement (strategy.adjust), checked on every candle close like the overall MTM rules:
 //  - on 'move': Nifty has moved `value` points (unit 'pts') or % (unit 'pct') from the position's centre (spot at entry,
@@ -132,6 +133,7 @@ function normPick(p) {
     form: p.form === 'iron' ? 'iron' : 'same',
     rank: BS.RANKS[p.rank] ? p.rank : 'loss',
     fresh: Math.max(0, Math.min(120, Math.round(Number(p.fresh ?? 15) || 0))), // minutes; 0 = no check
+    maxLoss: Math.max(0, Number(p.maxLoss) || 0), // ₹ per unit at worst; 0 = no limit
   };
 }
 
@@ -447,6 +449,7 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
 
   // The back spread + 2 butterflies (lib/backspread.js) whose strikes all lie within ATM ± win and that ranks best,
   // priced at the open of minute m, costs per unit (slippage on every fill in and out, brokerage per order) included.
+  // Candidates that could lose more than P.maxLoss (₹ per unit) are left out; when that leaves none: { over: n }.
   async function pickStrikes(P, expiry, day, m, spot) {
     if (!expiry || !cal.expiredSet.has(expiry)) return null;
     const info = await data.contracts(expiry);
@@ -484,6 +487,7 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
     const iv = atmPx ? impliedVol(atmPx, spot, ks[ai], T, P.side === 'CE') : null;
     const lot = await lotOf(expiry);
     let best = null;
+    let over = 0;
     for (const g of BS.geometries(ks, ai, P.side, P.win, P.widths)) {
       const L = BS.legsOf(g, P.side, P.form);
       for (const l of L) l.px = await px(l.k, l.type);
@@ -495,9 +499,13 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
       }
       const cost = 2 * L.reduce((s, l) => s + l.n * slip(l.px), 0) + (2 * L.length * opts.brokerage) / lot;
       const e = BS.evaluate(L, { spot, iv, T, cost });
+      if (P.maxLoss && -e.worst * lot > P.maxLoss) {
+        over++;
+        continue;
+      }
       if (!best || BS.better(P.rank)(e, best.e) < 0) best = { g, e };
     }
-    return best ? { ...best.g } : null;
+    return best ? { ...best.g } : over ? { over } : null;
   }
 
   const slip = (px) => Math.max(px * opts.slippage, opts.minSlip);
@@ -636,6 +644,8 @@ async function runBacktest(data, rawStrat, rawOpts, onProgress = () => {}, ext =
       if (strat.pick) {
         sx.pick = await pickStrikes(strat.pick, legExpiry(strat.legs[0].expiry, tl[0]), tl[0], e0, spotIn); // the legs' own expiry
         if (!sx.pick) throw new Skip(`no back spread fully priced within ATM ± ${strat.pick.win}`);
+        if (sx.pick.over)
+          throw new Skip(`all ${sx.pick.over} back spreads within ATM ± ${strat.pick.win} could lose more than ₹${Math.round(strat.pick.maxLoss)} a unit`);
       }
       const out = new Array(strat.legs.length);
       sx.legStrikes = [];

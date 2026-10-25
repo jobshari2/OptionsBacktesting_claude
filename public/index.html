@@ -885,7 +885,11 @@
     <div class="sb-grid" id="sbGrid">
       <section class="panel sb-chain">
         <div class="panel-head" id="sbChainHead" title="Click the header to minimize / restore the option chain"><h3><span id="sbChainCaret">▾</span> Option chain <span class="muted small" id="sbChainInfo"></span></h3>
-          <span class="small"><label class="mini" title="Lots for the B / S buttons in this chain. Overrides the Lots at the top; leave empty to use that one.">Lots <input class="num xs" type="number" id="sbChainLots" min="1" step="1"></label> <span id="sbChainExp" class="sb-exps" title="Expiry shown in the chain: pick a different one to add legs of another expiry (calendar / diagonal spreads)"></span> <select id="sbWidth"><option value="6">ATM ± 6</option><option value="10" selected>ATM ± 10</option><option value="15">ATM ± 15</option><option value="20">ATM ± 20</option><option value="30">ATM ± 30</option></select></span></div>
+          <span class="small"><label class="mini" title="Show IV, delta, gamma, theta (per day) and vega (per vol point) for every strike">
+            <input type="checkbox" id="sbGreeks" /> Greeks</label>
+          <label class="mini" title="Only strikes with a price and liquidity on at least one side: live, a bid and an ask and trades today (after the close: trades in the last session); replay, trades on that day up to the replay time. The side without liquidity is dimmed. Useful on far expiries (3–6 months away) with All strikes.">
+            <input type="checkbox" id="sbLiquid" /> Liquid only</label>
+          <label class="mini" title="Lots for the B / S buttons in this chain. Overrides the Lots at the top; leave empty to use that one.">Lots <input class="num xs" type="number" id="sbChainLots" min="1" step="1"></label> <span id="sbChainExp" class="sb-exps" title="Expiry shown in the chain: pick a different one to add legs of another expiry (calendar / diagonal spreads)"></span> <select id="sbWidth"><option value="6">ATM ± 6</option><option value="10" selected>ATM ± 10</option><option value="15">ATM ± 15</option><option value="20">ATM ± 20</option><option value="30">ATM ± 30</option><option value="999" title="Every strike listed for the expiry (historical: strikes not cached yet are downloaded from Upstox the first time)">All strikes</option></select></span></div>
         <div class="tbl-wrap sb-chain-wrap" id="sbChain"></div>
       </section>
       <!-- "Index chart" ticked in the top bar: the Chain screen's Nifty chart (chain-chart.js), beside the payoff -->

@@ -954,6 +954,266 @@
     Chart.defaults.plugins.legend.labels.boxWidth = 10;
   }
   chartTheme();
+
+  // ---------- payoff chart zoom ----------
+  // A chart with options.plugins.payZoom = { on: true, home: [lo, hi] } zooms along its x axis (Nifty): + / − / ⟲
+  // buttons in its corner, Ctrl (⌘) + wheel or a trackpad pinch at the cursor, drag to pan, double-click for the
+  // starting view (home; default: all the data). The y axis fits what is in view. Charts compute their curve wider than
+  // home, so zooming out shows more of it, as far as the data goes. The view is kept on the canvas, so it survives the
+  // redraws of a live chart (BT.chart makes a new chart on the same canvas). A category x axis zooms by label index.
+  // A dataset with pz_skip: true is left out of the fit and the limits (vertical marks...).
+  const PZ_STEP = 1.25;
+  const pzOn = (c) => c?.options?.plugins?.payZoom?.on;
+  const pzCat = (c) => (c.config.options.scales?.x?.type || (c.data.labels?.length ? 'category' : 'linear')) === 'category';
+  const pzPoints = (c, fn) => {
+    c.data.datasets.forEach((d, i) => {
+      if (d.pz_skip) return;
+      (d.data || []).forEach((p, j) => (p != null && typeof p === 'object' ? fn(p.x, p.y, i) : fn(j, p, i)));
+    });
+  };
+  function pzLimits(c) {
+    if (pzCat(c)) return [0, Math.max(1, (c.data.labels?.length || 1) - 1)];
+    let a = Infinity;
+    let b = -Infinity;
+    pzPoints(c, (x) => {
+      if (Number.isFinite(x)) ((a = Math.min(a, x)), (b = Math.max(b, x)));
+    });
+    return a < b ? [a, b] : [0, 1];
+  }
+  // [min, max] in view: the saved one kept inside the data, else home
+  function pzView(c) {
+    const [la, lb] = pzLimits(c);
+    const home = c.options.plugins.payZoom.home;
+    let [a, b] = c.canvas._pz || (home && !pzCat(c) ? home : [la, lb]);
+    const w = Math.min(b - a, lb - la);
+    a = Math.max(la, Math.min(a, lb - w));
+    return pzCat(c) ? [Math.round(a), Math.round(a + w)] : [a, a + w];
+  }
+  function pzSet(c, v) {
+    c.canvas._pz = v;
+    c.canvas.parentNode?.querySelector('.pz-ctl')?.classList.toggle('zoomed', !!v);
+    c.update('none');
+  }
+  // f < 1 zooms in, around x (default: the middle of the view)
+  function pzZoom(c, f, x) {
+    const [a, b] = pzView(c);
+    const [la, lb] = pzLimits(c);
+    const home = c.options.plugins.payZoom.home || [la, lb];
+    const at = Number.isFinite(x) ? x : (a + b) / 2;
+    const w = Math.max((home[1] - home[0]) / (pzCat(c) ? 8 : 40), Math.min(lb - la, (b - a) * f));
+    const na = at - ((at - a) / (b - a)) * w;
+    pzSet(c, [na, na + w]);
+  }
+  function pzBind(canvas) {
+    if (canvas._pzBound) return;
+    canvas._pzBound = true;
+    const box = canvas.parentNode;
+    if (getComputedStyle(box).position === 'static') box.style.position = 'relative';
+    box.querySelector(':scope > .pz-ctl')?.remove(); // a canvas drawn again in the same box
+    const ui = document.createElement('div');
+    ui.className = 'pz-ctl';
+    const how = 'Ctrl + scroll (or pinch) on the chart zooms at the cursor, drag pans, double-click goes back';
+    ui.innerHTML = `<button type="button" data-pz="in" title="Zoom in. ${how}">+</button><button type="button" data-pz="out" title="Zoom out. ${how}">−</button><button type="button" data-pz="home" title="Back to the starting view (or double-click the chart)">⟲</button>`;
+    box.appendChild(ui);
+    const cur = () => (pzOn(Chart.getChart(canvas)) ? Chart.getChart(canvas) : null);
+    ui.addEventListener('click', (e) => {
+      const k = e.target.closest('[data-pz]')?.dataset.pz;
+      const c = cur();
+      if (!k || !c) return;
+      e.stopPropagation();
+      if (k === 'home') pzSet(c, null);
+      else pzZoom(c, k === 'in' ? 1 / PZ_STEP : PZ_STEP);
+    });
+    canvas.addEventListener(
+      'wheel',
+      (e) => {
+        const c = cur();
+        if (!c || !(e.ctrlKey || e.metaKey)) return;
+        e.preventDefault();
+        pzZoom(c, e.deltaY < 0 ? 1 / PZ_STEP : PZ_STEP, c.scales.x.getValueForPixel(e.offsetX));
+      },
+      { passive: false },
+    );
+    canvas.addEventListener('dblclick', () => cur() && pzSet(cur(), null));
+    let drag = null;
+    canvas.addEventListener('pointerdown', (e) => {
+      const c = cur();
+      if (!c || e.button !== 0) return;
+      const [a, b] = pzView(c);
+      drag = { x: e.clientX, a, b, w: c.chartArea.right - c.chartArea.left, id: e.pointerId };
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      const c = cur();
+      if (!drag || !c) return;
+      const dx = e.clientX - drag.x;
+      if (!drag.moved && Math.abs(dx) < 4) return;
+      if (!drag.moved)
+        try {
+          canvas.setPointerCapture(drag.id); // keeps the drag when the pointer leaves the chart
+        } catch {
+          /* no such pointer: the drag still works while over the chart */
+        }
+      drag.moved = true;
+      const d = (dx / drag.w) * (drag.b - drag.a);
+      pzSet(c, [drag.a - d, drag.b - d]);
+    });
+    const end = () => (drag = null);
+    canvas.addEventListener('pointerup', end);
+    canvas.addEventListener('pointercancel', end);
+  }
+  const payZoom = {
+    id: 'payZoom',
+    defaults: { on: false },
+    // The x axis is the plugin's from here on: the chart's own min / max (its home) would win over the limits set
+    // below when the ticks are built, so they go, and a linear axis keeps exactly the limits it is given.
+    beforeInit(c) {
+      const x = pzOn(c) && c.config.options.scales?.x;
+      if (!x) return;
+      delete x.min;
+      delete x.max;
+      if (!pzCat(c)) x.bounds = 'data';
+    },
+    afterInit(c) {
+      if (pzOn(c)) pzBind(c.canvas);
+    },
+    beforeUpdate(c) {
+      if (pzOn(c)) c.canvas.parentNode?.querySelector('.pz-ctl')?.classList.toggle('zoomed', !!c.canvas._pz);
+    },
+    // a linear x axis: its two ends, and round values between them (a step of 1, 2, 2.5 or 5 × 10ⁿ, about 8 ticks)
+    afterBuildTicks(c, { scale }) {
+      if (!pzOn(c) || scale.id !== 'x' || pzCat(c)) return;
+      const [a, b] = [scale.min, scale.max];
+      const raw = (b - a) / 8;
+      const p = 10 ** Math.floor(Math.log10(raw));
+      const step = [1, 2, 2.5, 5, 10].map((m) => m * p).find((s) => s >= raw);
+      const ticks = [{ value: a }];
+      for (let v = Math.ceil(a / step) * step; v < b; v += step) if (v - a > step * 0.35 && b - v > step * 0.35) ticks.push({ value: v });
+      ticks.push({ value: b });
+      scale.ticks = ticks;
+    },
+    // x: the view; y: fits the points in view (and 0). Set on the scales as they take their limits, every update.
+    afterDataLimits(c, { scale }) {
+      if (!pzOn(c)) return;
+      const [a, b] = pzView(c);
+      if (scale.id === 'x') {
+        scale.min = a;
+        scale.max = b;
+        return;
+      }
+      if (scale.id !== 'y') return;
+      let lo = 0;
+      let hi = 0;
+      pzPoints(c, (x, y, i) => {
+        if (x >= a && x <= b && Number.isFinite(y) && c.isDatasetVisible(i)) ((lo = Math.min(lo, y)), (hi = Math.max(hi, y)));
+      });
+      const pad = (hi - lo) * 0.08 || 1;
+      scale.min = lo - pad;
+      scale.max = hi + pad;
+    },
+  };
+  if (window.Chart) Chart.register(payZoom);
+
+  // The same zoom for payoff pictures drawn as SVG (Live Ideas cards): the page keeps no state, it asks view(key, home)
+  // for the Nifty range to draw (home = its usual range) and puts ctl(key) beside the SVG in a positioned box. The SVG
+  // carries data-pzk (its key) and data-x0 / data-x1 (the range it shows, mapped across its full width).
+  // bind(root, redraw) once: the buttons, Ctrl (⌘) + wheel / pinch at the cursor, drag to pan, double-click to reset,
+  // then redraw(key) paints that picture again.
+  const svgViews = new Map(); // key -> { f: width ÷ home width, c: centre }
+  const PZ_BTNS = `<button type="button" data-pz="in" title="Zoom in. Ctrl + scroll (or pinch) on the picture zooms at the cursor, drag pans, double-click goes back">+</button><button type="button" data-pz="out" title="Zoom out">−</button><button type="button" data-pz="home" title="Back to the starting view (or double-click the picture)">⟲</button>`;
+  const svgZoom = {
+    view(key, home) {
+      const v = svgViews.get(key);
+      if (!v) return home;
+      const w = (home[1] - home[0]) * v.f;
+      return [v.c - w / 2, v.c + w / 2];
+    },
+    ctl: (key) => `<div class="pz-ctl${svgViews.has(key) ? ' zoomed' : ''}" data-pzk="${esc(key)}">${PZ_BTNS}</div>`,
+    // f < 1 zooms in, around x (default: the middle); from a quarter of a strike window to 4× the usual width
+    zoom(key, home, f, x) {
+      const [a, b] = svgZoom.view(key, home);
+      const hw = home[1] - home[0];
+      const w = Math.max(hw / 40, Math.min(hw * 4, (b - a) * f));
+      const at = Number.isFinite(x) ? x : (a + b) / 2;
+      const na = at - ((at - a) / (b - a)) * w;
+      svgViews.set(key, { f: w / hw, c: na + w / 2 });
+    },
+    reset: (key) => svgViews.delete(key),
+    bind(root, redraw) {
+      const at = (svg, clientX) => {
+        const r = svg.getBoundingClientRect();
+        const [x0, x1] = [Number(svg.dataset.x0), Number(svg.dataset.x1)];
+        return { x: x0 + ((clientX - r.left) / r.width) * (x1 - x0), home: [x0, x1], w: r.width };
+      };
+      // home of a key is not known here: the shown range and the saved view give it back
+      const homeOf = (svg) => {
+        const v = svgViews.get(svg.dataset.pzk);
+        const [x0, x1] = [Number(svg.dataset.x0), Number(svg.dataset.x1)];
+        if (!v) return [x0, x1];
+        const hw = (x1 - x0) / v.f;
+        return [(x0 + x1) / 2 - hw / 2, (x0 + x1) / 2 + hw / 2];
+      };
+      const svgOf = (key) => [...root.querySelectorAll('svg[data-pzk]')].find((s) => s.dataset.pzk === key);
+      root.addEventListener('click', (e) => {
+        const b = e.target.closest('.pz-ctl[data-pzk] [data-pz]');
+        if (!b) return;
+        e.stopPropagation();
+        const key = b.closest('.pz-ctl').dataset.pzk;
+        const svg = svgOf(key);
+        if (!svg) return;
+        if (b.dataset.pz === 'home') svgZoom.reset(key);
+        else svgZoom.zoom(key, homeOf(svg), b.dataset.pz === 'in' ? 1 / PZ_STEP : PZ_STEP);
+        redraw(key);
+      });
+      root.addEventListener(
+        'wheel',
+        (e) => {
+          const svg = e.target.closest?.('svg[data-pzk]');
+          if (!svg || !(e.ctrlKey || e.metaKey)) return;
+          e.preventDefault();
+          svgZoom.zoom(svg.dataset.pzk, homeOf(svg), e.deltaY < 0 ? 1 / PZ_STEP : PZ_STEP, at(svg, e.clientX).x);
+          redraw(svg.dataset.pzk);
+        },
+        { passive: false },
+      );
+      root.addEventListener('dblclick', (e) => {
+        const svg = e.target.closest?.('svg[data-pzk]');
+        if (!svg) return;
+        svgZoom.reset(svg.dataset.pzk);
+        redraw(svg.dataset.pzk);
+      });
+      let drag = null;
+      root.addEventListener('pointerdown', (e) => {
+        const svg = e.target.closest?.('svg[data-pzk]');
+        if (!svg || e.button !== 0) return;
+        const h = homeOf(svg);
+        drag = { key: svg.dataset.pzk, x: e.clientX, home: h, view: svgZoom.view(svg.dataset.pzk, h), w: svg.getBoundingClientRect().width };
+      });
+      window.addEventListener('pointermove', (e) => {
+        if (!drag) return;
+        const dx = e.clientX - drag.x;
+        if (!drag.moved && Math.abs(dx) < 4) return;
+        drag.moved = true;
+        const [a, b] = drag.view;
+        const hw = drag.home[1] - drag.home[0];
+        svgViews.set(drag.key, { f: (b - a) / hw, c: (a + b) / 2 - (dx / drag.w) * (b - a) });
+        redraw(drag.key);
+      });
+      let dragged = false;
+      window.addEventListener('pointerup', () => {
+        dragged = !!drag?.moved;
+        drag = null;
+      });
+      // the click that ends a drag is not a click on the page (it would select a card...)
+      root.addEventListener(
+        'click',
+        (e) => {
+          if (dragged) e.stopImmediatePropagation();
+          dragged = false;
+        },
+        true,
+      );
+    },
+  };
   const charts = new Map();
   function chart(canvas, config) {
     charts.get(canvas)?.destroy();
@@ -1010,6 +1270,7 @@
     blankStrategy,
     complete,
     chart,
+    svgZoom,
     COLORS,
     bs,
     ncdf,

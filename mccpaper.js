@@ -23,11 +23,13 @@ function weekdaysLeft(day, expiry) {
   }
   return n;
 }
-// The monthly expiry the paper trade runs on from `today`: the last listed expiry of its month.
-function monthlyFor(expiries, today) {
+// The monthly expiry the paper trade runs on from `today`: the last listed expiry of its month, skipping one fewer
+// than minDays calendar days away (the user's rule: then the strategy is built on next month's strikes).
+function monthlyFor(expiries, today, minDays = 0) {
   const last = new Map();
   for (const e of [...expiries].sort()) last.set(e.slice(0, 7), e);
-  return [...last.values()].sort().find((e) => e > today) || null;
+  const daysTo = (e) => (Date.parse(e + 'T00:00:00Z') - Date.parse(today + 'T00:00:00Z')) / 86400_000;
+  return [...last.values()].sort().find((e) => e > today && daysTo(e) >= minDays) || null;
 }
 
 function createMccPaper({ file, demo, isMarketOpen, getExpiries, getChain, closeOf, beesPrice, getLot, logError = () => {} }) {
@@ -74,20 +76,27 @@ function createMccPaper({ file, demo, isMarketOpen, getExpiries, getChain, close
 
   async function openCycle(P) {
     const today = istDate();
-    const expiry = monthlyFor(await getExpiries(), today);
+    // under minDays (15) calendar days left in this month's series: next month's (a paper trade from before the rule too)
+    const expiry = monthlyFor(await getExpiries(), today, P.params.minDays ?? M.DEFAULTS.minDays);
     if (!expiry) throw new Error('No monthly expiry listed');
     const chain = await getChain(expiry);
     const S = chain?.spot;
     if (!(S > 0) || !chain.rows?.length) throw new Error('No live chain for ' + expiry);
+    // a paper trade started before the ideal trade existed builds it from its next series on (the user's rule)
+    P.params.target ||= { ...M.DEFAULTS.target };
     const p = P.params;
     const pos = M.newPosition(expiry, S);
     const book = bookOf(P, { cash: 0, costs: 0 });
     const at = { day: today, time: istTime().slice(0, 5) };
-    const legs = M.legsAt(
+    // the ideal trade (params.target): strikes and gaps picked on this chain; the series rolls with that shape
+    const pick = M.pickLegs(
       S,
       p,
       chain.rows.map((r) => r.strike),
+      quote(chain),
+      p.lotSize,
     );
+    const legs = pick.legs;
     if (!M.openLegs(pos, legs, quote(chain), book, at)) throw new Error('A leg has no price yet: ' + legs.map((l) => l.strike + l.type).join(', '));
     const b0 = await etfPx(P, S);
     const qty = Math.round((p.lotSize * p.lots * S) / b0);
@@ -102,12 +111,16 @@ function createMccPaper({ file, demo, isMarketOpen, getExpiries, getChain, close
       costsBy: book.costsBy,
       etf: { qtyMonthly: qty, b0, cost: M.etfCost(qty * b0, true, etfSlip), onceFrom: P.etfOnce.last, firstOnce: !P.months.length },
       checks: [],
+      shape: pick.shape, // null: the fixed distances of the settings
       events: [
         {
           ...at,
           kind: 'entry',
           spot: S,
-          text: 'Opened ' + pos.legs.map((l) => `${l.side > 0 ? 'B' : 'S'} ${l.lots}× ${l.strike} ${l.type} @${l.entry.toFixed(1)}`).join(' · '),
+          text:
+            'Opened ' +
+            pos.legs.map((l) => `${l.side > 0 ? 'B' : 'S'} ${l.lots}× ${l.strike} ${l.type} @${l.entry.toFixed(1)}`).join(' · ') +
+            (pick.shape ? ' · ' + M.shapeText(pick.shape, p.target.amount) : ''),
         },
       ],
     };
@@ -221,7 +234,12 @@ function createMccPaper({ file, demo, isMarketOpen, getExpiries, getChain, close
           c.checks = c.checks.slice(-40);
           const px = quote(chain);
           const strikes = chain.rows.map((r) => r.strike);
-          const acts = M.decide(c, chain.spot, { daysLeft: weekdaysLeft(today, c.expiry), strikes, px: (l) => px(l.type, l.strike) }, P.params);
+          const acts = M.decide(
+            c,
+            chain.spot,
+            { daysLeft: weekdaysLeft(today, c.expiry), strikes, px: (l) => px(l.type, l.strike) },
+            M.withShape(P.params, c.shape),
+          );
           const book = bookOf(P, c);
           const at = { day: today, time: istTime().slice(0, 5) };
           for (const a of acts) {

@@ -14,6 +14,7 @@ bt-data/anomaly-log-demo/
 bt-data/scenario-cache.json
 bt-data/backtests.json
 bt-data/biweekly.json
+bt-data/backspread.json
 bt-data/paper-trades.json
 bt-data/data-sync.json
 bt-data/feedcmp-config-demo.json
