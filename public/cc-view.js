@@ -1936,7 +1936,7 @@
     const L = st.live;
     HN = holdLabel(P?.params);
     const head = `<div class="panel-head"><h3>Trading Ideas paper trades <span class="muted small">${P ? `${STRATEGY} · ${P.status === 'running' ? 'running' : 'paused'} since ${dayLabel(new Date(P.startedAt).toISOString().slice(0, 10))}${L ? ` · marked ${when(L.at)}${st.marketOpen ? '' : ' (market closed: last traded prices)'}` : ''}` : 'none'}</span></h3>
-        <span class="spacer"></span><button class="btn-sm ghost" data-cct="open" title="Open the covered call's paper trade in Trading Ideas">Open in Trading Ideas ▸</button></div>`;
+        <span class="spacer"></span>${P ? '<button class="btn-sm ghost danger" data-cct="delete" title="Delete this paper trade with its log and history (the same as Reset in Trading Ideas)">✕ Delete</button>' : ''}<button class="btn-sm ghost" data-cct="open" title="Open the covered call's paper trade in Trading Ideas">Open in Trading Ideas ▸</button></div>`;
     if (!P) {
       el.innerHTML =
         head +
@@ -2005,6 +2005,15 @@
       BT.store.set('cc-tab', tab);
       window.app.setView('cc');
       if (started) render();
+    });
+    el.querySelector('[data-cct="delete"]')?.addEventListener('click', async () => {
+      if (!confirm(`Delete the ${STRATEGY} paper trade, its log and its history?`)) return;
+      try {
+        paper = await BT.api('/api/cc/paper/reset', { confirm: true });
+      } catch (e) {
+        alert('Could not delete: ' + e.message);
+      }
+      renderCcTrades();
     });
     el.querySelector('[data-cct="builder"]')?.addEventListener('click', () => {
       const c = P?.cycle;

@@ -1624,7 +1624,7 @@
         ? `${P.status === 'running' ? 'running' : 'paused'} since ${dayLabel(new Date(P.startedAt).toISOString().slice(0, 10))} · ${sizeLabel(P.params)}${P.cycle?.markAt ? ` · marked ${new Date(P.cycle.markAt).toLocaleTimeString('en-IN')}${paper.marketOpen ? '' : ' (market closed: last traded prices)'}` : ''}`
         : 'none'
     }</span></h3>
-        <span class="spacer"></span><button class="btn-sm ghost" data-mct="open" title="Open the paper trade in Trading Ideas">Open in Trading Ideas ▸</button></div>`;
+        <span class="spacer"></span>${P ? '<button class="btn-sm ghost danger" data-mct="delete" title="Delete this paper trade and its history (the same as Reset in Trading Ideas)">✕ Delete</button>' : ''}<button class="btn-sm ghost" data-mct="open" title="Open the paper trade in Trading Ideas">Open in Trading Ideas ▸</button></div>`;
     if (!P) {
       el.innerHTML = head + '<div class="muted small pad">Start one in <b>Trading Ideas › Covered call › Modified covered call › Paper trade</b>; it is listed here at once, month by month, with its strikes and P&amp;L.</div>';
       bindMccTrades(el);
@@ -1681,6 +1681,15 @@
       BT.store.set('mcc-tab', tab);
       window.app.setView('cc');
       if (started && params) render(); // else init() draws it once the settings are loaded
+    });
+    el.querySelector('[data-mct="delete"]')?.addEventListener('click', async () => {
+      if (!confirm(`Delete the ${STRATEGY} paper trade and its history?`)) return;
+      try {
+        paper = await BT.api('/api/mcc/paper/reset', { confirm: true });
+      } catch (e) {
+        alert('Could not delete: ' + e.message);
+      }
+      renderMccTrades();
     });
     el.querySelector('[data-mct="builder"]')?.addEventListener('click', toBuilder);
   }
