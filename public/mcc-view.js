@@ -18,6 +18,7 @@
     upHedge: 'Hedge call',
     expiry: 'Expiry',
     skip: 'Not done',
+    budget: 'NIFTYBEES',
   };
   const ROLE = { ceL: 'Buy call', ceS: 'Sell call', peL: 'Buy put', peS: 'Sell put', peW: 'Buy put (wing)', ceH: 'Buy call (hedge)' };
   // study rows the rules text quotes
@@ -26,18 +27,141 @@
   let params = null;
   let tab = BT.store.get('mcc-tab', 'rules');
   let idea = BT.store.get('cc-idea', 'cc');
-  let saved = { backtest: null, study: null };
+  let saved = { backtest: null, study: null }; // as shown: raw rescaled to the NIFTYBEES budget (rebudgetAll)
+  let raw = { backtest: null, study: null }; // as the server ran them
   let started = false;
   let job = null;
   let paper = null;
   let pollT = null;
   let openMonth = null;
-  let viewing = null; // a study rule opened on the Backtest tab: { id, label, B } (its full backtest, not saved)
+  let viewing = null; // a study rule opened on the Backtest tab: { id, label, B, raw } (its full backtest, not saved)
   let lastDone = ''; // what the last backtest / study run finished, shown under the run buttons
 
   const num0 = (n) => (n == null || isNaN(n) ? '—' : Math.round(n).toLocaleString('en-IN'));
   const deep = (o) => JSON.parse(JSON.stringify(o));
   const legLine = (l) => `${l.side > 0 ? 'Buy' : 'Sell'} ${l.lots} × ${l.strike} ${l.type}`;
+
+  // ---------- NIFTYBEES budget (every tab) ----------
+  // params.budget: ₹ of NIFTYBEES bought at each entry (0 = 65 × lots × Nifty's worth, one lot). The options are not
+  // affected: only the ETF's quantity and P&L (bt/mcc.js etfQty).
+  const unitsFor = (p, S) => Math.round((p.budget > 0 ? p.budget : p.lotSize * p.lots * S) / (S / 100)); // NIFTYBEES = Nifty ÷ 100
+  const sizeLabel = (p) => (p?.budget > 0 ? `NIFTYBEES budget ${inr(p.budget)}` : 'NIFTYBEES of one lot (65 × Nifty)');
+  // "5 L", "5,00,000", "₹1.5 cr" → ₹; empty → 0 (one lot's worth); NaN when it is not an amount.
+  function parseBudget(raw) {
+    const t = String(raw ?? '')
+      .toLowerCase()
+      .replace(/[₹,\s]/g, '');
+    if (!t) return 0;
+    const m = t.match(/^(\d*\.?\d+)(l|lakh|lakhs|lac|cr|crore|k)?$/);
+    if (!m) return NaN;
+    return Math.round(Number(m[1]) * ({ l: 1e5, lakh: 1e5, lakhs: 1e5, lac: 1e5, cr: 1e7, crore: 1e7, k: 1e3 }[m[2]] || 1));
+  }
+  // The Budget row: value (₹, 0 = one lot's worth), S = the Nifty its note counts units at, note = what it does on this tab.
+  function budgetRow(value, S, note = '') {
+    const lot = params.lotSize;
+    const one = lot * params.lots * S;
+    const units = unitsFor({ ...params, budget: value }, S);
+    return `<div class="set-row mcc-budget" title="₹ of NIFTYBEES bought at each entry, instead of one lot's worth (${lot} × Nifty). Only the NIFTYBEES quantity and its P&amp;L change: the options stay at their lots. Accepts 1560000, 15,60,000 or 15.6 L."><b>NIFTYBEES budget</b><span class="lbl">₹</span><input class="txt num" id="mccBudget" value="${value > 0 ? value : ''}" placeholder="${Math.round(one)}" style="width:100px">
+      <span class="muted small" id="mccBudgetNote">${value > 0 ? `= ${num0(units)} units at Nifty ${num0(S)} (₹${(S / 100).toFixed(2)} each), ${(value / one).toFixed(2)} × one lot's worth (${inr(Math.round(one))}).` : `Empty: one lot's worth, ${lot} × Nifty = ${inr(Math.round(one))} (${num0(units)} units) at Nifty ${num0(S)}.`} The options are not changed. ${note}</span></div>`;
+  }
+  // One budget for every tab: saved results are shown for it too.
+  function useBudget(v) {
+    params.budget = v;
+    BT.store.set('mcc-params', params);
+    rebudgetAll();
+  }
+
+  // ---------- saved results at the budget ----------
+  // A result is run with some NIFTYBEES budget. The options do not depend on it and the NIFTYBEES P&L, charges
+  // included, is in proportion to the units held, so the result for another budget is the same months with the ETF
+  // figures scaled: the held ETF by what the first entry buys, the rebought one by what each month's entry buys.
+  // Exact up to the rounding of units. Its params then carry the budget, so "Use these settings" / a re-run keep it.
+  const worth = (p, budget, S0) => (budget > 0 ? budget : S0 > 0 ? p.lotSize * p.lots * S0 : null); // ₹ of NIFTYBEES bought at an entry
+  function rebudget(r, budget, spotOf) {
+    const p = r.params;
+    const from = p.budget || 0;
+    if (from === (budget || 0)) return r;
+    const ok = r.months.filter((m) => m.ok);
+    const S1 = spotOf(ok[0]);
+    const kOnce = worth(p, budget, S1) / worth(p, from, S1) || 1;
+    const months = r.months.map((m) => {
+      if (!m.ok) return m;
+      const S0 = spotOf(m);
+      const kMon = worth(p, budget, S0) / worth(p, from, S0) || kOnce; // a month without its Nifty (old study): as held
+      const etfOnce = Math.round((m.etfOnce ?? m.withOnce - m.opt) * kOnce);
+      const etfMonthly = Math.round((m.etfMonthly ?? m.withMonthly - m.opt) * kMon);
+      const out = { ...m, etfOnce, etfMonthly, withOnce: m.opt + etfOnce, withMonthly: m.opt + etfMonthly };
+      if (m.etf) out.etf = { ...m.etf, qtyOnce: Math.round(m.etf.qtyOnce * kOnce), qtyMonthly: Math.round(m.etf.qtyMonthly * kMon) };
+      return out;
+    });
+    const q = { ...p, budget: budget || 0 };
+    return { ...r, params: q, months, summary: summarizeAt(months, r.summary, budget > 0 ? budget : worth(p, 0, S1)) };
+  }
+  // bt/mcc.js summarize on rescaled months (skipped months, rolls and costs as they were).
+  function summarizeAt(months, old, invested) {
+    const ok = months.filter((m) => m.ok);
+    const stat = (key) => {
+      let eq = 0;
+      let peak = 0;
+      let dd = 0;
+      for (const m of ok) {
+        eq += m[key];
+        peak = Math.max(peak, eq);
+        dd = Math.min(dd, eq - peak);
+      }
+      const vals = ok.map((m) => m[key]);
+      const years = ok.length / 12;
+      return {
+        total: Math.round(eq),
+        avg: ok.length ? Math.round(eq / ok.length) : 0,
+        win: vals.filter((v) => v > 0).length,
+        worst: vals.length ? Math.min(...vals) : 0,
+        best: vals.length ? Math.max(...vals) : 0,
+        maxDD: Math.round(dd),
+        annPct: invested && years ? (eq / invested / years) * 100 : 0,
+      };
+    };
+    const bucket = (f) => {
+      const ms = ok.filter(f);
+      const sum = (k) => ms.reduce((n, m) => n + (m[k] || 0), 0);
+      return { n: ms.length, opt: sum('opt'), call: sum('callPnl'), put: sum('putPnl'), withOnce: sum('withOnce'), withMonthly: sum('withMonthly'), hold: sum('etfOnce') };
+    };
+    return {
+      ...old,
+      invested: Math.round(invested || 0),
+      opt: stat('opt'),
+      call: stat('callPnl'),
+      put: stat('putPnl'),
+      withOnce: stat('withOnce'),
+      withMonthly: stat('withMonthly'),
+      hold: stat('etfOnce'),
+      byMove: { up: bucket((m) => m.move > 2), flat: bucket((m) => Math.abs(m.move) <= 2), down: bucket((m) => m.move < -2) },
+    };
+  }
+  // Nifty at each month's entry: the month's own, else the saved backtest's for that expiry (studies before it was kept).
+  function spotFinder() {
+    const bt = new Map((raw.backtest?.withAdj?.months || []).map((m) => [m.expiry, m.spot0]));
+    return (m) => m?.spot0 ?? bt.get(m?.expiry) ?? null;
+  }
+  function rebudgetAll() {
+    const b = params.budget || 0;
+    const at = spotFinder();
+    const B = (x) => x && { ...x, withAdj: rebudget(x.withAdj, b, at), without: rebudget(x.without, b, at) };
+    saved = { backtest: B(raw.backtest), study: raw.study && { ...raw.study, rows: raw.study.rows.map((r) => rebudget(r, b, at)) } };
+    if (viewing) viewing.B = B(viewing.raw);
+  }
+  function bindBudget(onSet) {
+    const el = $('mccBudget');
+    if (!el) return;
+    el.onchange = () => {
+      const v = parseBudget(el.value);
+      if (!(v >= 0)) {
+        $('mccBudgetNote').innerHTML = '<span class="neg">Type a ₹ amount, e.g. 1560000 or 15.6 L (empty = one lot\'s worth).</span>';
+        return;
+      }
+      onSet(v);
+    };
+  }
   // Table rows of legs under their structure: the call ratio spread, then the put butterfly. row(leg) → <tr>…;
   // total(legs) → the group's subtotal cell (or '' for none); n = column count.
   const GROUP_NAME = { CE: 'Call ratio spread', PE: 'Put 2-3-1 butterfly' };
@@ -86,7 +210,8 @@
     for (const k of ['ce', 'pe', 'adj', 'up', 'costs', 'target']) params[k] = { ...meta.defaults[k], ...(stored[k] || {}) };
     params.lotSize = meta.lot;
     const [b, s] = await Promise.all([BT.api('/api/mcc/backtest').catch(() => ({})), BT.api('/api/mcc/study').catch(() => ({}))]);
-    saved = { backtest: b.saved || null, study: s.saved || null };
+    raw = { backtest: b.saved || null, study: s.saved || null };
+    rebudgetAll();
     render();
   }
 
@@ -130,7 +255,8 @@
         const j = await BT.api('/api/mcc/job?id=' + job.id);
         showProgress(j.progress);
         if (j.status === 'done') {
-          viewing = { id, label: row.label, B: j.result };
+          viewing = { id, label: row.label, raw: j.result };
+          rebudgetAll();
           break;
         }
         if (j.status === 'error') throw new Error(j.error);
@@ -195,7 +321,7 @@
     if (etf)
       sets.push({
         label: 'With NIFTYBEES',
-        data: xs.map((x, i) => ({ x, y: Math.round(opt[i].y + etf.qty * etf.b0 * (x / etf.s0 - 1)) })),
+        data: xs.map((x, i) => ({ x, y: Math.round(opt[i].y + etf.qty * etf.b0 * (x / etf.s0 - 1) + (etf.adj || 0)) })),
         borderColor: '#58a6ff',
         borderWidth: 2,
         pointRadius: 0,
@@ -242,7 +368,7 @@
     ['PE', 'Put 2-3-1 butterfly', '#3fb68b'],
   ];
   const of = (legs, t) => legs.filter((l) => l.type === t);
-  const exDefaults = () => ({ spot: 24000, iv: 13, days: 28, units: params.lotSize * params.lots * 100, legs: null });
+  const exDefaults = () => ({ spot: 24000, iv: 13, days: 28, units: unitsFor(params, 24000), legs: null });
   // The example month's legs: the ones typed in (Payoff diagram of the month), else Black-Scholes prices at IV / days.
   function bsLegs(S, iv, days) {
     const A = Math.round(S / 50) * 50;
@@ -330,17 +456,18 @@
     const d = (r, k = 'opt') => (r ? r.summary[k].total : null);
     const diff = (r) => (r && r0 ? inrS(d(r) - d(r0)) : '—');
     const mm = BT.store.get('mcc-mm', { mode: 'model', pct: 10, months: 12, iv: 13, swings: true });
+    const budget = params.budget > 0;
     $('mccBody').innerHTML = `
       <div class="panel cc-doc">
         <h3>Modified covered call</h3>
-        <p>Hold NIFTYBEES worth one lot of Nifty (65 × Nifty, about ₹${((S * lot) / 1e5).toFixed(1)} L at Nifty ${num0(S)}). Each <b>monthly</b> series, on its first trading day, open two option structures and hold them to the monthly expiry:</p>
+        ${budgetRow(params.budget, S, 'Used across this tab, the Backtest and its study (shown for it without re-running) and the paper trade.')}
+        <p>Hold NIFTYBEES worth ${budget ? `your budget, ${inr(params.budget)} (one lot of Nifty, 65 × Nifty, is about ₹${((S * lot) / 1e5).toFixed(1)} L at Nifty ${num0(S)}; the options below stay at that one lot)` : `one lot of Nifty (65 × Nifty, about ₹${((S * lot) / 1e5).toFixed(1)} L at Nifty ${num0(S)})`}. Each <b>monthly</b> series, on its first trading day, open two option structures and hold them to the monthly expiry:</p>
         <ul>
           <li><b>Call ratio spread</b>: buy 1 lot CE 100 pts over ATM, sell 2 lots 100 pts above that. It earns when Nifty drifts up to the sold strike; the second sold call is covered by the ETF.</li>
           <li><b>Put 2-3-1 butterfly</b>: buy 2 lots PE 100 pts under ATM, sell 3 lots 200 pts under the bought strike, buy 1 lot 100 pts under the sold strike. It earns when Nifty falls, best at the sold strike; with 3 bought against 3 sold its loss is capped.</li>
         </ul>
         ${studyRow('none') ? `<p>Over the backtest (no adjustments) the <b>call ratio spread</b> made ${inrS(studyRow('none').summary.call.total)} and the <b>put butterfly</b> ${inrS(studyRow('none').summary.put.total)}: the ratio is the income, the butterfly is the cushion (${inrS(studyRow('none').summary.byMove.down.put)} in the months Nifty fell more than 2 %, ${inrS(studyRow('none').summary.byMove.flat.put + studyRow('none').summary.byMove.up.put)} in the others).</p>` : ''}
-        <p class="muted small">NIFTYBEES is modelled at ₹1 per 100 Nifty points (price = Nifty ÷ 100), as you asked. So ${num0(ex.units)} units move exactly like one lot of Nifty
-        (₹${num0(lot * params.lots)} per point). The real ETF trades at about Nifty ÷ 89 and moves about ₹1.12 per 100 points, so ₹ for ₹ it comes to the same. The Backtest tab can use its recorded prices instead.</p>
+        <p class="muted small">NIFTYBEES is modelled at ₹1 per 100 Nifty points (price = Nifty ÷ 100), as you asked. So ${num0(ex.units)} units move ₹${num0(ex.units / 100)} per Nifty point${ex.units === lot * params.lots * 100 ? ', exactly like one lot of Nifty' : ` (one lot of Nifty: ₹${num0(lot * params.lots)})`}. The real ETF trades at about Nifty ÷ 89 and moves about ₹1.12 per 100 points, so ₹ for ₹ it comes to the same. The Backtest tab can use its recorded prices instead.</p>
       </div>
 
       <div class="panel cc-doc">
@@ -409,7 +536,7 @@
         <h3>Rules</h3>
         <table class="grid-tbl cc-rules"><tbody>
           <tr><th>Entry</th><td>First trading day of each monthly series (the day after the previous monthly expiry), 09:30. Monthly expiries only.</td></tr>
-          <tr><th>Holding</th><td>NIFTYBEES worth 65 × Nifty. Tested both ways: <b>bought once and held</b>, and <b>sold at each expiry and rebought</b> at the next series start.</td></tr>
+          <tr><th>Holding</th><td>NIFTYBEES worth ${budget ? `your budget, ${inr(params.budget)}, bought at each entry's price (the options are not changed)` : '65 × Nifty (one lot; set a NIFTYBEES budget at the top for another amount)'}. Tested both ways: <b>bought once and held</b>, and <b>sold at each expiry and rebought</b> at the next series start.</td></tr>
           ${
             params.target?.on
               ? `<tr><th>Ideal trade</th><td>At every new series the strikes and gaps below are not fixed: they are picked on that day's prices so that the flat zone between the put butterfly and the call ratio (all options expiring worthless: the net credit after fills and costs) is <b>${inr(params.target.amount)}</b> within 5 %, the downside never goes under it, and the upside loss starts as far above Nifty as possible. The month's rolls keep the shape picked. The distances below apply when this is switched off (Backtest tab).</td></tr>`
@@ -433,8 +560,15 @@
       <div class="panel cc-doc">
         <h3>When to adjust: what the backtest says</h3>
         ${st ? studyTable(st, true) : '<p class="muted">The study has not been run yet. Run it on the Backtest tab ("Run adjustment study").</p>'}
-        ${st ? `<p class="muted small">Study run ${new Date(st.at).toLocaleString('en-IN')}, ${r0?.summary.months || 0} monthly series ${r0?.summary.from ? `(${dayLabel(r0.summary.from)} – ${dayLabel(r0.summary.to)})` : ''}. ${skippedText(r0?.summary)} Only ${r0?.summary.byMove.up.n ?? '?'} of the months rose more than 2 %, too few to be sure about up-market rules.</p>` : ''}
+        ${st ? `<p class="muted small">Study run ${new Date(st.at).toLocaleString('en-IN')} with ${sizeLabel(st.rows[0]?.params)}, ${r0?.summary.months || 0} monthly series ${r0?.summary.from ? `(${dayLabel(r0.summary.from)} – ${dayLabel(r0.summary.to)})` : ''}. ${skippedText(r0?.summary)} Only ${r0?.summary.byMove.up.n ?? '?'} of the months rose more than 2 %, too few to be sure about up-market rules.</p>` : ''}
       </div>`;
+    bindBudget((v) => {
+      useBudget(v);
+      const ex = exState();
+      ex.units = unitsFor(params, ex.spot); // the example's NIFTYBEES follow the budget
+      BT.store.set('mcc-ex', ex);
+      renderRules();
+    });
     bindAnim();
     bindMm();
     bindExample();
@@ -642,7 +776,7 @@
           return { label: monthName(m.expiry), spot0: m.spot0, spotE: m.spotE, adj: one(m), none: one(n) };
         });
       $('mccMmNote').textContent =
-        `The backtest's months (${rows.length}, ${B.withAdj.params.adj.on ? 'with its adjustments' : 'no adjustments'}) next to the same months without adjustments, NIFTYBEES held throughout. Months left out of the backtest are skipped. ${rows.some((r) => r.adj.call == null) ? 'Run the backtest again to split the options into the call ratio and the butterfly.' : ''}`;
+        `The backtest's months (${rows.length}, ${sizeLabel(B.withAdj.params)}, ${B.withAdj.params.adj.on ? 'with its adjustments' : 'no adjustments'}) next to the same months without adjustments, NIFTYBEES held throughout. Months left out of the backtest are skipped. ${rows.some((r) => r.adj.call == null) ? 'Run the backtest again to split the options into the call ratio and the butterfly.' : ''}`;
     } else {
       $('mccMmNote').textContent = 'Working…';
       let r;
@@ -664,7 +798,7 @@
       });
       rows = r.withAdj.map((m, i) => ({ label: `Month ${i + 1}`, spot0: m.spot0, spotE: m.spotE, adj: one(m), none: one(r.without[i]) }));
       $('mccMmNote').textContent =
-        `The strategy is entered afresh every month (the Backtest tab's settings, ${params.adj.on ? 'with its adjustments' : 'adjustments off'}), priced by Black-Scholes at ${o.iv} % IV, while Nifty moves the same % each month (${o.pct} % over ${o.months} months). ${o.swings ? 'With weekly swings Nifty zig-zags about one typical week’s move inside each month, which is what triggers the rolls.' : 'Without weekly swings every month is a straight line: no rolls trigger unless the trend alone moves 2 %.'} A model, not a forecast: real months are uneven (see Real months).`;
+        `The strategy is entered afresh every month (the Backtest tab's settings, ${sizeLabel(params)}, ${params.adj.on ? 'with its adjustments' : 'adjustments off'}), priced by Black-Scholes at ${o.iv} % IV, while Nifty moves the same % each month (${o.pct} % over ${o.months} months). ${o.swings ? 'With weekly swings Nifty zig-zags about one typical week’s move inside each month, which is what triggers the rolls.' : 'Without weekly swings every month is a straight line: no rolls trigger unless the trend alone moves 2 %.'} A model, not a forecast: real months are uneven (see Real months).`;
     }
     mmState.rows = rows;
     mmState.idx = Math.min(mmState.idx, Math.max(0, rows.length - 1));
@@ -787,7 +921,10 @@
         (el.onchange = () => {
           const ex = exState();
           ex[el.dataset.ex] = Number(el.value) || ex[el.dataset.ex];
-          if (el.dataset.ex === 'spot') ex.legs = bsLegs(ex.spot, ex.iv, ex.days);
+          if (el.dataset.ex === 'spot') {
+            ex.legs = bsLegs(ex.spot, ex.iv, ex.days);
+            if (params.budget > 0) ex.units = unitsFor(params, ex.spot); // the budget at the new price
+          }
           BT.store.set('mcc-ex', ex);
           renderRules();
         }),
@@ -939,6 +1076,7 @@
               .slice(1)
               .map((e) => `<option${e === range.to ? ' selected' : ''}>${e}</option>`)
               .join('')}</select>`}</div>
+          ${budgetRow(p.budget, exState().spot, 'Bought at each entry (held: once, at the first); % a year is on the budget. Saved results are shown for it without re-running.')}
           <div class="set-row"><b>Adjustments</b> ${sel('adj.on', p.adj.on, [
             [true, 'on: roll the sold strikes'],
             [false, 'off'],
@@ -997,6 +1135,10 @@
     $('mccBody')
       .querySelectorAll('[data-p]')
       .forEach((el) => el.addEventListener('change', () => setParam(el.dataset.p, el.value)));
+    bindBudget((v) => {
+      useBudget(v);
+      renderBacktest();
+    });
     ['mccFrom', 'mccTo'].forEach((id) => $(id).addEventListener('change', () => BT.store.set('mcc-range', { from: $('mccFrom').value, to: $('mccTo').value })));
     $('mccRun').addEventListener('click', () => {
       viewing = null;
@@ -1044,7 +1186,8 @@
         job.progress = j.progress;
         showProgress(j.progress);
         if (j.status === 'done') {
-          saved[kind] = j.result;
+          raw[kind] = j.result;
+          rebudgetAll();
           break;
         }
         if (j.status === 'error') throw new Error(j.error);
@@ -1109,11 +1252,12 @@
           : ''
       }
       <div class="panel cc-doc">
-        <h3>Result: ${dayLabel(sa.from)} – ${dayLabel(sa.to)}, ${sa.months} monthly series</h3>
+        <h3>Result: ${dayLabel(sa.from)} – ${dayLabel(sa.to)}, ${sa.months} monthly series, ${sizeLabel(A.params)}</h3>
+        ${(B.withAdj !== (viewing?.raw || raw.backtest)?.withAdj) ? `<div class="muted small" style="margin-bottom:6px">Run with ${sizeLabel((viewing?.raw || raw.backtest).withAdj.params)}; shown for your budget: the options are the same, the NIFTYBEES figures scaled to it.</div>` : ''}
         ${kpiBlock('With adjustments', sa, adjDesc(A.params) + upDesc(A.params) + ` · ${sa.adjustments} adjustments · costs ${inr(sa.costs)}`)}
         ${kpiBlock('Without adjustments', sn, `costs ${inr(sn.costs)}`)}
-        <p class="cc-verdict">${verdict(sa, sn)}</p>
-        <p class="muted small">% per year on the ETF bought at the first entry (${inr(sa.invested)}). ${skippedText(sa)} DD = largest fall from a peak of the month-end totals.
+        <p class="cc-verdict">${verdict(sa, sn, A.params)}</p>
+        <p class="muted small">% per year on ${A.params.budget > 0 ? 'the NIFTYBEES budget' : 'the ETF bought at the first entry'} (${inr(sa.invested)}). ${skippedText(sa)} DD = largest fall from a peak of the month-end totals.
         "Rebought monthly" is out of the market from each expiry's close to the next morning; ${gapNote(A)}.</p>
       </div>
       <div class="panel cc-doc"><h3>Month-end total</h3><div class="cc-pay-chart"><canvas id="mccEq"></canvas></div></div>
@@ -1136,7 +1280,7 @@
         <tfoot><tr><th class="l">Total</th><td></td><td></td><td>${sa.adjustments}</td><th class="${cls(sa.call?.total)}">${sa.call ? inrS(sa.call.total) : ''}</th><th class="${cls(sa.put?.total)}">${sa.put ? inrS(sa.put.total) : ''}</th><th class="${cls(sa.opt.total)}">${inrS(sa.opt.total)}</th><th class="${cls(sn.opt.total)}">${inrS(sn.opt.total)}</th><th class="${cls(sa.hold.total)}">${inrS(sa.hold.total)}</th><th class="${cls(sa.withMonthly.total - sa.opt.total)}">${inrS(sa.withMonthly.total - sa.opt.total)}</th><th class="${cls(sa.withOnce.total)}">${inrS(sa.withOnce.total)}</th><th class="${cls(sn.withOnce.total)}">${inrS(sn.withOnce.total)}</th></tr></tfoot></table></div>
       </div>
       <div class="panel cc-doc"><h3>Every adjustment</h3>${adjustmentList(A)}</div>
-      <div class="panel cc-doc" id="mccStudyPanel"><h3>Adjustment study</h3>${saved.study ? studyTable(saved.study) + `<div class="muted small pad">Run ${new Date(saved.study.at).toLocaleString('en-IN')}. The rules tab explains what to take from it.</div>` : '<p class="muted">Not run yet: "Run adjustment study" above.</p>'}</div>`;
+      <div class="panel cc-doc" id="mccStudyPanel"><h3>Adjustment study</h3>${saved.study ? studyTable(saved.study) + `<div class="muted small pad">Run ${new Date(saved.study.at).toLocaleString('en-IN')} with ${sizeLabel(saved.study.rows[0]?.params)}. The rules tab explains what to take from it.</div>` : '<p class="muted">Not run yet: "Run adjustment study" above.</p>'}</div>`;
     drawEquity(A, N);
     el.querySelectorAll('tr[data-m]').forEach((tr) =>
       tr.addEventListener('click', () => {
@@ -1198,7 +1342,7 @@
     for (let i = 1; i < ok.length; i++) pts += ok[i].spot0 - ok[i - 1].spotE;
     return `over these months Nifty moved ${pts >= 0 ? '+' : ''}${num0(pts)} pts between expiry closes and the next entries (left-out months included), which the rebought ETF did not hold`;
   }
-  function verdict(sa, sn) {
+  function verdict(sa, sn, p) {
     const d = sa.opt.total - sn.opt.total;
     const parts = [];
     parts.push(
@@ -1207,7 +1351,7 @@
     parts.push(
       `With the ETF held: ${inrS(sa.withOnce.total)} vs buy and hold alone ${inrS(sa.hold.total)}: the options ${sa.opt.total >= 0 ? 'added' : 'took'} ${inrS(sa.opt.total)}, while the drawdown went from ${inr(sa.hold.maxDD)} to ${inr(sa.withOnce.maxDD)}.`,
     );
-    parts.push(`Options alone made ${pct(sa.opt.annPct)} a year on the ETF's value. That does not count interest on the ₹ in the ETF.`);
+    parts.push(`Options alone made ${pct(sa.opt.annPct)} a year on ${p?.budget > 0 ? 'the NIFTYBEES budget' : "the ETF's value"}. That does not count interest on the ₹ in the ETF.`);
     return parts.join(' ');
   }
   function dirTable(sa, sn) {
@@ -1310,11 +1454,20 @@
     const head = `<div class="panel cc-doc"><h3>Paper trade ${P ? `<span class="cc-kind ${P.status === 'running' ? 'k-book' : 'k-skip'}">${P.status}</span>` : ''}</h3>
       <div class="set-row">${btns}<span class="muted small">Follows the live chain every 30 s with the Backtest tab's settings (${P ? 'as started' : 'current'}): ${esc(settingsLine(P ? P.params : params))}. Paper only: nothing is sent to a broker.${paper.demo ? ' Demo mode: synthetic prices.' : ''}</span></div>
       ${P?.lastError ? `<div class="muted small neg">Last error ${new Date(P.lastError.at).toLocaleTimeString('en-IN')}: ${esc(P.lastError.message)}</div>` : ''}
+      ${
+        P
+          ? budgetRow(
+              P.params.budget,
+              P.cycle?.spot || P.cycle?.spot0 || exState().spot,
+              `Held now: ${num0(P.etfOnce?.qty)} units. A new budget buys (or sells) the difference in NIFTYBEES now, at its current price: the KPIs, the payoff and the "If Nifty is here at expiry" table count the new holding.`,
+            )
+          : budgetRow(params.budget, exState().spot, 'Bought at Start.')
+      }
       <div id="mccPapMsg" class="muted small"></div></div>`;
     if (!P) {
       el.innerHTML =
         head +
-        `<div class="panel empty"><h3>No paper trade running</h3><p>Start opens the position now on the current monthly series (next month's when this one has fewer than ${params.minDays ?? 15} days left) at the live prices, buys the NIFTYBEES (65 × Nifty), and then runs month after month: rolls at the check times, settlement at each monthly expiry and a new series at 09:30 on the next trading day.</p></div>`;
+        `<div class="panel empty"><h3>No paper trade running</h3><p>Start opens the position now on the current monthly series (next month's when this one has fewer than ${params.minDays ?? 15} days left) at the live prices, buys NIFTYBEES worth ${params.budget > 0 ? `your budget (${inr(params.budget)})` : 'one lot (65 × Nifty)'}, and then runs month after month: rolls at the check times, settlement at each monthly expiry and a new series at 09:30 on the next trading day.</p></div>`;
     } else {
       const c = P.cycle;
       const done = P.months || [];
@@ -1358,12 +1511,22 @@
             ${done.map((m) => `<tr><td class="l">${monthName(m.expiry)}</td><td>${num0(m.spot0)} → ${num0(m.spotE)}</td><td>${m.adjustments}</td><td class="${cls(m.callPnl)}">${inrS(m.callPnl)}</td><td class="${cls(m.putPnl)}">${inrS(m.putPnl)}</td><td class="${cls(m.opt)}">${inrS(m.opt)}</td><td class="${cls(m.etfOnce)}">${inrS(m.etfOnce)}</td><td class="${cls(m.withOnce)}">${inrS(m.withOnce)}</td><td class="${cls(m.withMonthly)}">${inrS(m.withMonthly)}</td></tr>`).join('')}
             </tbody><tfoot><tr><th class="l">Total</th><td></td><td></td><th class="${cls(tot('callPnl'))}">${inrS(tot('callPnl'))}</th><th class="${cls(tot('putPnl'))}">${inrS(tot('putPnl'))}</th><th class="${cls(tot('opt'))}">${inrS(tot('opt'))}</th><th class="${cls(tot('etfOnce'))}">${inrS(tot('etfOnce'))}</th><th class="${cls(tot('withOnce'))}">${inrS(tot('withOnce'))}</th><th class="${cls(tot('withMonthly'))}">${inrS(tot('withMonthly'))}</th></tr></tfoot></table></div></div>`
           : '');
-      if (c?.legs.length) payoffChart($('mccPapPay'), c.legs, lot, c.spot || c.spot0, { qty: P.etfOnce?.qty || 0, b0: c.etf.b0, s0: c.spot0 });
+      if (c?.legs.length) payoffChart($('mccPapPay'), c.legs, lot, c.spot || c.spot0, { qty: P.etfOnce?.qty || 0, b0: c.etf.b0, s0: c.spot0, adj: c.etf.monthlyAdj });
       const scen = el.querySelector('.mcc-scen');
       const now = scen?.querySelector('tr.sel');
       if (scen) scen.scrollTop = scenTop ?? (now ? now.offsetTop - (scen.clientHeight - now.offsetHeight) / 2 : 0); // first time: Nifty now in the middle
     }
     el.querySelectorAll('[data-a]').forEach((b) => b.addEventListener('click', () => paperAction(b.dataset.a)));
+    bindBudget(async (v) => {
+      useBudget(v);
+      if (!P) return renderPaper();
+      try {
+        paper = await BT.api('/api/mcc/paper/budget', { budget: v });
+        renderPaper();
+      } catch (e) {
+        $('mccBudgetNote').innerHTML = `<span class="neg">${esc(e.message)}</span>`;
+      }
+    });
   }
   // The paper series at its expiry with Nifty every 100 points from 2,000 below to 2,000 above now: NIFTYBEES (its price
   // moving with Nifty from the live one) and the open option legs at intrinsic value, each structure's P&L as the
@@ -1382,7 +1545,7 @@
     for (let i = 20; i >= -20; i--) {
       const x = base + i * 100;
       const bees = (beesNow * x) / spot;
-      const etf = qty * (bees - c.etf.onceFrom) - (c.etf.firstOnce ? P.etfOnce.cost : 0);
+      const etf = qty * (bees - c.etf.onceFrom) + (c.etf.onceAdj || 0) - (c.etf.onceCost ?? (c.etf.firstOnce ? P.etfOnce.cost : 0));
       const value = c.legs.reduce((s, l) => s + l.side * intr(l, x) * l.lots * lot, 0);
       const call = pnlOf('CE', x);
       const put = pnlOf('PE', x);
@@ -1391,7 +1554,7 @@
     const td = (v) => `<td class="${cls(v)}">${inrS(Math.round(v))}</td>`;
     const move = (x) => (x === base ? 'now' : `${x > spot ? '+' : '−'}${num0(Math.abs(x - spot))} · ${pct(((x - spot) / spot) * 100)}`);
     return `<h4>If Nifty is here at expiry <span class="muted small">every 100 points, 2,000 either way · NIFTYBEES ${num0(qty)} units moving with Nifty from ₹${beesNow.toFixed(2)} · options at intrinsic value · P&amp;L as above (rolls and costs so far included), before the costs of closing at expiry</span></h4>
-      <div class="tbl-wrap mcc-scen"><table class="grid-tbl"><thead><tr><th>Nifty</th><th class="l">Move</th><th>NIFTYBEES price</th><th>NIFTYBEES value</th><th title="NIFTYBEES units bought, at ₹${c.etf.onceFrom.toFixed(2)} each (the P&amp;L is against that price)">NIFTYBEES bought</th><th>NIFTYBEES P&amp;L</th><th>Options value</th><th>Call ratio P&amp;L</th><th>Put butterfly P&amp;L</th><th>Options P&amp;L</th><th>Combined P&amp;L</th></tr></thead><tbody>
+      <div class="tbl-wrap mcc-scen"><table class="grid-tbl"><thead><tr><th>Nifty</th><th class="l">Move</th><th>NIFTYBEES price</th><th>NIFTYBEES value</th><th title="NIFTYBEES units held, at ₹${c.etf.onceFrom.toFixed(2)} each at the series start (the P&amp;L is against that price; units a budget added during the series, against their own price)">NIFTYBEES bought</th><th>NIFTYBEES P&amp;L</th><th>Options value</th><th>Call ratio P&amp;L</th><th>Put butterfly P&amp;L</th><th>Options P&amp;L</th><th>Combined P&amp;L</th></tr></thead><tbody>
       ${rows
         .map(
           (r) =>
@@ -1408,7 +1571,7 @@
     const t =
       (p.target?.on ? `ideal trade: flat zone ₹${Number(p.target.amount).toLocaleString('en-IN')}, ` : 'fixed strike distances, ') +
       `next month's series when this one has under ${p.minDays ?? 15} days left, `;
-    return `${t}${a}${u}, NIFTYBEES ${p.etf === 'real' ? 'live price' : '= Nifty ÷ 100'}`;
+    return `${t}${a}${u}, NIFTYBEES ${p.etf === 'real' ? 'live price' : '= Nifty ÷ 100'}, ${p.budget > 0 ? `budget ${inr(p.budget)}` : 'one lot\'s worth'}`;
   }
   // The series' open legs in the Builder as a live paper position at their paper entry prices (as Covered call's paper
   // trade and Live Ideas do): the Builder follows them on the live chain with P&L, payoff on any date and adjustments.
@@ -1442,11 +1605,91 @@
     }
   }
 
+  // ---------- Trades screen: the paper trade's months ----------
+  // Listed from the moment it is started: the open series marked at the last check, then the finished months as
+  // settled. NIFTYBEES held (at the budget), each structure's legs with entry → now / exit, and the P&L split.
+  const STRATEGY = 'Modified covered call';
+  async function renderMccTrades() {
+    const el = $('mccTrades');
+    if (!el) return;
+    try {
+      paper = await BT.api('/api/mcc/paper');
+    } catch (e) {
+      el.innerHTML = `<div class="panel-head"><h3>${STRATEGY} paper trade</h3></div><div class="err small pad">${esc(e.message)}</div>`;
+      return;
+    }
+    const P = paper.paper;
+    const head = `<div class="panel-head"><h3>${STRATEGY} paper trade <span class="muted small">${
+      P
+        ? `${P.status === 'running' ? 'running' : 'paused'} since ${dayLabel(new Date(P.startedAt).toISOString().slice(0, 10))} · ${sizeLabel(P.params)}${P.cycle?.markAt ? ` · marked ${new Date(P.cycle.markAt).toLocaleTimeString('en-IN')}${paper.marketOpen ? '' : ' (market closed: last traded prices)'}` : ''}`
+        : 'none'
+    }</span></h3>
+        <span class="spacer"></span><button class="btn-sm ghost" data-mct="open" title="Open the paper trade in Trading Ideas">Open in Trading Ideas ▸</button></div>`;
+    if (!P) {
+      el.innerHTML = head + '<div class="muted small pad">Start one in <b>Trading Ideas › Covered call › Modified covered call › Paper trade</b>; it is listed here at once, month by month, with its strikes and P&amp;L.</div>';
+      bindMccTrades(el);
+      return;
+    }
+    const lot = P.params.lotSize;
+    // a leg: open (entry → LTP now) or closed (entry → exit, its P&L as booked)
+    const legHtml = (l, open) => {
+      const now = open ? l.ltp : l.exit;
+      const pnl = open ? (now == null ? null : (now - l.entry) * l.side * l.lots * lot) : l.pnl;
+      return `<div class="cc-leg"><b class="${l.side < 0 ? 'neg' : 'pos'}">${l.side < 0 ? 'Sold' : 'Bought'}</b> ${l.lots}× ${l.strike} ${l.type} <span class="mono">${l.entry.toFixed(1)} → ${now == null ? '—' : now.toFixed(1)}${open ? ' now' : ''}</span>${pnl == null ? '' : ` <span class="${cls(pnl)}">${inrS(pnl)}</span>`}</div>`;
+    };
+    const legsCell = (open, closed, t) => {
+      const o = open.filter((l) => l.type === t).map((l) => legHtml(l, true));
+      const c = closed.filter((l) => l.type === t).map((l) => legHtml(l, false));
+      return o.join('') + (c.length ? `${o.length ? '<div class="muted small">closed by rolls</div>' : ''}${c.join('')}` : '') || '<span class="muted">—</span>';
+    };
+    const money = (v, b) => `<td class="${cls(v)}${b ? ' b' : ''}">${v == null ? '—' : inrS(v)}</td>`;
+    const rows = [];
+    const c = P.cycle;
+    if (c) {
+      const total = (c.opt ?? 0) + (c.etfOnce ?? 0);
+      rows.push(`<tr><td class="l"><b>${STRATEGY}</b></td><td class="l"><b>${monthName(c.expiry)}</b><div class="muted small">to ${dayLabel(c.expiry)}</div></td>
+        <td class="l"><span class="cat-pill c-bullish">open</span></td><td class="muted">${dayLabel(c.entry.day)} ${c.entry.time}<div>Nifty ${num0(c.spot0)}${c.spot ? ' → ' + num0(c.spot) : ''}</div></td>
+        <td class="l cc-legs"><div class="cc-leg"><b class="pos">Held</b> ${num0(P.etfOnce?.qty)} units <span class="mono">₹${c.etf.onceFrom.toFixed(2)} → ${c.bees ? '₹' + c.bees.toFixed(2) + ' now' : '—'}</span></div></td>
+        <td class="l cc-legs">${legsCell(c.legs, c.closed, 'CE')}</td><td class="l cc-legs">${legsCell(c.legs, c.closed, 'PE')}</td>
+        ${money(c.callPnl)}${money(c.putPnl)}${money(c.opt)}${money(c.etfOnce)}${money(c.opt == null ? null : total, true)}
+        <td><button class="btn-sm ghost" data-mct="builder" title="Open this series' open option legs in the Builder as a live paper position at their paper entry prices">▶ Open in Builder</button></td></tr>`);
+    }
+    for (const m of [...(P.months || [])].reverse()) {
+      const held = m.closed.filter((x) => x.exitAt?.day === m.expiry && x.exitAt?.time === '15:30');
+      const rolled = m.closed.filter((x) => !held.includes(x));
+      rows.push(`<tr><td class="l"><b>${STRATEGY}</b></td><td class="l"><b>${monthName(m.expiry)}</b><div class="muted small">to ${dayLabel(m.expiry)}</div></td>
+        <td class="l"><span class="cat-pill">closed</span></td><td class="muted">${m.entry ? dayLabel(m.entry.day) : ''}<div>Nifty ${num0(m.spot0)} → ${num0(m.spotE)}</div></td>
+        <td class="l cc-legs"><div class="cc-leg"><b class="pos">Held</b> NIFTYBEES</div></td>
+        <td class="l cc-legs">${legsCell([], [...held, ...rolled], 'CE')}</td><td class="l cc-legs">${legsCell([], [...held, ...rolled], 'PE')}</td>
+        ${money(m.callPnl)}${money(m.putPnl)}${money(m.opt)}${money(m.etfOnce)}${money(m.withOnce, true)}<td></td></tr>`);
+    }
+    const sum = (k) => (P.months || []).reduce((n, m) => n + (m[k] || 0), 0);
+    const all = { opt: sum('opt') + (c?.opt || 0), etf: sum('etfOnce') + (c?.etfOnce || 0) };
+    el.innerHTML =
+      head +
+      `<div class="tbl-wrap sb-trades-wrap"><table class="grid-tbl sb-trades-tbl cc-trades-tbl"><thead><tr><th class="l">Strategy</th><th class="l">Month</th><th class="l">Status</th><th>Entered</th>
+        <th class="l">NIFTYBEES<br><span class="muted">units · price at the series start → now</span></th><th class="l">Call ratio spread<br><span class="muted">lots × strike · entry → now / exit</span></th><th class="l">Put 2-3-1 butterfly</th>
+        <th>Call ratio</th><th>Butterfly</th><th>Options</th><th>NIFTYBEES</th><th>Total</th><th></th></tr></thead><tbody>${rows.join('') || '<tr><td colspan="13" class="muted l">No series open yet: the next one opens at 09:30 on the next trading day.</td></tr>'}</tbody></table></div>
+      <div class="muted small pad">Whole paper trade: total <b class="${cls(all.opt + all.etf)}">${inrS(all.opt + all.etf)}</b> · options ${inrS(all.opt)} · NIFTYBEES held ${inrS(all.etf)}. P&amp;L after costs; the open series at the last traded prices. Paper only: nothing is sent.</div>`;
+    bindMccTrades(el);
+  }
+  function bindMccTrades(el) {
+    el.querySelector('[data-mct="open"]')?.addEventListener('click', () => {
+      idea = 'mcc';
+      tab = 'paper';
+      BT.store.set('cc-idea', idea);
+      BT.store.set('mcc-tab', tab);
+      window.app.setView('cc');
+      if (started && params) render(); // else init() draws it once the settings are loaded
+    });
+    el.querySelector('[data-mct="builder"]')?.addEventListener('click', toBuilder);
+  }
+
   function poll() {
     clearTimeout(pollT);
     if (tab !== 'paper' || idea !== 'mcc' || window.app?.state.view !== 'cc' || !started) return;
     pollT = setTimeout(async () => {
-      if (!document.hidden && tab === 'paper' && idea === 'mcc' && window.app?.state.view === 'cc') {
+      if (!document.hidden && tab === 'paper' && idea === 'mcc' && window.app?.state.view === 'cc' && document.activeElement?.id !== 'mccBudget') {
         await loadPaper();
         renderPaper();
       }
@@ -1454,9 +1697,20 @@
     }, 15_000);
   }
 
+  let trT = null;
+  function pollTrades() {
+    clearTimeout(trT);
+    if (window.app?.state.view !== 'tr') return;
+    trT = setTimeout(async () => {
+      if (!document.hidden && window.app?.state.view === 'tr') await renderMccTrades();
+      pollTrades();
+    }, 30_000);
+  }
   window.addEventListener('viewchange', (e) => {
     if (e.detail === 'cc') applyIdea();
     else poll();
+    if (e.detail === 'tr') renderMccTrades().then(pollTrades);
   });
   if (window.app?.state.view === 'cc') applyIdea();
+  if (window.app?.state.view === 'tr') renderMccTrades().then(pollTrades);
 })();

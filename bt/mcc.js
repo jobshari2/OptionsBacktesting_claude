@@ -14,6 +14,9 @@ const { MPD, addDays } = require('./data');
 const DEFAULTS = {
   lotSize: 65,
   lots: 1, // multiplier on every quantity below (and on the ETF)
+  // ₹ of NIFTYBEES (the user's setting): > 0 buys budget ÷ its price units at each entry instead of 65 × lots × Nifty
+  // worth. Only the ETF's quantity and P&L change; the options stay as above.
+  budget: 0,
   entryMin: 15, // minutes after 09:15 on the series' first day (09:30)
   // paper trade: a series opened with fewer calendar days than this to its expiry is skipped for next month's (the
   // user's rule). The backtest enters every series on its first day, always further out than this.
@@ -65,6 +68,9 @@ const merge = (p = {}) => {
   for (const k of ['ce', 'pe', 'adj', 'up', 'costs', 'target']) out[k] = { ...DEFAULTS[k], ...(p[k] || {}) };
   return out;
 };
+
+// NIFTYBEES units bought with Nifty at S and the ETF at price b: the budget's worth, else 65 × lots × Nifty's.
+const etfQty = (p, S, b) => Math.round((p.budget > 0 ? p.budget : p.lotSize * p.lots * S) / b);
 
 // Nearest listed strike (strikes sorted ascending); the target itself when the list is empty.
 function snap(strikes, k) {
@@ -404,7 +410,7 @@ const etfCost = (turn, buy, slip) => turn * (slip + (buy ? 0.00015 : 0.00001) + 
 
 // One run over the monthly series in [from, to]. Returns { months, summary, params }.
 // The ETF is reported both ways from the same option trades: bought once and held ('once'), or bought at each
-// series start and sold at its expiry ('monthly'), always 65 × lots × Nifty worth at that entry.
+// series start and sold at its expiry ('monthly'), always 65 × lots × Nifty worth at that entry (the budget when set).
 async function runMcc(data, params = {}, range = {}, { onProgress = () => {}, stopped = () => false } = {}) {
   const p = merge(params);
   const lot = p.lotSize;
@@ -430,7 +436,7 @@ async function runMcc(data, params = {}, range = {}, { onProgress = () => {}, st
     months.push(r.month);
   }
   onProgress({ phase: 'Done', done: series.length, total: series.length });
-  return { at: Date.now(), params: p, months, summary: summarize(months, lot * p.lots) };
+  return { at: Date.now(), params: p, months, summary: summarize(months, lot * p.lots, p.budget) };
 }
 
 async function runMonth(data, p, { P, E }, once) {
@@ -507,7 +513,7 @@ async function runMonth(data, p, { P, E }, once) {
   let onceOut = once;
   const etf = { monthly: 0, once: 0 };
   if (b0) {
-    const qty = Math.round((lot * p.lots * S0) / b0);
+    const qty = etfQty(p, S0, b0);
     etf.qtyMonthly = qty;
     etf.monthly = -etfCost(qty * b0, true, etfSlip);
     if (!onceOut) {
@@ -577,8 +583,8 @@ async function runMonth(data, p, { P, E }, once) {
 const legText = (l) => `${l.side > 0 ? 'B' : 'S'} ${l.lots}× ${l.strike} ${l.type} @${l.entry.toFixed(1)}`;
 
 // Totals and risk numbers per series of monthly P&L: opt (options alone), withOnce / withMonthly (with the ETF),
-// hold (the ETF bought once, alone).
-function summarize(months, units) {
+// hold (the ETF bought once, alone). % a year on the NIFTYBEES budget when set, else on 65 × lots × Nifty at the first entry.
+function summarize(months, units, budget = 0) {
   const ok = months.filter((m) => m.ok);
   const stat = (key) => {
     let eq = 0;
@@ -599,7 +605,7 @@ function summarize(months, units) {
       maxDD: Math.round(dd),
     };
   };
-  const invested = ok[0] ? ok[0].spot0 * units : 0;
+  const invested = budget > 0 ? budget : ok[0] ? ok[0].spot0 * units : 0;
   const years = ok.length / 12;
   const s = {
     months: ok.length,
@@ -687,6 +693,7 @@ async function runMccStudy(data, base = {}, range = {}, { onProgress = () => {},
         expiry: m.expiry,
         ok: m.ok,
         move: m.move,
+        spot0: m.spot0,
         opt: m.opt,
         callPnl: m.callPnl,
         putPnl: m.putPnl,
@@ -760,7 +767,7 @@ function runMccModel(params = {}, opts = {}) {
       const held = pos.legs.map((l) => ({ ...l }));
       settle(pos, SE, book, { day: MODEL_DAYS });
       const { call, put } = splitPnl(pos.closed, book);
-      const etf = Math.round(lot * p.lots * (SE - S0)); // NIFTYBEES = Nifty ÷ 100, 65 × lots × 100 units
+      const etf = Math.round(etfQty(p, S0, S0 / 100) * ((SE - S0) / 100)); // NIFTYBEES = Nifty ÷ 100: 65 × lots × 100 units, or the budget's
       const opt = Math.round(book.cash - book.costs);
       months.push({ spot0: S0, spotE: SE, opt, callPnl: call, putPnl: put, etf, total: opt + etf, adjustments: events.length, events, held });
     }
@@ -793,6 +800,7 @@ module.exports = {
   settle,
   payoffAt,
   etfCost,
+  etfQty,
   fill,
   runMcc,
   runMccStudy,

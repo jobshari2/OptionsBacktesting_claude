@@ -974,6 +974,7 @@ async function handleMcc(req, res, url, p) {
         await mccPaper.start(b.params || {});
       } else if (p === '/api/mcc/paper/pause') mccPaper.pause();
       else if (p === '/api/mcc/paper/resume') await mccPaper.resume();
+      else if (p === '/api/mcc/paper/budget') await mccPaper.setBudget(b.budget);
       else if (p === '/api/mcc/paper/reset') {
         if (b.confirm !== true) throw new Error('Resetting deletes the paper trade: it needs confirmation');
         mccPaper.reset();

@@ -252,3 +252,72 @@ test('ideal trade: an amount out of reach takes the closest shape, and says so',
     M.legsAt(S, M.merge(), strikes).map((l) => l.strike),
   );
 });
+
+// ---------- NIFTYBEES budget: only the ETF's quantity and P&L follow it ----------
+test('budget: NIFTYBEES bought for the budget, the options unchanged', () => {
+  const p = M.merge();
+  assert.equal(M.etfQty(p, 24000, 240), 6500, 'no budget: 65 × Nifty worth');
+  assert.equal(M.etfQty(M.merge({ budget: 3000000 }), 24000, 240), 12500);
+  const one = M.runMccModel({}, { S0: 24000, pct: 6, months: 3 });
+  const big = M.runMccModel({ budget: 3000000 }, { S0: 24000, pct: 6, months: 3 });
+  big.withAdj.forEach((m, i) => {
+    const o = one.withAdj[i];
+    assert.deepEqual([m.opt, m.callPnl, m.putPnl, m.adjustments], [o.opt, o.callPnl, o.putPnl, o.adjustments]);
+    assert.equal(m.etf, Math.round(Math.round(3000000 / (m.spot0 / 100)) * ((m.spotE - m.spot0) / 100)));
+    assert.equal(m.total, m.opt + m.etf);
+  });
+  // % a year on the budget
+  const months = [{ ok: true, spot0: 24000, opt: 1000, callPnl: 0, putPnl: 0, withOnce: 0, withMonthly: 0, etfOnce: 0, adjustments: 0, move: 0 }];
+  assert.equal(M.summarize(months, 65, 3000000).invested, 3000000);
+  assert.equal(M.summarize(months, 65).invested, 24000 * 65);
+});
+
+test('budget: the paper trade buys NIFTYBEES for it and keeps the options as they are', async () => {
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { createMccPaper } = require('../mccpaper');
+  const day = (n) => new Date(Date.now() + n * 86400_000).toISOString().slice(0, 10);
+  const S = 24000;
+  const chain = { spot: S, rows: strikes.map((k) => ({ strike: k, ce: { ltp: Math.max(1, S - k) + 50 }, pe: { ltp: Math.max(1, k - S) + 50 } })) };
+  const make = () =>
+    createMccPaper({
+      file: path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mcc-')), 'p.json'),
+      demo: true,
+      isMarketOpen: () => false,
+      getExpiries: async () => [day(40), day(70)],
+      getChain: async () => chain,
+      closeOf: async () => null,
+      beesPrice: async () => null,
+      getLot: () => 65,
+    });
+  const a = make();
+  await a.start({ target: { on: false } });
+  const b = make();
+  await b.start({ target: { on: false }, budget: 3000000 });
+  const A = a.state().paper;
+  const B = b.state().paper;
+  assert.equal(A.etfOnce.qty, 6500);
+  assert.equal(B.etfOnce.qty, 12500);
+  assert.equal(B.cycle.etf.qtyMonthly, 12500);
+  assert.deepEqual(
+    B.cycle.legs.map((l) => [l.strike, l.lots, l.entry]),
+    A.cycle.legs.map((l) => [l.strike, l.lots, l.entry]),
+  );
+  assert.equal(B.cycle.opt, A.cycle.opt);
+  // a new budget in the running series: the difference bought now at NIFTYBEES' price, counted from that price
+  await b.setBudget(4000000);
+  const B2 = b.state().paper;
+  assert.equal(B2.params.budget, 4000000);
+  assert.equal(B2.etfOnce.qty, 12500 + Math.round(1000000 / 240));
+  assert.equal(B2.cycle.etf.qtyMonthly, B2.etfOnce.qty);
+  assert.equal(B2.cycle.events.at(-1).kind, 'budget');
+  const charges = M.etfCost(12500 * 240, true, 0.0005) + M.etfCost(4167 * 240, true, 0.0005);
+  assert.equal(B2.cycle.etfOnce, Math.round(-charges), 'price unchanged: only the charges');
+  assert.deepEqual(
+    B2.cycle.legs.map((l) => l.lots),
+    A.cycle.legs.map((l) => l.lots),
+  );
+  await b.setBudget(4000000);
+  assert.equal(b.state().paper.etfOnce.qty, 16667, 'the same budget again buys nothing');
+});
