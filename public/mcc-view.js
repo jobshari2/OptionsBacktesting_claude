@@ -1,13 +1,15 @@
 // Trading Ideas › Covered call › Modified covered call (left menu of the Covered call screen): NIFTYBEES worth one
 // lot plus a monthly call ratio spread and a 2-3-1 put butterfly, with rolls of the sold strikes (bt/mcc.js,
 // mccpaper.js). Tabs: Strategy & rules, Backtest (with and without adjustments, and the study of when to adjust),
-// Paper trade. Paper only: nothing here sends orders.
+// Paper trade, Live trade (mcclive-view.js: a trade saved in the Builder, with its NIFTYBEES). Paper only: nothing here
+// sends orders.
 (() => {
   const { $, esc, inr, inrS, kinr, pct, cls, dayLabel } = BT;
   const TABS = [
     ['rules', 'Strategy & rules'],
     ['bt', 'Backtest'],
     ['paper', 'Paper trade'],
+    ['live', 'Live trade'],
   ];
   const KIND = {
     entry: 'Entry',
@@ -124,7 +126,15 @@
     const bucket = (f) => {
       const ms = ok.filter(f);
       const sum = (k) => ms.reduce((n, m) => n + (m[k] || 0), 0);
-      return { n: ms.length, opt: sum('opt'), call: sum('callPnl'), put: sum('putPnl'), withOnce: sum('withOnce'), withMonthly: sum('withMonthly'), hold: sum('etfOnce') };
+      return {
+        n: ms.length,
+        opt: sum('opt'),
+        call: sum('callPnl'),
+        put: sum('putPnl'),
+        withOnce: sum('withOnce'),
+        withMonthly: sum('withMonthly'),
+        hold: sum('etfOnce'),
+      };
     };
     return {
       ...old,
@@ -219,6 +229,7 @@
     $('mccTabs').innerHTML = TABS.map(([id, label]) => `<button class="${id === tab ? 'on' : ''}" data-tab="${id}">${label}</button>`).join('');
     if (tab === 'rules') renderRules();
     else if (tab === 'bt') renderBacktest();
+    else if (tab === 'live') window.MccLive.render($('mccBody'));
     else renderPaper();
     poll();
   }
@@ -1253,7 +1264,7 @@
       }
       <div class="panel cc-doc">
         <h3>Result: ${dayLabel(sa.from)} – ${dayLabel(sa.to)}, ${sa.months} monthly series, ${sizeLabel(A.params)}</h3>
-        ${(B.withAdj !== (viewing?.raw || raw.backtest)?.withAdj) ? `<div class="muted small" style="margin-bottom:6px">Run with ${sizeLabel((viewing?.raw || raw.backtest).withAdj.params)}; shown for your budget: the options are the same, the NIFTYBEES figures scaled to it.</div>` : ''}
+        ${B.withAdj !== (viewing?.raw || raw.backtest)?.withAdj ? `<div class="muted small" style="margin-bottom:6px">Run with ${sizeLabel((viewing?.raw || raw.backtest).withAdj.params)}; shown for your budget: the options are the same, the NIFTYBEES figures scaled to it.</div>` : ''}
         ${kpiBlock('With adjustments', sa, adjDesc(A.params) + upDesc(A.params) + ` · ${sa.adjustments} adjustments · costs ${inr(sa.costs)}`)}
         ${kpiBlock('Without adjustments', sn, `costs ${inr(sn.costs)}`)}
         <p class="cc-verdict">${verdict(sa, sn, A.params)}</p>
@@ -1351,7 +1362,9 @@
     parts.push(
       `With the ETF held: ${inrS(sa.withOnce.total)} vs buy and hold alone ${inrS(sa.hold.total)}: the options ${sa.opt.total >= 0 ? 'added' : 'took'} ${inrS(sa.opt.total)}, while the drawdown went from ${inr(sa.hold.maxDD)} to ${inr(sa.withOnce.maxDD)}.`,
     );
-    parts.push(`Options alone made ${pct(sa.opt.annPct)} a year on ${p?.budget > 0 ? 'the NIFTYBEES budget' : "the ETF's value"}. That does not count interest on the ₹ in the ETF.`);
+    parts.push(
+      `Options alone made ${pct(sa.opt.annPct)} a year on ${p?.budget > 0 ? 'the NIFTYBEES budget' : "the ETF's value"}. That does not count interest on the ₹ in the ETF.`,
+    );
     return parts.join(' ');
   }
   function dirTable(sa, sn) {
@@ -1511,7 +1524,8 @@
             ${done.map((m) => `<tr><td class="l">${monthName(m.expiry)}</td><td>${num0(m.spot0)} → ${num0(m.spotE)}</td><td>${m.adjustments}</td><td class="${cls(m.callPnl)}">${inrS(m.callPnl)}</td><td class="${cls(m.putPnl)}">${inrS(m.putPnl)}</td><td class="${cls(m.opt)}">${inrS(m.opt)}</td><td class="${cls(m.etfOnce)}">${inrS(m.etfOnce)}</td><td class="${cls(m.withOnce)}">${inrS(m.withOnce)}</td><td class="${cls(m.withMonthly)}">${inrS(m.withMonthly)}</td></tr>`).join('')}
             </tbody><tfoot><tr><th class="l">Total</th><td></td><td></td><th class="${cls(tot('callPnl'))}">${inrS(tot('callPnl'))}</th><th class="${cls(tot('putPnl'))}">${inrS(tot('putPnl'))}</th><th class="${cls(tot('opt'))}">${inrS(tot('opt'))}</th><th class="${cls(tot('etfOnce'))}">${inrS(tot('etfOnce'))}</th><th class="${cls(tot('withOnce'))}">${inrS(tot('withOnce'))}</th><th class="${cls(tot('withMonthly'))}">${inrS(tot('withMonthly'))}</th></tr></tfoot></table></div></div>`
           : '');
-      if (c?.legs.length) payoffChart($('mccPapPay'), c.legs, lot, c.spot || c.spot0, { qty: P.etfOnce?.qty || 0, b0: c.etf.b0, s0: c.spot0, adj: c.etf.monthlyAdj });
+      if (c?.legs.length)
+        payoffChart($('mccPapPay'), c.legs, lot, c.spot || c.spot0, { qty: P.etfOnce?.qty || 0, b0: c.etf.b0, s0: c.spot0, adj: c.etf.monthlyAdj });
       const scen = el.querySelector('.mcc-scen');
       const now = scen?.querySelector('tr.sel');
       if (scen) scen.scrollTop = scenTop ?? (now ? now.offsetTop - (scen.clientHeight - now.offsetHeight) / 2 : 0); // first time: Nifty now in the middle
@@ -1571,7 +1585,7 @@
     const t =
       (p.target?.on ? `ideal trade: flat zone ₹${Number(p.target.amount).toLocaleString('en-IN')}, ` : 'fixed strike distances, ') +
       `next month's series when this one has under ${p.minDays ?? 15} days left, `;
-    return `${t}${a}${u}, NIFTYBEES ${p.etf === 'real' ? 'live price' : '= Nifty ÷ 100'}, ${p.budget > 0 ? `budget ${inr(p.budget)}` : 'one lot\'s worth'}`;
+    return `${t}${a}${u}, NIFTYBEES ${p.etf === 'real' ? 'live price' : '= Nifty ÷ 100'}, ${p.budget > 0 ? `budget ${inr(p.budget)}` : "one lot's worth"}`;
   }
   // The series' open legs in the Builder as a live paper position at their paper entry prices (as Covered call's paper
   // trade and Live Ideas do): the Builder follows them on the live chain with P&L, payoff on any date and adjustments.
@@ -1626,7 +1640,9 @@
     }</span></h3>
         <span class="spacer"></span>${P ? '<button class="btn-sm ghost danger" data-mct="delete" title="Delete this paper trade and its history (the same as Reset in Trading Ideas)">✕ Delete</button>' : ''}<button class="btn-sm ghost" data-mct="open" title="Open the paper trade in Trading Ideas">Open in Trading Ideas ▸</button></div>`;
     if (!P) {
-      el.innerHTML = head + '<div class="muted small pad">Start one in <b>Trading Ideas › Covered call › Modified covered call › Paper trade</b>; it is listed here at once, month by month, with its strikes and P&amp;L.</div>';
+      el.innerHTML =
+        head +
+        '<div class="muted small pad">Start one in <b>Trading Ideas › Covered call › Modified covered call › Paper trade</b>; it is listed here at once, month by month, with its strikes and P&amp;L.</div>';
       bindMccTrades(el);
       return;
     }
@@ -1640,7 +1656,9 @@
     const legsCell = (open, closed, t) => {
       const o = open.filter((l) => l.type === t).map((l) => legHtml(l, true));
       const c = closed.filter((l) => l.type === t).map((l) => legHtml(l, false));
-      return o.join('') + (c.length ? `${o.length ? '<div class="muted small">closed by rolls</div>' : ''}${c.join('')}` : '') || '<span class="muted">—</span>';
+      return (
+        o.join('') + (c.length ? `${o.length ? '<div class="muted small">closed by rolls</div>' : ''}${c.join('')}` : '') || '<span class="muted">—</span>'
+      );
     };
     const money = (v, b) => `<td class="${cls(v)}${b ? ' b' : ''}">${v == null ? '—' : inrS(v)}</td>`;
     const rows = [];

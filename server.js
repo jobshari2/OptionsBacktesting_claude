@@ -28,7 +28,8 @@ const { createKiteBasket } = require('./kitebasket');
 const { createCcPaper } = require('./ccpaper');
 const { runCoveredCall, modelPath: ccModelPath, DEFAULTS: CC_DEFAULTS } = require('./bt/coveredcall');
 const { runMcc, runMccStudy, runMccModel, DEFAULTS: MCC_DEFAULTS, STUDY: MCC_STUDY } = require('./bt/mcc');
-const { createMccPaper } = require('./mccpaper');
+const { createMccPaper, weekdaysLeft } = require('./mccpaper');
+const mccLive = require('./bt/mcclive');
 const { suggest: ccSuggest } = require('./bt/ccsuggest');
 const { createFeedCompare } = require('./feedcmp');
 const { createTickStore } = require('./lib/ticks');
@@ -715,9 +716,9 @@ const kiteBasket = createKiteBasket({
 const CC_BT_FILE = path.join(__dirname, 'bt-data', 'cc-backtest.json');
 // NIFTYBEES's LTP, read at most every 20 s (the paper trade and the suggestions share it); null in demo mode.
 let ccBees = { at: 0, px: null };
-async function ccBeesPrice() {
+async function ccBeesPrice(maxAgeMs = 20_000) {
   if (DEMO) return null; // the demo models NIFTYBEES from its synthetic Nifty
-  if (Date.now() - ccBees.at < 20_000) return ccBees.px;
+  if (Date.now() - ccBees.at < maxAgeMs) return ccBees.px;
   const d = await upstox('/market-quote/ltp', { instrument_key: backtester.data.BEES });
   ccBees = { at: Date.now(), px: Object.values(d || {})[0]?.last_price || null };
   return ccBees.px;
@@ -903,6 +904,136 @@ function mccJob(kind, run) {
     });
   return job;
 }
+// Live trade tab (bt/mcclive.js): a saved Builder trade or the paper trade's series, with the NIFTYBEES bought against
+// it (kept per trade in bt-data/mcc-live.json), on the live chain. Read-only: nothing is ordered.
+const MCC_LIVE_FILE = path.join(__dirname, 'bt-data', DEMO ? 'mcc-live-demo.json' : 'mcc-live.json');
+function mccLiveTrades() {
+  const saved = readJson(path.join(__dirname, 'bt-data', 'paper-trades.json')) || [];
+  const list = saved.filter((t) => t?.snap?.legs?.some((l) => l.open)).map(mccLive.fromBuilder);
+  const paper = mccLive.fromPaper(mccPaper.state().paper);
+  if (paper) list.push(paper);
+  return list.filter((x) => x.legs.length && x.expiry);
+}
+// Nifty's daily closes (and India VIX) over the cached history, for the suggestions' past moves; kept 6 h.
+let mccCloses = { at: 0, list: null };
+async function mccHistory() {
+  if (mccCloses.list && Date.now() - mccCloses.at < 6 * 3600_000) return mccCloses.list;
+  const d = backtester.data;
+  const from = d.indexStart();
+  if (!from) throw new Error('No Nifty history in the cache yet (Data screen): the suggestions are tested on it');
+  const yesterday = d.addDays(istDate(), -1);
+  let days;
+  try {
+    days = await d.loadIndex(from, yesterday, 'soft');
+  } catch {
+    days = await d.loadIndex(from, d.addDays(istDate().slice(0, 7) + '-01', -1), 'soft'); // offline: the months cached
+  }
+  const list = [];
+  for (const day of days) {
+    const a = d.spotDay(day);
+    const v = d.vixDay(day);
+    const close = a ? a[a.length - 1] : null;
+    if (close > 0) list.push({ day, close, vix: v ? v[v.length - 1] : null });
+  }
+  mccCloses = { at: Date.now(), list };
+  return list;
+}
+// The trade's expiry as the Builder streams it (/api/live): the REST chain with the ticks folded in every
+// TICK_SNAPSHOT_MS. While the Live trade tab asks for it (every few seconds), the expiry is tracked and its legs and
+// NIFTYBEES are streamed even when they are off the chain's streamed range (watchKey).
+async function mccLiveChain(expiry, legs) {
+  const list = await getExpiries();
+  if (!list.includes(expiry)) throw new Error(`The ${expiry} expiry is not live any more (expired?)`);
+  sideExpiries.set(expiry, Date.now());
+  if (!snapshots.has(expiry)) {
+    await fetchChain(expiry);
+    buildSnapshot(expiry);
+    updateSubscriptions();
+  }
+  const base = restChains.get(expiry);
+  for (const l of legs) {
+    const r = base?.rows.find((x) => x.strike === l.strike);
+    watchKey((l.type === 'CE' ? r?.ce : r?.pe)?.key);
+  }
+  if (!DEMO) watchKey(backtester.data.BEES);
+  const snap = snapshots.get(expiry);
+  return { spot: snap.spot, rows: snap.rows, updatedAt: snap.updatedAt, fetchedAt: base?.fetchedAt };
+}
+// NIFTYBEES now: its streamed tick when fresh, else its LTP read at most every 5 s. { px, at, how } or null.
+async function mccBeesNow() {
+  const t = DEMO ? null : feed.tick(backtester.data.BEES);
+  if (t?.ltp > 0 && Date.now() - (t.at || 0) < 60_000) return { px: t.ltp, at: t.at, how: 'tick' };
+  const px = await ccBeesPrice(5_000).catch(() => null);
+  return px > 0 ? { px, at: ccBees.at, how: 'ltp' } : null;
+}
+
+async function mccLiveState(key) {
+  const cfg = readJson(MCC_LIVE_FILE) || {};
+  const all = mccLiveTrades();
+  const trades = all.map((x) => ({
+    key: x.key,
+    name: x.name,
+    src: x.src,
+    expiry: x.expiry,
+    mcc: mccLive.looksMcc(x.legs),
+    legs: x.legs.map(mccLive.legText).join(', '),
+  }));
+  const pos = all.find((x) => x.key === (key || cfg.selected)) || all.find((x) => mccLive.looksMcc(x.legs)) || all[0];
+  if (!pos) return { trades, pos: null };
+  // no chain for it (expired, not listed): the list is still sent, so another trade can be picked
+  let chain;
+  try {
+    chain = await mccLiveChain(pos.expiry, pos.legs);
+    if (!chain?.spot) throw new Error(`No live chain for the ${pos.expiry} expiry yet`);
+  } catch (e) {
+    return { trades, key: pos.key, pos: null, error: e.message };
+  }
+  const T = mccLive.yearsTo(pos.expiry);
+  const M = mccLive.market(chain, T);
+  const own = cfg.trades?.[pos.key] || {};
+  const entrySpot = own.entrySpot > 0 ? own.entrySpot : pos.spotIn;
+  const qty = own.bees?.qty ?? pos.bees?.qty ?? 0;
+  const price = own.bees?.price ?? pos.bees?.price ?? null;
+  const live = await mccBeesNow();
+  // NIFTYBEES now: live, else moved from its entry price with Nifty since the entry (else Nifty ÷ 100)
+  const now = live?.px || (price > 0 && entrySpot > 0 ? (price * M.spot) / entrySpot : M.spot / 100);
+  const bees = {
+    qty,
+    price: price > 0 ? price : now,
+    now,
+    live: Boolean(live),
+    how: live?.how || null,
+    at: live?.at || null,
+    set: price > 0 && qty > 0,
+    fromPaper: !own.bees && Boolean(pos.bees),
+  };
+  // cal: what the page adds to the model so each leg is worth its LTP at Nifty now (bt/mcclive.js valueToday)
+  const legs = pos.legs.map((l) => ({ ...l, ltp: M.px(l.type, l.strike), iv: M.iv(l.type, l.strike), cal: mccLive.legCal(l, M) }));
+  return {
+    trades,
+    key: pos.key,
+    pos: { ...pos, legs },
+    M,
+    market: {
+      spot: M.spot,
+      F: M.F,
+      df: M.df,
+      atmIv: M.atmIv,
+      T,
+      daysLeft: weekdaysLeft(istDate(), pos.expiry),
+      at: chain.updatedAt, // the streamed snapshot (ticks folded in)
+      restAt: chain.fetchedAt,
+      feed: DEMO ? false : Boolean(feed.status().connected),
+    },
+    bees,
+    entrySpot,
+    entryFromTrade: !(own.entrySpot > 0),
+    grid: mccLive.grid(pos, M, bees, entrySpot),
+    cover: mccLive.beesCover(pos, M, bees),
+  };
+}
+const mccLiveOut = (st) => ({ ...st, M: undefined, marketOpen: DEMO || isMarketOpen(), demo: DEMO });
+
 async function handleMcc(req, res, url, p) {
   lastClientAt = Date.now();
   try {
@@ -965,6 +1096,56 @@ async function handleMcc(req, res, url, p) {
         swings: o.swings !== false,
       };
       return sendJson(res, 200, runMccModel(b.params || {}, opts));
+    }
+    if (p === '/api/mcc/live' && req.method !== 'POST') {
+      if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the live trade is priced on the live chain`);
+      return sendJson(res, 200, mccLiveOut(await mccLiveState(url.searchParams.get('key'))));
+    }
+    if (p === '/api/mcc/live/config' && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req, 10_000)).toString('utf8') || '{}');
+      if (typeof b.key !== 'string' || !b.key) throw new Error('Which trade?');
+      const num = (v, lo, hi) => (v === '' || v == null ? null : Number.isFinite(Number(v)) && Number(v) >= lo && Number(v) <= hi ? Number(v) : NaN);
+      const cfg = readJson(MCC_LIVE_FILE) || {};
+      cfg.trades ||= {};
+      const t = (cfg.trades[b.key] ||= {});
+      if (b.bees) {
+        const qty = num(b.bees.qty, 0, 1e8);
+        const price = num(b.bees.price, 1, 1e5);
+        if (Number.isNaN(qty) || Number.isNaN(price)) throw new Error('NIFTYBEES: units 0 – 10 crore, price ₹1 – ₹1,00,000');
+        t.bees = qty == null && price == null ? undefined : { qty: qty ?? 0, price };
+        if (b.bees.day) t.bees.day = String(b.bees.day).slice(0, 10);
+      }
+      if ('entrySpot' in b) {
+        const e = num(b.entrySpot, 1000, 1e6);
+        if (Number.isNaN(e)) throw new Error('Entry Nifty: a level like 22960');
+        t.entrySpot = e ?? undefined;
+      }
+      cfg.selected = b.key;
+      writeJson(MCC_LIVE_FILE, cfg);
+      return sendJson(res, 200, mccLiveOut(await mccLiveState(b.key)));
+    }
+    if (p === '/api/mcc/live/suggest' && req.method === 'POST') {
+      if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the suggestions are priced on the live chain`);
+      const b = JSON.parse((await readBody(req, 10_000)).toString('utf8') || '{}');
+      const st = await mccLiveState(b.key);
+      if (!st.pos) throw new Error('No trade to suggest for');
+      const closes = await mccHistory();
+      const days = Math.max(1, st.market.daysLeft);
+      const moves = mccLive.pastMoves(closes, days, st.M.atmIv);
+      if (moves.length < 100) throw new Error(`Only ${moves.length} past ${days}-day moves in the cached history: too few to test on`);
+      const slip = (MCC_DEFAULTS.costs.slipPct || 0.5) / 100;
+      const out = mccLive.suggest(st.pos, st.M, st.bees, moves, { slip, day: istDate(), days });
+      for (const v of [...out.list, ...out.protect, ...out.risky]) {
+        v.after.legs = v.after.legs.map((l) => ({ ...l, ltp: st.M.px(l.type, l.strike), iv: st.M.iv(l.type, l.strike), cal: mccLive.legCal(l, st.M) }));
+      }
+      return sendJson(res, 200, {
+        key: st.key,
+        ...out,
+        rules: mccLive.studyRules(readJson(MCC_FILES.study), st.pos, st.M, st.entrySpot),
+        sample: { n: moves.length, days, from: closes[0]?.day, to: closes[closes.length - 1]?.day, ivNow: st.M.atmIv, slipPct: slip * 100 },
+        spot: st.M.spot,
+        at: Date.now(),
+      });
     }
     if (p === '/api/mcc/paper') return sendJson(res, 200, { ...mccPaper.state(), demo: DEMO });
     if (p.startsWith('/api/mcc/paper/') && req.method === 'POST') {
