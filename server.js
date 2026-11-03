@@ -30,6 +30,7 @@ const { runCoveredCall, modelPath: ccModelPath, DEFAULTS: CC_DEFAULTS } = requir
 const { runMcc, runMccStudy, runMccModel, DEFAULTS: MCC_DEFAULTS, STUDY: MCC_STUDY } = require('./bt/mcc');
 const { createMccPaper, weekdaysLeft } = require('./mccpaper');
 const mccLive = require('./bt/mcclive');
+const lab = require('./bt/lab');
 const { suggest: ccSuggest } = require('./bt/ccsuggest');
 const { createFeedCompare } = require('./feedcmp');
 const { createTickStore } = require('./lib/ticks');
@@ -1231,6 +1232,73 @@ const runSurgeScan = (ctl) =>
     return { at: r.at, rows: r.rows.length };
   });
 
+// ---------- Trading Ideas › Strategy lab (bt/lab.js) ----------
+// Any options structure written as legs from ATM, backtested on every monthly (or weekly) series like the Modified
+// covered call, and every preset compared on the same series. Jobs the page polls; the last of each is kept in
+// bt-data/lab-backtest.json / lab-compare.json. History only: nothing is traded.
+const LAB_FILES = { backtest: path.join(__dirname, 'bt-data', 'lab-backtest.json'), compare: path.join(__dirname, 'bt-data', 'lab-compare.json') };
+const labJobs = new Map();
+function labJob(kind, run) {
+  const id = Math.random().toString(36).slice(2, 10);
+  const job = { id, kind, status: 'running', progress: { phase: 'Starting', done: 0, total: 0 }, startedAt: Date.now() };
+  labJobs.set(id, job);
+  while (labJobs.size > 6) labJobs.delete(labJobs.keys().next().value);
+  run({ onProgress: (x) => (job.progress = { ...x, api: backtester.data.apiStats() }), stopped: () => Boolean(job.stop) })
+    .then((r) => {
+      job.result = r;
+      job.status = 'done';
+      writeJson(LAB_FILES[kind], r);
+    })
+    .catch((e) => {
+      job.status = 'error';
+      job.error = e.message;
+      logError('lab-' + kind, e);
+    });
+  return job;
+}
+async function handleLab(req, res, url, p) {
+  lastClientAt = Date.now();
+  try {
+    const body = async () => (req.method === 'POST' ? JSON.parse((await readBody(req, 50_000)).toString('utf8') || '{}') : {});
+    if (p === '/api/lab/meta') {
+      const cal = await backtester.data.expiryCalendar().catch(() => null);
+      const monthly = cal ? [...cal.monthly].filter((e) => cal.expiredSet.has(e)).sort() : [];
+      return sendJson(res, 200, { presets: lab.PRESETS, defaults: lab.DEFAULTS, lot: contracts.lot || lab.DEFAULTS.lotSize, monthly, demo: DEMO });
+    }
+    if ((p === '/api/lab/backtest' || p === '/api/lab/compare') && req.method !== 'POST') return sendJson(res, 200, { saved: readJson(LAB_FILES[p.slice(9)]) });
+    if (p === '/api/lab/backtest' && req.method === 'POST') {
+      const b = await body();
+      const job = labJob('backtest', (o) => lab.runLab(backtester.data, b.params || {}, { from: b.from, to: b.to }, o));
+      return sendJson(res, 200, { id: job.id, status: job.status });
+    }
+    if (p === '/api/lab/compare' && req.method === 'POST') {
+      const b = await body();
+      const job = labJob('compare', (o) => lab.runLabCompare(backtester.data, b.params || {}, { from: b.from, to: b.to }, o));
+      return sendJson(res, 200, { id: job.id, status: job.status });
+    }
+    if (p === '/api/lab/job') {
+      const job = labJobs.get(url.searchParams.get('id'));
+      if (!job) return sendJson(res, 404, { error: 'Job not found (the server may have restarted): run it again' });
+      return sendJson(res, 200, {
+        id: job.id,
+        status: job.status,
+        progress: job.progress,
+        error: job.error,
+        result: job.status === 'done' ? job.result : undefined,
+      });
+    }
+    if (p === '/api/lab/job/stop' && req.method === 'POST') {
+      const job = labJobs.get((await body()).id);
+      if (job) job.stop = true;
+      return sendJson(res, 200, { ok: Boolean(job) });
+    }
+    return sendJson(res, 404, { error: 'Not found' });
+  } catch (e) {
+    logError('lab', e);
+    return sendJson(res, 500, { error: e.message });
+  }
+}
+
 async function handleSurge(req, res, url, p) {
   lastClientAt = Date.now();
   try {
@@ -1629,6 +1697,8 @@ const server = http.createServer(async (req, res) => {
   if (p.startsWith('/api/mcc/')) return handleMcc(req, res, url, p);
 
   if (p.startsWith('/api/surge/')) return handleSurge(req, res, url, p);
+
+  if (p.startsWith('/api/lab/')) return handleLab(req, res, url, p);
 
   if (p === '/kite/login' || p === '/kite/callback' || p.startsWith('/api/kite/')) return handleKite(req, res, url, p);
 

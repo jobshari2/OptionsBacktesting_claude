@@ -1,0 +1,17 @@
+/* Trading Ideas › Strategy lab (lab-view.js); layout from surge.css (.surge-screen, .sr-body), documents from cc.css */
+.lab-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 8px 0; }
+.lab-set { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 8px 0; font-size: 12px; }
+.lab-set label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+.lab-legs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 4px 0 8px; }
+.lab-chip { font-size: 11.5px; padding: 2px 7px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel-2); white-space: nowrap; }
+.lab-chip.b { border-color: var(--up); color: var(--up); }
+.lab-chip.s { border-color: var(--down); color: var(--down); }
+.lab-tag { font-size: 10.5px; padding: 1px 6px; border-radius: 8px; background: var(--accent); color: #fff; margin-left: 6px; text-transform: uppercase; letter-spacing: .3px; }
+.lab-presets { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+.lab-preset { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
+.lab-preset p { margin: 4px 0; }
+.lab-pbtn { display: flex; gap: 6px; margin-top: auto; padding-top: 6px; }
+.lab-scen td.lab-hl, .lab-scen th.lab-hl { font-weight: 700; }
+.lab-legs-tbl select, .lab-legs-tbl input { font-size: 12px; }
+.grid-tbl td.l, .grid-tbl th.l { text-align: left; }
+.lab-screen .cc-detail ul { margin: 4px 0; padding-left: 18px; }
