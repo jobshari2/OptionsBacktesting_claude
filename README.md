@@ -4,7 +4,7 @@ A local web app for Nifty options on the Upstox API. Its screens are grouped in 
 
 - **Live:** the option chain with a Nifty chart and support / resistance, volume-surge and price signals with their track record, volume-flow predictions, a plain-language market pulse and the order book. Everything is recorded, so a day can be replayed and the signals tested on it.
 - **Strategies:** an arbitrage scanner, ready-made and your own strategies backtested on real 1-minute historical option prices, side-by-side comparison, live deployment, and a Builder to trade a position by hand on a historical replay or the live chain.
-- **Trading Ideas:** a strategy taken from its source (the covered call against NIFTYBEES), with its rules and adjustments, a backtest and a live paper trade.
+- **Trading Ideas:** a strategy taken from its source (the covered call against NIFTYBEES), with its rules and adjustments, a backtest and a live paper trade; and a **Strategy lab** to try a new options structure (starting with ways to profit when Nifty falls).
 - **Portfolio:** hedge your holdings with Nifty options — the cheapest hedge for a loss limit you set, and a backtest of hedges back to 2008.
 - **Data:** what history Upstox provides and what is cached.
 
@@ -46,6 +46,7 @@ Pick a group in the top bar; its screens are in the row below. A group reopens o
 | **Trades** | **Trades** | Trades saved from the Builder (live paper trades and replays); load one back |
 | **Trading Ideas** | **Covered call** | NIFTYBEES held and pledged, a monthly call sold against it, a put butterfly as insurance and a weekly contra spread: **Strategy & rules** (the rules and every adjustment, with the thread's worked example), **Backtest** (every monthly cycle of the history, against buy and hold) and **Paper trade** (the same rules on the live chain, no orders) |
 | | **Option surges** | Options whose premium jumped 200 %+: every one in the history with what moved it (Nifty move, IV, expiry, volume and OI), shown as overview, table with a chart each, scatter plots and causes; a backtest of trading them; a live radar of options climbing off today's low |
+| | **Strategy lab** | Try a new options structure written as legs from ATM: **Idea** (how the Modified covered call can be simplified to profit from a fall, with a model of each version), **Build & payoff** (edit the legs, payoff at expiry and today, with or without NIFTYBEES), **Backtest** (every monthly or weekly series, trend filter, target / stop) and **Compare** (every preset, always in and only in a downtrend, on the same series) |
 | **Portfolio** | **Hedge** | Protect your holdings with Nifty options: planner and backtest |
 | **Data** | **Data** | What history Upstox provides, what's cached, downloading what is missing (by hand or automatically) |
 
@@ -649,6 +650,21 @@ The second entry in the Covered call screen's left menu (`bt/mcc.js`, `mccpaper.
 
 What the history says (Nov 2024 – Sep 2026, 21 series; Dec 2024 and Mar 2025 have no option prices in the cache): options alone +₹1.93 L without adjustments; the sold-strike rolls at 2 % +₹2.11 L (1 % −₹46 K, 1.5 % and 3 % ≈ none); moving the whole spread / butterfly at 1.5 % +₹2.83 L with a deeper worst month; none of the up-market extras made money (the hedge call cut the worst month from −₹61 K to −₹19 K for most of the profit). With NIFTYBEES held: +₹1.20 L vs buy and hold −₹0.91 L.
 
+## Trading Ideas · Strategy lab
+
+Try a new options structure the way the Modified covered call is tested, without writing code (`bt/lab.js`, `public/lab-view.js`). A structure is up to 8 legs, each *buy / sell, CE / PE, points from ATM (Nifty rounded to 50), lots*. History and models only: nothing here trades.
+
+- **Idea: profit from a fall** works out where the Modified covered call loses when Nifty falls (NIFTYBEES falls point for point; the 2-3-1 put butterfly pays at most ~300 points) and three simpler versions, each priced by Black-Scholes at Nifty now (13 % IV, 28 days) from −10 % to +5 %:
+  1. **Bear spread combo** (drop NIFTYBEES and flip both sides): buy the ATM put, sell ATM−300; sell the ATM+100 call, buy ATM+300. Defined risk both ways, near zero cost, pays up to ~300 points in a fall. A trade on its own: one lot of it does not hedge one lot of NIFTYBEES in a big fall.
+  2. **Put ratio backspread 1×2 instead of the butterfly** (keep NIFTYBEES): sell 1 put at ATM−100, buy 2 at ATM−400. The put bought net gives NIFTYBEES a floor under the bought strike for a small debit.
+  3. Either **only in a downtrend** (Nifty under its N-day average at entry).
+
+  It also lists what to check before trusting any of them (Nifty's upward drift, put skew, the small sample, costs).
+- **Presets**: bear spread combo, bear put spread, bear call spread, the MCC's put 2-3-1 butterfly alone, put ratio backspread 1×2, and the MCC's options alone without NIFTYBEES (a reference: one call is naked). Any preset can be edited into a custom structure.
+- **Build & payoff**: the legs table, Nifty / IV / days / lots, net premium, the most it makes and loses (open-ended where the payoff keeps sloping past the outer strikes), breakevens, the payoff at expiry and today, and a −10 % … +10 % table, optionally with one lot of NIFTYBEES on top.
+- **Backtest** (`/api/lab/backtest`, kept in `bt-data/lab-backtest.json`): every monthly series (or every weekly expiry) in the chosen period, entered at 09:30 on its first trading day at the strikes above, held to expiry and settled at intrinsic, or closed at 15:00 at a **target** (% of the most it can make) or **stop** (% of the most it can lose). 0.5 % slippage, ₹20 an order, taxes by date (the MCC's fills and settlement, `bt/mcc.js`). **Filter**: always, only when Nifty is under its N-day average (downtrend) or only over it. Results: total, per series, worst, drawdown, % a year on the most it can lose, by direction of the series (down / flat / up more than 2 %, 1 % for weekly), the running total against one lot of NIFTYBEES and the two together, and every series with its legs, fills and events. Series a filter sits out count as NIFTYBEES alone in the "+ NIFTYBEES" figures.
+- **Compare** (`/api/lab/compare`, `bt-data/lab-compare.json`): every preset twice (always in, and only in a downtrend) on the same series and settings, ranked by total, with the best in falling series and the best laid over NIFTYBEES named. Click a row to open it on the Backtest tab.
+
 ## Trading Ideas · Option surges
 
 Options whose premium jumped 100–200 %+ off a low: every one in the cached history, what moved it, a live radar and a backtest of trading them (`bt/surge.js`, `bt/surgevol.js`, `surgeradar.js`, `public/surge-view.js`). Paper only: nothing on the screen places orders.
@@ -781,6 +797,7 @@ The same checks run in **GitHub Actions** (`.github/workflows/ci.yml`) and in **
 | `bt/biweekly.js`, `public/bw-view.js` | The Bi-weekly screen: variations of the hedge, of its reverse, and of the two as one position |
 | `bt/coveredcall.js`, `ccpaper.js`, `public/cc-view.js` | Trading Ideas › Covered call: the rules and the backtest; the live paper trade; the screen |
 | `bt/mcc.js`, `mccpaper.js`, `public/mcc-view.js` | Trading Ideas › Covered call › Modified covered call: the rules, backtest and adjustment study; the live paper trade; the screen |
+| `bt/lab.js`, `public/lab-view.js` | Trading Ideas › Strategy lab: structures as legs from ATM, their backtest and the preset comparison; the screen |
 | `bt/surge.js`, `bt/surgevol.js`, `surgeradar.js`, `public/surge-view.js` | Trading Ideas › Option surges: the history scan and backtest; volume / OI download; the live radar; the screen |
 | `bt/research.js` | Online adjustment research (Claude + web search) |
 | `anomaly-live.js` | Live scanner: opportunities, rejected signals, scanner health, parity by strike, daily log |

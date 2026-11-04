@@ -36,3 +36,5 @@ reports/
 playwright-report/
 test-results/
 bt-data/mcc-live-demo.json
+bt-data/lab-backtest.json
+bt-data/lab-compare.json

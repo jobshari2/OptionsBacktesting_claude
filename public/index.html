@@ -12,6 +12,7 @@
   <link rel="stylesheet" href="kite.css" />
   <link rel="stylesheet" href="cc.css" />
   <link rel="stylesheet" href="surge.css" />
+  <link rel="stylesheet" href="lab.css" />
   <link rel="stylesheet" href="themes.css" />
   <script>try { document.documentElement.dataset.theme = localStorage.getItem("nifty-theme") || "night"; } catch (e) {}</script>
 </head>
@@ -102,6 +103,7 @@
     <span class="sub-group" data-group="tideas">
       <button data-view="cc" title="Covered call against NIFTYBEES: rules, backtest and live paper trade">Covered call</button>
       <button data-view="surge" title="Options whose premium jumped 200 % or more: every one in the history, what caused it, a live radar and a backtest of trading them">Option surges</button>
+      <button data-view="lab" title="Strategy lab: try a new options structure (legs from ATM) — payoff, a backtest on every monthly or weekly series, and every preset compared; starts with ways to profit from a fall">Strategy lab</button>
     </span>
     <span class="sub-group" data-group="port">
       <button data-view="hedge" title="Hedge your portfolio with Nifty options: planner and backtest">Hedge</button>
@@ -1022,6 +1024,12 @@
     <div id="srBody" class="sr-body"></div>
   </main>
 
+  <!-- ===== Trading Ideas: strategy lab (lab-view.js) ===== -->
+  <main id="lab" class="surge-screen lab-screen hidden">
+    <div class="panel cc-tabs-panel sr-tabs-panel"><div class="seg" id="labTabs"></div><span class="muted small" id="labStatus"></span></div>
+    <div id="labBody" class="sr-body"></div>
+  </main>
+
   <!-- ===== Data ===== -->
   <main id="data" class="data-screen hidden">
     <div id="dataBody" class="data-grid"></div>
@@ -1062,6 +1070,7 @@
   <script src="mcclive-view.js"></script>
   <script src="mcc-view.js"></script>
   <script src="surge-view.js"></script>
+  <script src="lab-view.js"></script>
   <script src="theme.js"></script>
 </body>
 </html>
