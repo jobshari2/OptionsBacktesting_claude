@@ -175,6 +175,11 @@
 .mcl-bees { flex-wrap: wrap; gap: 8px 14px; margin-top: 6px; }
 .mcl-bees label { display: inline-flex; align-items: center; gap: 6px; }
 .mcl-bees input.num { width: 110px; }
+.mcl-close { margin: 10px 0; padding: 10px 12px; border: 1px solid var(--down, #f0616d); border-radius: 8px; background: color-mix(in srgb, var(--down, #f0616d) 7%, transparent); }
+.mcl-close .set-row { flex-wrap: wrap; gap: 8px 14px; margin: 6px 0; }
+.mcl-close-tbl input.num { width: 100px; }
+.mcl-close-tot { gap: 8px 22px; }
+.mcl-close-tot b { font-size: 15px; }
 .mcl-track { padding: 52px 16px 40px; overflow: hidden; }
 .mcl-line { position: relative; height: 4px; background: var(--line); border-radius: 2px; }
 .mcl-zone { position: absolute; top: -3px; height: 10px; background: color-mix(in srgb, var(--up, #3fb68b) 18%, transparent); border-radius: 3px; }

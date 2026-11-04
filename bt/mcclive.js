@@ -35,7 +35,16 @@ const legText = (l) => `${l.side > 0 ? 'B' : 'S'} ${l.lots}× ${l.strike} ${l.ty
 // { key, src, id, name, lot, expiry, legs: [{ id, type, strike, lots, side, entry }], closed: [{ …, exit, pnl }],
 //   realised: { CE, PE }, costs, spotIn, entryDay, bees: { qty, price } | null }
 
+// The NIFTYBEES held against a Builder trade (its snap.mcc, set in the Builder or on the Live trade tab):
+// { qty, price, day, exitPx, exitDay, exitAt } or null when no units and price are entered.
+function beesOfSnap(snap) {
+  const m = snap?.mcc;
+  if (!(m?.qty > 0 && m?.price > 0)) return null;
+  return { qty: m.qty, price: m.price, day: m.day || null, exitPx: m.exitPx > 0 ? m.exitPx : null, exitDay: m.exitDay || null, exitAt: m.exitAt || null };
+}
+
 // A trade saved in the Builder (bt-data/paper-trades.json). Its P&L is before charges, as the Builder shows it.
+// A trade whose legs are all closed comes back with no legs (done: true), its expiry from the closed legs.
 function fromBuilder(t) {
   const lot = t.summary?.lot || 65;
   const expOf = (l) => l.expiry || t.snap.liveExpiry || t.snap.expiry;
@@ -60,9 +69,9 @@ function fromBuilder(t) {
       pnl: (l.exitPx - l.entryPx) * side(l) * l.lots * lot,
     }));
   const count = new Map();
-  for (const l of legs) count.set(l.expiry, (count.get(l.expiry) || 0) + 1);
+  for (const l of legs.length ? legs : closed) count.set(l.expiry, (count.get(l.expiry) || 0) + 1);
   const expiry = [...count].sort((a, b) => b[1] - a[1])[0]?.[0] || t.snap.liveExpiry || null;
-  const spots = all.filter((l) => l.open && l.spotIn > 0).map((l) => l.spotIn);
+  const spots = all.filter((l) => (legs.length ? l.open : true) && l.spotIn > 0).map((l) => l.spotIn);
   return {
     key: 'builder:' + t.id,
     src: 'builder',
@@ -72,6 +81,11 @@ function fromBuilder(t) {
     expiry,
     legs: legs.filter((l) => l.expiry === expiry),
     otherExpiry: legs.filter((l) => l.expiry !== expiry).length,
+    others: legs.filter((l) => l.expiry !== expiry), // open legs of other expiries (closed with the trade too)
+    done: !legs.length,
+    flag: Boolean(t.snap.mcc?.on), // marked "Modified covered call" in the Builder
+    closedAt: t.closedAt || null,
+    closeBatch: t.closeBatch || null, // set when closed from the Live trade tab (closeSaved), for its undo
     closed,
     realised: {
       CE: sum(
@@ -91,7 +105,105 @@ function fromBuilder(t) {
         .filter(Boolean)
         .sort()[0] || null,
     live: t.snap.src === 'live',
-    bees: null,
+    bees: beesOfSnap(t.snap),
+  };
+}
+
+// ---------- closing a saved trade ----------
+// Every open leg of a saved Builder trade closed at the prices given (px: { [leg id]: price }), and the NIFTYBEES held
+// sold at beesPx, at time ts — the way the Builder records an exit (exitPx / exitAt / exitDay / exitMin / exitClock,
+// a log line per leg). Returns a new trade object (the summary updated) for bt-data/paper-trades.json. The legs closed
+// and the NIFTYBEES exit carry closeBatch = ts, so reopenSaved can undo exactly this close.
+const IST = 5.5 * 3600_000;
+const istDay = (ts) => new Date(ts + IST).toISOString().slice(0, 10);
+const istHms = (ts) => new Date(ts + IST).toISOString().slice(11, 19);
+const goodPx = (v) => v !== '' && v != null && Number.isFinite(Number(v)) && Number(v) >= 0;
+function closeSaved(t, { px = {}, beesPx = null, ts = Date.now() } = {}) {
+  const out = JSON.parse(JSON.stringify(t));
+  const snap = out.snap;
+  const lot = out.summary?.lot || 65;
+  const open = (snap.legs || []).filter((l) => l.open && l.lots > 0);
+  if (!open.length) throw new Error('The trade has no open legs to close');
+  for (const l of open) if (!goodPx(px[l.id])) throw new Error(`Exit price missing for ${l.strike} ${l.type}`);
+  const bees = beesOfSnap(snap);
+  if (bees && !bees.exitPx && !(Number(beesPx) > 0)) throw new Error('NIFTYBEES sell price missing');
+  const hms = istHms(ts);
+  const [h, m] = hms.split(':').map(Number);
+  const at = 'Live ' + hms;
+  const day = istDay(ts);
+  const sgn = (l) => (l.action === 'B' ? 1 : -1);
+  snap.log ||= [];
+  for (const l of open) {
+    const p = Number(px[l.id]);
+    Object.assign(l, {
+      open: false,
+      exitPx: p,
+      exitAt: at,
+      exitDay: day,
+      exitMin: Math.max(0, Math.min(374, h * 60 + m - 555)),
+      exitClock: hms.slice(0, 5),
+      closeBatch: ts,
+    });
+    const pnl = sgn(l) * (p - l.entryPx) * l.lots * lot;
+    snap.log.unshift({
+      at,
+      text: `Close ${l.lots} × ${l.strike} ${l.type} (${l.action === 'B' ? 'long' : 'short'}) @ ${p.toFixed(2)} · ${pnl >= 0 ? '+' : '−'}₹${Math.abs(Math.round(pnl)).toLocaleString('en-IN')} — whole trade closed (Trading Ideas › Live trade)`,
+    });
+  }
+  if (bees && !bees.exitPx) {
+    Object.assign(snap.mcc, { exitPx: Number(beesPx), exitDay: day, exitAt: hms.slice(0, 5), exitBatch: ts });
+    const b = bees.qty * (Number(beesPx) - bees.price);
+    snap.log.unshift({ at, text: `Sell ${bees.qty} NIFTYBEES @ ${Number(beesPx).toFixed(2)} (bought ${bees.price.toFixed(2)}) · ${b >= 0 ? '+' : '−'}₹${Math.abs(Math.round(b)).toLocaleString('en-IN')}` });
+  }
+  snap.log = snap.log.slice(0, 200);
+  out.summary = summaryOf(out, at);
+  out.savedAt = ts;
+  out.closedAt = ts;
+  out.closeBatch = ts;
+  return out;
+}
+// Undoes the last closeSaved: its legs open again (their exits removed), the NIFTYBEES exit it recorded removed.
+function reopenSaved(t, { ts = Date.now() } = {}) {
+  if (!t.closeBatch) throw new Error('This trade was not closed from the Live trade tab: re-open its legs in the Builder');
+  const out = JSON.parse(JSON.stringify(t));
+  const snap = out.snap;
+  let n = 0;
+  for (const l of snap.legs || [])
+    if (l.closeBatch === t.closeBatch) {
+      for (const k of ['exitPx', 'exitAt', 'exitDay', 'exitMin', 'exitClock', 'closeBatch']) delete l[k];
+      l.open = true;
+      n++;
+    }
+  if (snap.mcc?.exitBatch === t.closeBatch) for (const k of ['exitPx', 'exitDay', 'exitAt', 'exitBatch']) delete snap.mcc[k];
+  const at = 'Live ' + istHms(ts);
+  snap.log = [{ at, text: `Undo the close of the whole trade: ${n} leg${n === 1 ? '' : 's'} open again` }, ...(snap.log || [])].slice(0, 200);
+  delete out.closedAt;
+  delete out.closeBatch;
+  out.summary = summaryOf(out, at);
+  out.savedAt = ts;
+  return out;
+}
+// The Trades list's summary of a saved trade after a close / undo here (open legs at their entry: the Builder prices
+// them again when it next saves the trade).
+function summaryOf(t, at) {
+  const lot = t.summary?.lot || 65;
+  const legs = t.snap.legs || [];
+  const open = legs.filter((l) => l.open);
+  const realised = sum(
+    legs.filter((l) => !l.open && l.exitPx != null),
+    (l) => (l.action === 'B' ? 1 : -1) * (l.exitPx - l.entryPx) * l.lots * lot,
+  );
+  const b = beesOfSnap(t.snap);
+  return {
+    ...t.summary,
+    legs: open.map((l) => `${l.action === 'B' ? 'B' : 'S'} ${l.lots}× ${l.strike} ${l.type}`).join(', '),
+    open: open.length,
+    closed: legs.length - open.length,
+    at,
+    realised: Math.round(realised),
+    openPnl: 0,
+    total: Math.round(realised),
+    bees: b?.exitPx ? Math.round(b.qty * (b.exitPx - b.price)) : undefined,
   };
 }
 
@@ -775,6 +887,9 @@ module.exports = {
   PROTECT,
   SPREAD,
   fromBuilder,
+  beesOfSnap,
+  closeSaved,
+  reopenSaved,
   fromPaper,
   looksMcc,
   yearsTo,

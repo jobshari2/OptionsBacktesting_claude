@@ -46,7 +46,7 @@
   }
   const allSug = () => (sug && !sug.error ? [...sug.list, ...(sug.protect || []), ...(sug.risky || [])] : []);
   async function findSuggestions() {
-    if (sugBusy || !st?.key) return;
+    if (sugBusy || !st?.key || st.closed) return;
     sugBusy = true;
     drawSug();
     try {
@@ -73,7 +73,7 @@
     el.innerHTML = '<div class="panel empty">Loading the live trade…</div>';
     await load();
     draw();
-    if (st?.pos && !sug) findSuggestions();
+    if (st?.pos && !st.closed && !sug) findSuggestions();
     poll();
   }
   function poll() {
@@ -84,7 +84,7 @@
         if (!document.hidden) {
           await load();
           refresh();
-          if (st?.marketOpen && st.pos && !sugBusy && Date.now() - sugAt >= SUG_MS) findSuggestions();
+          if (st?.marketOpen && st.pos && !st.closed && !sugBusy && Date.now() - sugAt >= SUG_MS) findSuggestions();
         }
         poll();
       },
@@ -95,11 +95,13 @@
   const shape = () =>
     st?.pos
       ? JSON.stringify([
+          st.closed ? 'closed' : 'open',
           st.key,
           st.pos.legs.map((l) => [l.type, l.strike, l.lots, l.side, l.entry]),
           st.pos.closed.length,
-          st.bees.qty,
-          st.bees.set,
+          st.bees?.qty,
+          st.bees?.set,
+          st.bees?.exitPx,
           st.entrySpot,
           st.trades.length,
         ])
@@ -109,6 +111,7 @@
   function refresh() {
     if (!el || !shown()) return;
     if (st?.error && st.error === el.dataset.err) return; // the same error is on screen: its trade picker is left open
+    if (st?.closed) return shape() !== drawnShape ? draw() : undefined; // a closed trade: nothing moves
     if (!st?.pos || st.error || shape() !== drawnShape || !$('mclKpis')) return draw();
     const n = nowPnl();
     $('mclStatus').innerHTML = statusHtml();
@@ -152,6 +155,7 @@
 
   function draw() {
     if (!el || !shown()) return;
+    if (st?.closed) return drawClosed();
     const top = el.querySelector('.mcl-grid')?.scrollTop; // the grid keeps its scroll through the redraws
     // values typed in the NIFTYBEES form and not saved yet survive a redraw of the same trade
     const typed = drawnShape === shape() ? FORM.map((id) => $(id)?.dataset.typed && $(id).value) : null;
@@ -176,11 +180,13 @@
       <div class="set-row"><h3>Live trade</h3>
         ${pickerHtml()}
         <button class="btn-sm ghost" id="mclRefresh" title="Price the trade at the live chain again">↻ Refresh</button>
+        ${P.src === 'builder' ? `<button class="btn-sm ${closing ? '' : 'ghost'} danger" id="mclCloseBtn" title="Close every option leg and sell the NIFTYBEES: recorded in the saved trade (Builder › Trades) at the prices you confirm">${closing ? 'Cancel close' : 'Close entire trade…'}</button>` : ''}
         <span class="muted small" id="mclStatus">${statusHtml()}</span></div>
       <div class="muted small">${esc(P.legs.map(legLine).join(' · '))} · expiry ${dayLabel(P.expiry)} (${st.market.daysLeft} trading day${st.market.daysLeft === 1 ? '' : 's'} left)${P.closed.length ? ` · closed: ${esc(P.closed.map((c) => `${c.side > 0 ? 'B' : 'S'} ${c.lots}× ${c.strike} ${c.type} ${c.entry.toFixed(1)} → ${c.exit.toFixed(1)}`).join(', '))}` : ''}${P.otherExpiry ? ` · ${P.otherExpiry} leg(s) of another expiry left out` : ''}${P.src === 'builder' ? ' · P&amp;L before charges, as the Builder shows it' : ' · P&amp;L after costs, as the paper trade counts it'}</div>
       <div class="kpis cc-kpis-main" id="mclKpis">${kpisHtml(n)}</div>
       <div id="mclCover">${coverHtml()}</div>
       <div id="mclTrack">${trackHtml()}</div>
+      <div id="mclClosePanel">${closing ? closePanelHtml() : ''}</div>
       <div class="set-row mcl-bees">
         <b>NIFTYBEES entry</b>
         <label>Units <input id="mclQty" class="txt num" type="number" min="0" step="1" value="${st.bees.qty || ''}" placeholder="e.g. 6500"></label>
@@ -188,7 +194,13 @@
         <label title="Where Nifty was when the trade was entered (the start marked on the track, the grid and the payoff)">Entry Nifty <input id="mclEntry" class="txt num" type="number" min="1000" step="0.05" value="${E ? E.toFixed(2) : ''}"></label>
         <button class="btn-sm" id="mclSave">Save</button>
         <span id="mclMsg" class="muted small">${
-          st.bees.fromPaper ? 'From the paper trade (change it to override).' : st.bees.set ? '' : 'Not entered yet: the totals count the options only.'
+          st.bees.fromPaper
+            ? 'From the paper trade (change it to override).'
+            : st.bees.fromBuilder
+              ? 'Kept in the saved trade: the Builder shows and edits them too.'
+              : st.bees.set
+                ? ''
+                : 'Not entered yet: the totals count the options only (or enter them in the Builder: Modified covered call).'
         }${st.entryFromTrade ? " Entry Nifty: the trade's legs at entry (change it if you entered at another level)." : ''} NIFTYBEES now: ${st.bees.live ? 'its LTP' : "estimated from Nifty's move since the entry"}.</span>
       </div></div>`;
 
@@ -215,7 +227,7 @@
     return `<select id="mclPick" title="Trades saved in the Builder (Trades › Saved trades) with open legs, and the paper trade's series">${st.trades
       .map(
         (t) =>
-          `<option value="${esc(t.key)}" ${t.key === st.key ? 'selected' : ''}>${esc(t.name)}${t.mcc ? '' : ' (not a call ratio + put butterfly)'} · ${dayLabel(t.expiry)}</option>`,
+          `<option value="${esc(t.key)}" ${t.key === st.key ? 'selected' : ''}>${esc(t.name)}${t.closed ? ' (closed)' : t.mcc ? '' : ' (not a call ratio + put butterfly)'} · ${dayLabel(t.expiry)}</option>`,
       )
       .join('')}</select>`;
   }
@@ -848,6 +860,8 @@
       BT.store.set('mcclive-key', key);
       sug = null;
       pick = null;
+      closing = false;
+      closeVals = {};
       el.innerHTML = '<div class="panel empty">Loading the live trade…</div>';
       await load(key);
       draw();
@@ -878,6 +892,7 @@
       }
     });
     bindSug();
+    bindClose();
     // the grid opens with Nifty now in the middle
     const g = el.querySelector('.mcl-grid');
     const now = g?.querySelector('tr.sel');
@@ -908,6 +923,238 @@
     );
     sugChart();
   }
+
+  // ---------- closing the whole trade ----------
+  // A saved Builder trade: every open leg (this expiry's and any other's) and the NIFTYBEES, at prices prefilled from
+  // the live chain and editable to the real fills. Recorded in the saved trade (/api/mcc/live/close) the way the Builder
+  // records exits; nothing is sent to a broker (the options can be sent to Kite from here, through its own dialog).
+  let closing = false;
+  let closeVals = {}; // prices typed in the close panel: leg id / 'bees' -> text (kept through the live refreshes)
+  const closeLegs = () => [...st.pos.legs, ...(st.pos.others || [])];
+  const beesToSell = () => st.bees?.qty > 0 && st.bees.set && !st.bees.exitPx;
+  // the boxes filled with the live prices now (they stay put while the screen refreshes, until "Live prices")
+  function liveCloseVals() {
+    closeVals = {};
+    for (const l of closeLegs()) closeVals[l.id] = l.ltp != null ? l.ltp.toFixed(2) : '';
+    if (beesToSell()) closeVals.bees = st.bees.now.toFixed(2);
+  }
+  const closeVal = (k, dflt) => (k in closeVals ? closeVals[k] : dflt == null ? '' : Number(dflt).toFixed(2));
+  // the P&L of closing at the panel's prices: options (this close + legs closed before), NIFTYBEES, total; ok: every price given
+  function closeTotals() {
+    const P = st.pos;
+    let opt = P.realised.CE + P.realised.PE - (P.costs?.CE || 0) - (P.costs?.PE || 0);
+    let ok = true;
+    for (const l of closeLegs()) {
+      const v = closeVal(l.id, l.ltp);
+      if (v === '' || !(Number(v) >= 0)) ok = false;
+      else opt += l.side * (Number(v) - l.entry) * l.lots * lot();
+    }
+    let bees = 0;
+    if (beesToSell()) {
+      const v = closeVal('bees', st.bees.now);
+      if (!(Number(v) > 0)) ok = false;
+      else bees = st.bees.qty * (Number(v) - st.bees.price);
+    } else if (st.bees?.exitPx && st.bees.qty > 0) bees = st.bees.qty * (st.bees.exitPx - st.bees.price);
+    return { ok, opt, bees, total: opt + bees };
+  }
+  function closePanelHtml() {
+    const P = st.pos;
+    const t = closeTotals();
+    const legRow = (l) => {
+      const v = closeVal(l.id, l.ltp);
+      const pnl = v !== '' && Number(v) >= 0 ? l.side * (Number(v) - l.entry) * l.lots * lot() : null;
+      return `<tr><td class="l"><b class="${l.side < 0 ? 'pos' : 'neg'}">${l.side < 0 ? 'Buy back' : 'Sell'}</b> ${l.lots} × ${l.strike} ${l.type}${l.expiry !== P.expiry ? ` <span class="muted small">${dayLabel(l.expiry)}</span>` : ''}</td>
+        <td>${l.entry.toFixed(2)}</td><td class="muted">${l.ltp != null ? l.ltp.toFixed(2) : '—'}</td>
+        <td><input class="txt num" type="number" min="0" step="0.05" data-cpx="${l.id}" value="${esc(v)}" placeholder="price"></td>
+        <td class="${cls(pnl)}" data-cpnl="${l.id}">${pnl == null ? '—' : inrS(Math.round(pnl))}</td></tr>`;
+    };
+    const b = st.bees;
+    const bv = closeVal('bees', b?.now);
+    const beesRow = beesToSell()
+      ? `<tr class="mcl-grp"><td class="l"><b class="neg">Sell</b> ${num0(b.qty)} NIFTYBEES</td><td>${b.price.toFixed(2)}</td><td class="muted">${b.now.toFixed(2)}${b.live ? '' : ' (est.)'}</td>
+        <td><input class="txt num" type="number" min="0.01" step="0.01" data-cpx="bees" value="${esc(bv)}" placeholder="price"></td>
+        <td class="${cls(t.bees)}" data-cpnl="bees">${Number(bv) > 0 ? inrS(Math.round(b.qty * (Number(bv) - b.price))) : '—'}</td></tr>`
+      : b?.exitPx && b.qty > 0
+        ? `<tr class="mcl-closed"><td class="l">${num0(b.qty)} NIFTYBEES <span class="muted small">already sold</span></td><td>${b.price.toFixed(2)}</td><td></td><td>${b.exitPx.toFixed(2)}</td><td class="${cls(t.bees)}">${inrS(Math.round(t.bees))}</td></tr>`
+        : `<tr class="mcl-closed"><td class="l muted" colspan="5">No NIFTYBEES entered for this trade: only the options are closed.</td></tr>`;
+    return `<div class="mcl-close">
+      <div class="set-row"><b>Close the entire trade</b> <span class="muted small">exit prices prefilled from the live LTP${b && !b.live && beesToSell() ? ' (NIFTYBEES estimated: type its real price)' : ''}; change them to the prices you actually got.</span>
+        <button class="btn-sm ghost" id="mclCloseLive" title="Put the live prices back in every box">↻ Live prices</button></div>
+      <div class="tbl-wrap"><table class="grid-tbl mcl-close-tbl"><thead><tr><th class="l">Exit</th><th>Entry</th><th>LTP</th><th>Exit price</th><th>P&amp;L</th></tr></thead>
+        <tbody>${closeLegs().map(legRow).join('')}${beesRow}</tbody></table></div>
+      <div class="set-row mcl-close-tot" id="mclCloseTot">${closeTotHtml(t)}</div>
+      <div class="set-row">
+        <button class="btn-sm danger" id="mclCloseGo">Record the close</button>
+        ${window.KiteOrder ? '<button class="btn-sm kite" id="mclCloseKite" title="Send the option legs to Zerodha Kite as real exit orders (its own dialog asks you to confirm). NIFTYBEES is not sent: sell it in Kite yourself.">Close the options on Kite…</button>' : ''}
+        <button class="btn-sm ghost" id="mclCloseCancel">Cancel</button>
+        <span class="muted small" id="mclCloseMsg">Records the exits in the saved trade (Builder › Trades: the legs closed, the NIFTYBEES sold). Nothing is sent to a broker. You can undo it afterwards.</span>
+      </div></div>`;
+  }
+  const closeTotHtml = (t) =>
+    `<span>Options <span class="muted small">(legs closed before included)</span> <b class="${cls(t.opt)}">${inrS(Math.round(t.opt))}</b></span>
+     <span>NIFTYBEES <b class="${cls(t.bees)}">${inrS(Math.round(t.bees))}</b></span>
+     <span>Total <b class="${cls(t.total)}">${t.ok ? inrS(Math.round(t.total)) : '— a price is missing'}</b></span> <span class="muted small">before charges, as the Builder counts it</span>`;
+  function bindClose() {
+    $('mclCloseBtn')?.addEventListener('click', () => {
+      closing = !closing;
+      liveCloseVals();
+      $('mclCloseBtn').textContent = closing ? 'Cancel close' : 'Close entire trade…';
+      $('mclCloseBtn').classList.toggle('ghost', !closing);
+      $('mclClosePanel').innerHTML = closing ? closePanelHtml() : '';
+      bindClosePanel();
+      if (closing) $('mclClosePanel').scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    });
+    bindClosePanel();
+  }
+  function bindClosePanel() {
+    const box = $('mclClosePanel');
+    if (!box || !closing) return;
+    box.querySelectorAll('[data-cpx]').forEach((inp) =>
+      inp.addEventListener('input', () => {
+        const k = inp.dataset.cpx;
+        closeVals[k] = inp.value;
+        const v = Number(inp.value);
+        let pnl = null;
+        if (inp.value !== '' && v >= 0) {
+          if (k === 'bees') pnl = v > 0 ? st.bees.qty * (v - st.bees.price) : null;
+          else {
+            const l = closeLegs().find((x) => String(x.id) === k);
+            pnl = l ? l.side * (v - l.entry) * l.lots * lot() : null;
+          }
+        }
+        const cell = box.querySelector(`[data-cpnl="${k}"]`);
+        if (cell) {
+          cell.className = cls(pnl);
+          cell.textContent = pnl == null ? '—' : inrS(Math.round(pnl));
+        }
+        $('mclCloseTot').innerHTML = closeTotHtml(closeTotals());
+      }),
+    );
+    $('mclCloseLive')?.addEventListener('click', () => {
+      liveCloseVals();
+      box.innerHTML = closePanelHtml();
+      bindClosePanel();
+    });
+    $('mclCloseCancel')?.addEventListener('click', () => $('mclCloseBtn')?.click());
+    $('mclCloseKite')?.addEventListener('click', () =>
+      window.KiteOrder.open({
+        title: 'Close the live trade on Kite',
+        sub: `${st.pos.name} · the option legs only (sell the NIFTYBEES in Kite yourself)`,
+        legs: closeLegs().map((l) => ({
+          action: l.side > 0 ? 'S' : 'B',
+          type: l.type,
+          strike: l.strike,
+          expiry: l.expiry,
+          lots: l.lots,
+          price: Number(closeVal(l.id, l.ltp)) || l.ltp,
+        })),
+        exit: true,
+      }),
+    );
+    $('mclCloseGo')?.addEventListener('click', async () => {
+      const t = closeTotals();
+      const msg = $('mclCloseMsg');
+      if (!t.ok) {
+        msg.textContent = 'Enter an exit price for every leg' + (beesToSell() ? ' and the NIFTYBEES' : '') + '.';
+        msg.className = 'small neg';
+        return;
+      }
+      const lines = closeLegs().map((l) => `${l.side > 0 ? 'Sell' : 'Buy back'} ${l.lots} × ${l.strike} ${l.type} @ ${Number(closeVal(l.id, l.ltp)).toFixed(2)}`);
+      if (beesToSell()) lines.push(`Sell ${st.bees.qty} NIFTYBEES @ ${Number(closeVal('bees', st.bees.now)).toFixed(2)}`);
+      const sure = confirm(
+        `Record the close of "${st.pos.name}"?\n\n${lines.join('\n')}\n\nTotal ${inrS(Math.round(t.total))} (options ${inrS(Math.round(t.opt))}, NIFTYBEES ${inrS(Math.round(t.bees))}).\nNothing is sent to a broker.`,
+      );
+      if (!sure) return;
+      const px = Object.fromEntries(closeLegs().map((l) => [l.id, Number(closeVal(l.id, l.ltp))]));
+      try {
+        msg.textContent = 'Saving…';
+        st = await BT.api('/api/mcc/live/close', { key: st.key, px, beesPx: beesToSell() ? Number(closeVal('bees', st.bees.now)) : null, confirm: true });
+        closing = false;
+        closeVals = {};
+        sug = null;
+        pick = null;
+        draw();
+      } catch (e) {
+        msg.textContent = e.message;
+        msg.className = 'small neg';
+      }
+    });
+  }
+
+  // A closed trade: its result as booked (options from the saved trade, NIFTYBEES bought → sold), no live prices.
+  function drawClosed() {
+    drawnShape = shape();
+    const P = st.pos;
+    const b = st.bees;
+    const opt = P.realised.CE + P.realised.PE - (P.costs?.CE || 0) - (P.costs?.PE || 0);
+    const bees = b?.qty > 0 && b.exitPx ? b.qty * (b.exitPx - b.price) : null;
+    const total = opt + (bees || 0);
+    const when = P.closedAt
+      ? new Date(P.closedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
+      : null;
+    const legRows = ['CE', 'PE']
+      .map((t) => {
+        const ls = P.closed.filter((l) => l.type === t);
+        if (!ls.length) return '';
+        return (
+          `<tr class="mcl-grp"><td class="l" colspan="4"><b>${t === 'CE' ? 'Call ratio spread' : 'Put butterfly'}</b></td><td class="${cls(P.realised[t])}"><b>${inrS(Math.round(P.realised[t]))}</b></td></tr>` +
+          ls
+            .map(
+              (l) =>
+                `<tr class="mcl-closed"><td class="l"><b class="${l.side < 0 ? 'neg' : 'pos'}">${l.side < 0 ? 'Sell' : 'Buy'}</b> ${l.lots} × ${l.strike} ${l.type}</td><td class="l muted small">${l.exitDay ? dayLabel(l.exitDay) + (l.exitAt ? ' ' + esc(l.exitAt) : '') : ''}</td><td>${l.entry.toFixed(2)}</td><td>${l.exit.toFixed(2)}</td><td class="${cls(l.pnl)}">${inrS(Math.round(l.pnl))}</td></tr>`,
+            )
+            .join('')
+        );
+      })
+      .join('');
+    const beesRow =
+      b?.qty > 0
+        ? `<tr class="mcl-grp"><td class="l"><b>NIFTYBEES</b> ${num0(b.qty)} units</td><td class="l muted small">${b.exitDay ? dayLabel(b.exitDay) + (b.exitAt ? ' ' + esc(b.exitAt) : '') : ''}</td><td>${b.price.toFixed(2)}</td><td>${b.exitPx ? b.exitPx.toFixed(2) : '<span class="muted">not sold</span>'}</td><td class="${cls(bees)}"><b>${bees == null ? '—' : inrS(Math.round(bees))}</b></td></tr>`
+        : '';
+    el.innerHTML = `<div class="panel cc-doc mcl-head">
+      <div class="set-row"><h3>Live trade</h3>${pickerHtml()} <span class="cat-pill">closed</span>
+        <button class="btn-sm ghost" id="mclToSb" title="Open this saved trade in the Builder">Load in Builder ▸</button>
+        ${P.closeBatch ? '<button class="btn-sm ghost" id="mclReopen" title="Undo the close recorded on this tab: the legs it closed open again and the NIFTYBEES sale is removed">Undo close</button>' : ''}</div>
+      <div class="muted small">${esc(P.name)} · expiry ${dayLabel(P.expiry)}${when ? ` · closed ${esc(when)}` : ''} · P&amp;L before charges, as the Builder shows it</div>
+      <div class="kpis cc-kpis-main">
+        <div class="kpi"><span class="k-l">Call ratio spread</span><span class="k-v ${cls(P.realised.CE)}">${inrS(Math.round(P.realised.CE))}</span></div>
+        <div class="kpi"><span class="k-l">Put butterfly</span><span class="k-v ${cls(P.realised.PE)}">${inrS(Math.round(P.realised.PE))}</span></div>
+        <div class="kpi"><span class="k-l">Options</span><span class="k-v ${cls(opt)}">${inrS(Math.round(opt))}</span></div>
+        <div class="kpi"><span class="k-l">NIFTYBEES</span><span class="k-v ${cls(bees)}">${bees == null ? '—' : inrS(Math.round(bees))}</span><span class="muted small">${b?.qty > 0 ? `${num0(b.qty)} × ₹${b.price.toFixed(2)} → ${b.exitPx ? '₹' + b.exitPx.toFixed(2) : 'not sold'}` : 'none entered'}</span></div>
+        <div class="kpi"><span class="k-l">Total</span><span class="k-v ${cls(total)}">${inrS(Math.round(total))}</span><span class="muted small">NIFTYBEES + options, booked</span></div>
+      </div>
+      ${b?.qty > 0 && !b.exitPx ? '<div class="muted small">The NIFTYBEES sale is not recorded: enter it in the Builder (Modified covered call › Sold at ₹) and save the trade.</div>' : ''}
+      <span class="small" id="mclMsg"></span></div>
+      <div class="panel cc-doc"><h3>Legs</h3><div class="tbl-wrap"><table class="grid-tbl mcl-legs"><thead><tr><th class="l">Leg</th><th class="l">Closed</th><th>Entry</th><th>Exit</th><th>P&amp;L</th></tr></thead><tbody>${legRows}${beesRow}
+        <tr class="mcl-tot"><td class="l" colspan="4"><b>Total</b></td><td class="${cls(total)}"><b>${inrS(Math.round(total))}</b></td></tr></tbody></table></div></div>`;
+    bindPick();
+    $('mclToSb')?.addEventListener('click', () => BT.emit('open-trade', P.id));
+    $('mclReopen')?.addEventListener('click', async () => {
+      if (!confirm(`Undo the close of "${P.name}"? The legs closed on this tab open again at their entry prices, and the NIFTYBEES sale recorded with them is removed.`)) return;
+      try {
+        st = await BT.api('/api/mcc/live/reopen', { key: st.key, confirm: true });
+        sug = null;
+        pick = null;
+        draw();
+        if (st?.pos && !st.closed) findSuggestions();
+      } catch (e) {
+        $('mclMsg').textContent = e.message;
+        $('mclMsg').className = 'small neg';
+      }
+    });
+  }
+
+  // Back on this screen from another (the Builder may have changed the trade): read it again and poll again (the poll
+  // stops while the tab is not shown).
+  window.addEventListener('viewchange', (e) => {
+    if (e.detail !== 'cc' || !el) return;
+    setTimeout(async () => {
+      if (!shown()) return;
+      await load();
+      refresh();
+      poll();
+    }, 0);
+  });
 
   window.MccLive = { render };
 })();

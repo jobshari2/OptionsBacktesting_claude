@@ -91,6 +91,8 @@
   let busy = false;
   let trades = []; // saved trades (bt-data/paper-trades.json through /api/sb/trades)
   let tradesNow = {}; // id -> P&L of a live paper trade at the current chain prices
+  let beesNow = null; // NIFTYBEES now for the Modified covered call columns: { px, how } (/api/mcc/bees), px null if unknown
+  let niftyNow = null; // Nifty now from the chains read for the live P&L (estimates NIFTYBEES when its price is unknown)
   let pending = null; // position handed over by another screen, placed once the chain is loaded (see 'open-builder')
 
   // ---------- data ----------
@@ -700,6 +702,7 @@
     'plan',
     'lotFix',
     'pay',
+    'mcc', // { on, qty, price, day, exitPx, exitDay, exitAt }: a Modified covered call and its NIFTYBEES (Live trade tab)
   ];
   const legsText = (legs) => legs.map((l) => `${l.action === 'B' ? 'B' : 'S'} ${l.lots}× ${l.strike} ${l.type} ${dayShort(legExp(l))}`).join(', ');
   async function loadTrades() {
@@ -708,8 +711,32 @@
     } catch {
       trades = [];
     }
+    syncLoaded();
     renderTrades();
     refreshTrades();
+  }
+  // The trade in the Builder was saved again elsewhere (Trading Ideas › Live trade closes it or enters its NIFTYBEES):
+  // the Builder takes the saved version. A position loaded before the Builder kept the saved time only takes its
+  // NIFTYBEES (snap.mcc), so nothing typed here is lost.
+  function syncLoaded() {
+    const cur = S.tradeId && trades.find((t) => t.id === S.tradeId);
+    if (!cur) return;
+    if (S.tradeSavedAt == null) {
+      S.tradeSavedAt = cur.savedAt;
+      if (!S.mcc && cur.snap.mcc) S.mcc = BT.clone(cur.snap.mcc);
+      save();
+    } else if (cur.savedAt > S.tradeSavedAt) {
+      pause();
+      S.mcc = null;
+      Object.assign(S, BT.clone(cur.snap), { tradeId: cur.id, tradeSavedAt: cur.savedAt });
+      if (!Array.isArray(S.mtm)) S.mtm = [];
+      save();
+      if (window.app.state.view === 'sb') {
+        renderTop();
+        render();
+        flash(`"${cur.name}" was changed on another screen: the Builder shows the saved version`);
+      }
+    }
   }
   // asNew: a separate copy instead of updating the trade this position was loaded from / saved as.
   // saveAs: the name of a new trade, without asking for one.
@@ -726,6 +753,18 @@
           : `${S.src === 'live' ? 'Paper' : 'Replay'} · ${dayShort(primary())} expiry · ${S.legs.length} legs`,
       );
       if (!name) return;
+    }
+    // changed elsewhere since it was loaded here (Trading Ideas › Live trade: closed, NIFTYBEES entered)?
+    if (cur && S.tradeSavedAt != null) {
+      const fresh = (await BT.api('/api/sb/trades').catch(() => null))?.trades?.find((x) => x.id === cur.id);
+      if (
+        fresh &&
+        fresh.savedAt > S.tradeSavedAt &&
+        !confirm(
+          `"${cur.name}" was changed elsewhere since it was loaded here (closed or its NIFTYBEES edited on Trading Ideas › Live trade?). Overwrite it with the position in the Builder?`,
+        )
+      )
+        return;
     }
     const P = pnl(M);
     const summary = {
@@ -747,6 +786,7 @@
     try {
       const t = (await BT.api('/api/sb/trades', { id: cur?.id, name, summary, snap })).trade;
       S.tradeId = t.id;
+      S.tradeSavedAt = t.savedAt;
       save();
       await loadTrades();
       flash(`Saved "${t.name}" ✓`);
@@ -760,7 +800,7 @@
     if (S.legs.length && S.tradeId !== id && !confirm('Load this trade? The position now in the Builder is replaced (save it first to keep it).')) return;
     pause();
     clearPosition();
-    Object.assign(S, BT.clone(t.snap), { tradeId: t.id, chainExp: null });
+    Object.assign(S, BT.clone(t.snap), { tradeId: t.id, tradeSavedAt: t.savedAt, chainExp: null });
     if (!Array.isArray(S.mtm)) S.mtm = [];
     save();
     renderTop();
@@ -804,9 +844,18 @@
     const chains = {};
     for (const e of new Set(live.flatMap((t) => t.snap.legs.filter((l) => l.open).map((l) => l.expiry || t.snap.liveExpiry)))) {
       try {
-        chains[e] = (await BT.api('/api/bt/chain?expiry=' + e)).rows;
+        const c = await BT.api('/api/bt/chain?expiry=' + e);
+        chains[e] = c.rows;
+        if (c.spot > 0) niftyNow = c.spot;
       } catch {
         chains[e] = null;
+      }
+    }
+    if (trades.some((t) => { const m = t.snap.mcc; return m?.on && m.qty > 0 && m.price > 0 && !(m.exitPx > 0); })) {
+      beesNow = await BT.api('/api/mcc/bees').catch(() => null);
+      if (!niftyNow && !(beesNow?.px > 0)) {
+        const exp = BT.meta.calendar?.live?.[0];
+        if (exp) niftyNow = (await BT.api('/api/bt/chain?expiry=' + exp).catch(() => null))?.spot || null;
       }
     }
     tradesNow = {};
@@ -829,6 +878,27 @@
       tradesNow[t.id] = { total: Math.round(total), ok };
     }
     renderTrades();
+  }
+  // A trade's options / NIFTYBEES / overall P&L for the table: options now (live paper trades at the chain's prices)
+  // else as saved; NIFTYBEES (a Modified covered call's, snap.mcc) sold at its sale price, else at its price now, else
+  // estimated from Nifty's move since the entry. { opt, optNow, bees, beesHow, overall, mcc }
+  function splitOf(t) {
+    const now = tradesNow[t.id];
+    const opt = now ? now.total : (t.summary.total ?? null);
+    const m = t.snap.mcc;
+    const mcc = Boolean(m?.on);
+    let bees = null;
+    let beesHow = null;
+    if (mcc && m.qty > 0 && m.price > 0) {
+      if (m.exitPx > 0) [bees, beesHow] = [m.qty * (m.exitPx - m.price), 'sold'];
+      else if (beesNow?.px > 0) [bees, beesHow] = [m.qty * (beesNow.px - m.price), 'live'];
+      else {
+        const spots = t.snap.legs.filter((l) => l.spotIn > 0).map((l) => l.spotIn);
+        const s0 = spots.length ? spots.reduce((a, b) => a + b, 0) / spots.length : t.snap.spotEntry;
+        if (niftyNow > 0 && s0 > 0) [bees, beesHow] = [m.qty * ((m.price * niftyNow) / s0 - m.price), 'est'];
+      }
+    }
+    return { opt, optNow: Boolean(now), bees, beesHow, overall: opt == null ? null : opt + (bees || 0), mcc, m };
   }
   const whenTxt = (t) => new Date(t).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
   // Save buttons of the Builder's top bar (the list of saved trades is on the Trades tab).
@@ -875,18 +945,28 @@
         !list.length
           ? '<div class="muted small pad">In the <b>Builder</b>, build a position (B / S in the chain, or Apply a strategy) and press <b>Save trade</b>. Live (paper) trades and replays are listed here; <b>Load</b> puts one back in the Builder with its payoff, to adjust it and save it again.</div>'
           : `<div class="tbl-wrap sb-trades-wrap"><table class="grid-tbl sb-trades-tbl">
-        <thead><tr><th class="l">Trade</th><th class="l">Mode</th><th class="l">Expiry</th><th class="l">Open legs</th><th>Entered</th><th>Realised</th><th>Open P&amp;L</th><th>Total at save</th><th title="Live paper trades at the current chain prices">Total now</th><th>Saved</th><th></th></tr></thead>
+        <thead><tr><th class="l">Trade</th><th class="l">Mode</th><th class="l">Expiry</th><th class="l">Open legs</th><th>Entered</th><th>Realised</th><th>Open P&amp;L</th><th>Total at save</th><th title="Live paper trades at the current chain prices">Total now</th><th title="The options' P&amp;L: now for live trades with open legs, else as saved">Options P&amp;L</th><th title="Modified covered call: the NIFTYBEES held against the options, bought → sold (or → now while held)">NIFTYBEES P&amp;L</th><th title="Options + NIFTYBEES">Overall</th><th>Saved</th><th></th></tr></thead>
         <tbody>${list
           .map((t) => {
             const u = t.summary;
             const now = tradesNow[t.id];
-            return `<tr class="${t.id === S.tradeId ? 'sel' : ''}"><td class="l"><b>${esc(t.name)}</b> ${u.open ? '' : '<span class="cat-pill">closed</span>'}</td>
+            const x = splitOf(t);
+            return `<tr class="${t.id === S.tradeId ? 'sel' : ''}"><td class="l"><b>${esc(t.name)}</b> ${x.mcc ? '<span class="cat-pill c-bullish" title="Modified covered call (call ratio + put butterfly against NIFTYBEES)">MCC</span> ' : ''}${u.open ? '' : '<span class="cat-pill">closed</span>'}</td>
             <td class="l"><span class="cat-pill ${u.src === 'live' ? 'c-bullish' : 'c-neutral'}">${u.src === 'live' ? 'Live (paper)' : 'Replay'}</span></td>
             <td class="l">${(u.expiries || []).map(dayShort).join(', ')}</td>
             <td class="l legs-cell">${esc(u.legs || '—')}${u.closed ? ` <span class="muted small">+${u.closed} closed</span>` : ''}</td>
             <td class="muted">${esc(u.entered || '')}</td>
             <td class="${cls(u.realised)}">${inrS(u.realised)}</td><td class="${cls(u.openPnl)}">${inrS(u.openPnl)}</td><td class="${cls(u.total)} b">${inrS(u.total)}</td>
             <td class="${now ? cls(now.total) + ' b' : 'muted'}" title="${now && !now.ok ? 'Some legs have no live price (expired?): they are left out' : ''}">${now ? inrS(now.total) + (now.ok ? '' : ' *') : u.src === 'live' && u.open ? '…' : '—'}</td>
+            <td class="${cls(x.opt)}" title="${x.optNow ? 'At the current chain prices' : 'As saved'}">${x.opt == null ? '—' : inrS(x.opt)}${x.optNow || !u.open ? '' : '<div class="muted small">at save</div>'}</td>
+            <td class="${cls(x.bees)}" title="${x.m?.qty > 0 ? `${x.m.qty} units bought at ₹${x.m.price}${x.m.exitPx > 0 ? `, sold at ₹${x.m.exitPx}` : ''}` : ''}">${
+              !x.mcc
+                ? '<span class="muted">—</span>'
+                : x.bees == null
+                  ? `<span class="muted small">${x.m.qty > 0 ? 'no price now' : 'not entered'}</span>`
+                  : inrS(Math.round(x.bees)) + `<div class="muted small">${x.beesHow === 'sold' ? 'sold ₹' + x.m.exitPx.toFixed(2) : x.beesHow === 'live' ? 'now ₹' + beesNow.px.toFixed(2) : 'estimated from Nifty'}</div>`
+            }</td>
+            <td class="${cls(x.overall)} b">${x.overall == null ? '—' : inrS(Math.round(x.overall))}</td>
             <td class="muted small">${whenTxt(t.savedAt)}<div>at ${esc(u.at || '')}</div></td>
             <td><button class="btn-sm ghost" data-load="${t.id}" title="Put this trade in the Builder: payoff, positions and P&amp;L, to adjust it and save it again">Load</button> <button class="icon" data-del="${t.id}" title="Delete this saved trade">✕</button></td></tr>`;
           })
@@ -1522,6 +1602,7 @@
         'beforeend',
         `${nPicked && nPicked < S.legs.length ? ` <button class="btn-sm ghost" id="sbDeleteSel" title="Delete the ticked strikes from the position (as if never added; not an exit, so no P&amp;L is booked)">Delete selected (${nPicked})</button>` : ''} <button class="btn-sm ghost" id="sbDeleteAll" title="Delete every strike from the position (as if never added; not an exit, so no P&amp;L is booked)">Delete all</button>`,
       );
+    renderMcc(A.P);
     const typing = !forceRebuild && document.activeElement?.closest?.('#sbPos') && ['INPUT', 'SELECT'].includes(document.activeElement.tagName);
     if (!typing) {
       $('sbPos').innerHTML = S.legs.length
@@ -1531,6 +1612,64 @@
       if (all) all.indeterminate = nPicked > 0 && nPicked < S.legs.length;
     }
   }
+
+  // ---------- Modified covered call ----------
+  // A position can be marked a Modified covered call (call ratio + put butterfly against NIFTYBEES) with the NIFTYBEES
+  // held: units, buy price and date, and the sale once sold. Saved with the trade (S.mcc); Trading Ideas › Covered call ›
+  // Modified covered call › Live trade follows it at live prices and can close the whole trade (options + NIFTYBEES).
+  let lastMccP = null;
+  function renderMcc(P = lastMccP, force = false) {
+    lastMccP = P;
+    const el = $('sbMcc');
+    if (!el) return;
+    if (!force && el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
+    if (!S.legs.length) {
+      el.innerHTML = '';
+      el.classList.add('hidden');
+      return;
+    }
+    el.classList.remove('hidden');
+    const m = S.mcc || {};
+    const has = m.qty > 0 && m.price > 0;
+    const sold = has && m.exitPx > 0 ? m.qty * (m.exitPx - m.price) : null;
+    const v = (x) => (x == null ? '' : esc(String(x)));
+    el.innerHTML = `<label class="mini" title="A call ratio spread + put butterfly held against NIFTYBEES: Trading Ideas › Covered call › Modified covered call › Live trade follows the saved trade with live NIFTYBEES prices and can close all of it"><input type="checkbox" data-mcc="on" ${m.on ? 'checked' : ''}> <b>Modified covered call</b></label>${
+      m.on
+        ? `<span class="lbl">NIFTYBEES</span>
+      <label class="mini">Units <input class="num sm" type="number" min="0" step="1" data-mcc="qty" value="${v(m.qty)}" placeholder="e.g. 6500"></label>
+      <label class="mini">Bought at ₹ <input class="num sm" type="number" min="0" step="0.01" data-mcc="price" value="${v(m.price)}" placeholder="e.g. 260.00"></label>
+      <label class="mini">on <input type="date" data-mcc="day" value="${v(m.day)}"></label>
+      ${m.exitPx > 0 || !openLegs().length ? `<label class="mini" title="The price the NIFTYBEES were sold at, once sold">Sold at ₹ <input class="num sm" type="number" min="0" step="0.01" data-mcc="exitPx" value="${v(m.exitPx)}"></label>` : ''}
+      <span class="muted small">${has ? `${Math.round(m.qty).toLocaleString('en-IN')} units worth ${inr(Math.round(m.qty * m.price))} at purchase` : 'Enter the units and the price they were bought at'}${
+        sold != null
+          ? ` · NIFTYBEES <b class="${cls(sold)}">${inrS(Math.round(sold))}</b>${P ? ` · with the options <b class="${cls(P.total + sold)}">${inrS(Math.round(P.total + sold))}</b>` : ''}`
+          : ''
+      }</span>
+      <span class="muted small">${S.tradeId ? '💾 Save changes' : '💾 Save trade'} keeps it with the trade; its live P&amp;L is on Trading Ideas › Covered call › Modified covered call › Live trade.</span>`
+        : ''
+    }`;
+  }
+  $('sbMcc')?.addEventListener('change', (e) => {
+    const k = e.target.dataset?.mcc;
+    if (!k) return;
+    const m = { ...(S.mcc || {}) };
+    if (k === 'on') m.on = e.target.checked;
+    else if (k === 'day') {
+      if (e.target.value) m.day = e.target.value;
+      else delete m.day;
+    } else {
+      const n = Number(e.target.value);
+      if (e.target.value === '' || !(n > 0)) delete m[k];
+      else m[k] = k === 'qty' ? Math.round(n) : n;
+      if (k === 'exitPx') {
+        if (m.exitPx) m.exitDay ||= new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10);
+        else for (const x of ['exitDay', 'exitAt', 'exitBatch']) delete m[x];
+      }
+    }
+    S.mcc = m;
+    save();
+    renderMcc(lastMccP, true);
+  });
 
   // ---------- suggestions ----------
   let lastSugg = [];
@@ -1774,6 +1913,8 @@
     S.from = null;
     S.lotFix = null;
     S.tradeId = null;
+    S.tradeSavedAt = null;
+    S.mcc = null;
     research = null;
     $('sbResearchOut').classList.add('hidden');
     renderTrades();

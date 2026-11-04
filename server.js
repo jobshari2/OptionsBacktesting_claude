@@ -908,12 +908,32 @@ function mccJob(kind, run) {
 // Live trade tab (bt/mcclive.js): a saved Builder trade or the paper trade's series, with the NIFTYBEES bought against
 // it (kept per trade in bt-data/mcc-live.json), on the live chain. Read-only: nothing is ordered.
 const MCC_LIVE_FILE = path.join(__dirname, 'bt-data', DEMO ? 'mcc-live-demo.json' : 'mcc-live.json');
+// The Builder's saved trades (bt/index.js keeps them; written here only by the Live trade's NIFTYBEES entry, close and
+// undo, compact like bt/index.js writes them).
+const SB_TRADES_FILE = path.join(__dirname, 'bt-data', 'paper-trades.json');
+// Saved trades with open legs, and closed ones marked "Modified covered call" (their final result is shown).
 function mccLiveTrades() {
-  const saved = readJson(path.join(__dirname, 'bt-data', 'paper-trades.json')) || [];
-  const list = saved.filter((t) => t?.snap?.legs?.some((l) => l.open)).map(mccLive.fromBuilder);
+  const saved = readJson(SB_TRADES_FILE) || [];
+  const list = saved.filter((t) => t?.snap?.legs?.some((l) => l.open) || (t?.snap?.mcc?.on && t.snap.legs?.length)).map(mccLive.fromBuilder);
   const paper = mccLive.fromPaper(mccPaper.state().paper);
   if (paper) list.push(paper);
-  return list.filter((x) => x.legs.length && x.expiry);
+  return list.filter((x) => (x.legs.length || x.done) && x.expiry);
+}
+// Changes one saved Builder trade (id) with f(trade) -> the new trade, and writes the list back.
+function editSavedTrade(id, f) {
+  const list = readJson(SB_TRADES_FILE) || [];
+  const i = list.findIndex((t) => t.id === id);
+  if (i < 0) throw new Error('That saved trade is not in the Builder any more');
+  list[i] = f(list[i]);
+  writeJson(SB_TRADES_FILE, list);
+  return list[i];
+}
+// A trade's NIFTYBEES as first entered on this tab (bt-data/mcc-live.json, before the Builder kept them in the trade)
+// moved into the trade's snap.mcc, so the Builder shows them too.
+function withLegacyBees(t, cfg) {
+  const old = cfg.trades?.['builder:' + t.id]?.bees;
+  if (mccLive.beesOfSnap(t.snap) || !(old?.qty > 0 && old?.price > 0)) return t;
+  return { ...t, snap: { ...t.snap, mcc: { ...(t.snap.mcc || {}), on: true, qty: old.qty, price: old.price, ...(old.day ? { day: old.day } : {}) } } };
 }
 // Nifty's daily closes (and India VIX) over the cached history, for the suggestions' past moves; kept 6 h.
 let mccCloses = { at: 0, list: null };
@@ -976,11 +996,44 @@ async function mccLiveState(key) {
     name: x.name,
     src: x.src,
     expiry: x.expiry,
-    mcc: mccLive.looksMcc(x.legs),
+    mcc: Boolean(x.flag) || mccLive.looksMcc(x.legs.length ? x.legs : x.closed),
+    closed: Boolean(x.done),
     legs: x.legs.map(mccLive.legText).join(', '),
   }));
-  const pos = all.find((x) => x.key === (key || cfg.selected)) || all.find((x) => mccLive.looksMcc(x.legs)) || all[0];
+  const pos =
+    all.find((x) => x.key === (key || cfg.selected)) ||
+    all.find((x) => !x.done && (x.flag || mccLive.looksMcc(x.legs))) ||
+    all.find((x) => !x.done) ||
+    all[0];
   if (!pos) return { trades, pos: null };
+  // NIFTYBEES entered on this tab before the Builder kept them: moved into the saved trade once (values unchanged, its
+  // saved time kept), so the Builder shows them too. Not in demo mode: it shares the real saved trades.
+  if (!DEMO && pos.src === 'builder' && !pos.bees && cfg.trades?.[pos.key]?.bees?.qty > 0 && cfg.trades[pos.key].bees.price > 0) {
+    try {
+      editSavedTrade(pos.id, (t) => withLegacyBees(t, cfg));
+      pos.bees = mccLive.beesOfSnap(withLegacyBees({ id: pos.id, snap: {} }, cfg).snap);
+      pos.flag = true;
+      delete cfg.trades[pos.key].bees;
+      writeJson(MCC_LIVE_FILE, cfg);
+    } catch (e) {
+      logError('mcc-live bees move', e);
+    }
+  }
+  const own = cfg.trades?.[pos.key] || {};
+  // the NIFTYBEES: a Builder trade's own (snap.mcc), else as entered here before; the paper trade's unless overridden
+  const beesIn = pos.src === 'builder' ? pos.bees || own.bees : own.bees || pos.bees;
+  // closed: no chain needed, the result as booked
+  if (pos.done) {
+    const b = beesIn?.qty > 0 && beesIn?.price > 0 ? beesIn : null;
+    return {
+      trades,
+      key: pos.key,
+      pos,
+      closed: true,
+      bees: b ? { qty: b.qty, price: b.price, exitPx: b.exitPx || null, exitDay: b.exitDay || null, exitAt: b.exitAt || null } : null,
+      entrySpot: own.entrySpot > 0 ? own.entrySpot : pos.spotIn,
+    };
+  }
   // no chain for it (expired, not listed): the list is still sent, so another trade can be picked
   let chain;
   try {
@@ -991,10 +1044,9 @@ async function mccLiveState(key) {
   }
   const T = mccLive.yearsTo(pos.expiry);
   const M = mccLive.market(chain, T);
-  const own = cfg.trades?.[pos.key] || {};
   const entrySpot = own.entrySpot > 0 ? own.entrySpot : pos.spotIn;
-  const qty = own.bees?.qty ?? pos.bees?.qty ?? 0;
-  const price = own.bees?.price ?? pos.bees?.price ?? null;
+  const qty = beesIn?.qty ?? 0;
+  const price = beesIn?.price ?? null;
   const live = await mccBeesNow();
   // NIFTYBEES now: live, else moved from its entry price with Nifty since the entry (else Nifty ÷ 100)
   const now = live?.px || (price > 0 && entrySpot > 0 ? (price * M.spot) / entrySpot : M.spot / 100);
@@ -1006,14 +1058,22 @@ async function mccLiveState(key) {
     how: live?.how || null,
     at: live?.at || null,
     set: price > 0 && qty > 0,
-    fromPaper: !own.bees && Boolean(pos.bees),
+    fromPaper: pos.src === 'paper' && !own.bees && Boolean(pos.bees),
+    fromBuilder: pos.src === 'builder' && Boolean(pos.bees), // kept in the saved trade (the Builder shows them too)
+    exitPx: beesIn?.exitPx || null, // already sold (recorded in the Builder)
   };
   // cal: what the page adds to the model so each leg is worth its LTP at Nifty now (bt/mcclive.js valueToday)
   const legs = pos.legs.map((l) => ({ ...l, ltp: M.px(l.type, l.strike), iv: M.iv(l.type, l.strike), cal: mccLive.legCal(l, M) }));
+  // legs of other expiries (closed with the whole trade): their LTP when that chain has been read
+  const others = (pos.others || []).map((l) => {
+    const r = restChains.get(l.expiry)?.rows?.find((x) => x.strike === l.strike);
+    const p = (l.type === 'CE' ? r?.ce : r?.pe)?.ltp;
+    return { ...l, ltp: p > 0 ? p : null };
+  });
   return {
     trades,
     key: pos.key,
-    pos: { ...pos, legs },
+    pos: { ...pos, legs, others },
     M,
     market: {
       spot: M.spot,
@@ -1098,6 +1158,11 @@ async function handleMcc(req, res, url, p) {
       };
       return sendJson(res, 200, runMccModel(b.params || {}, opts));
     }
+    // NIFTYBEES now for the Trades screen's Modified covered call columns: { px, how, at }, px null when unknown (demo)
+    if (p === '/api/mcc/bees') {
+      const b = liveLoggedIn() ? await mccBeesNow().catch(() => null) : null;
+      return sendJson(res, 200, { px: b?.px || null, how: b?.how || null, at: b?.at || null });
+    }
     if (p === '/api/mcc/live' && req.method !== 'POST') {
       if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the live trade is priced on the live chain`);
       return sendJson(res, 200, mccLiveOut(await mccLiveState(url.searchParams.get('key'))));
@@ -1113,8 +1178,19 @@ async function handleMcc(req, res, url, p) {
         const qty = num(b.bees.qty, 0, 1e8);
         const price = num(b.bees.price, 1, 1e5);
         if (Number.isNaN(qty) || Number.isNaN(price)) throw new Error('NIFTYBEES: units 0 – 10 crore, price ₹1 – ₹1,00,000');
-        t.bees = qty == null && price == null ? undefined : { qty: qty ?? 0, price };
-        if (b.bees.day) t.bees.day = String(b.bees.day).slice(0, 10);
+        if (b.key.startsWith('builder:')) {
+          // kept in the saved trade itself (snap.mcc), where the Builder shows and saves them too
+          editSavedTrade(b.key.slice(8), (tr) => {
+            const m = { ...(tr.snap.mcc || {}), on: true };
+            if (qty == null && price == null) for (const k of ['qty', 'price', 'day']) delete m[k];
+            else Object.assign(m, { qty: qty ?? 0, price }, b.bees.day ? { day: String(b.bees.day).slice(0, 10) } : {});
+            return { ...tr, savedAt: Date.now(), snap: { ...tr.snap, mcc: m } };
+          });
+          delete t.bees;
+        } else {
+          t.bees = qty == null && price == null ? undefined : { qty: qty ?? 0, price };
+          if (b.bees.day) t.bees.day = String(b.bees.day).slice(0, 10);
+        }
       }
       if ('entrySpot' in b) {
         const e = num(b.entrySpot, 1000, 1e6);
@@ -1123,6 +1199,24 @@ async function handleMcc(req, res, url, p) {
       }
       cfg.selected = b.key;
       writeJson(MCC_LIVE_FILE, cfg);
+      return sendJson(res, 200, mccLiveOut(await mccLiveState(b.key)));
+    }
+    // Close the whole saved Builder trade: every open leg at the prices sent, the NIFTYBEES sold at beesPx — recorded
+    // in the saved trade as the Builder records exits. Nothing is sent to a broker. reopen undoes the last such close.
+    if ((p === '/api/mcc/live/close' || p === '/api/mcc/live/reopen') && req.method === 'POST') {
+      const b = JSON.parse((await readBody(req, 20_000)).toString('utf8') || '{}');
+      if (typeof b.key !== 'string' || !b.key.startsWith('builder:'))
+        throw new Error('Only a trade saved in the Builder can be closed here (the paper trade is run on its own tab)');
+      if (b.confirm !== true) throw new Error('Closing the trade needs confirmation');
+      const cfg = readJson(MCC_LIVE_FILE) || {};
+      editSavedTrade(b.key.slice(8), (t) =>
+        p.endsWith('/close') ? mccLive.closeSaved(withLegacyBees(t, cfg), { px: b.px || {}, beesPx: b.beesPx }) : mccLive.reopenSaved(t),
+      );
+      // NIFTYBEES entered on this tab before now live in the trade
+      if (cfg.trades?.[b.key]?.bees) {
+        delete cfg.trades[b.key].bees;
+        writeJson(MCC_LIVE_FILE, cfg);
+      }
       return sendJson(res, 200, mccLiveOut(await mccLiveState(b.key)));
     }
     if (p === '/api/mcc/live/suggest' && req.method === 'POST') {

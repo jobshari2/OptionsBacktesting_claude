@@ -432,3 +432,70 @@ test("NIFTYBEES for the upside: units per point, the minimum, extra units bought
   // no sold calls: nothing to cover
   assert.equal(L.beesCover({ ...pos, legs: pos.legs.filter((l) => l.type === 'PE') }, M, bees).netShortLots, 0);
 });
+
+test('a Builder trade marked Modified covered call carries its NIFTYBEES (snap.mcc)', () => {
+  assert.equal(L.fromBuilder(saved).bees, null);
+  const t = { ...saved, snap: { ...saved.snap, mcc: { on: true, qty: 4288, price: 260.01, day: '2026-10-30' } } };
+  const pos = L.fromBuilder(t);
+  assert.ok(pos.flag);
+  assert.deepEqual(pos.bees, { qty: 4288, price: 260.01, day: '2026-10-30', exitPx: null, exitDay: null, exitAt: null });
+  // marked but no units entered: no NIFTYBEES
+  assert.equal(L.fromBuilder({ ...saved, snap: { ...saved.snap, mcc: { on: true } } }).bees, null);
+});
+
+test('closeSaved: every open leg and the NIFTYBEES closed as the Builder records exits; reopenSaved undoes it', () => {
+  const t = { ...saved, savedAt: 1, snap: { ...saved.snap, log: [], mcc: { on: true, qty: 4000, price: 260 } } };
+  const open = t.snap.legs.filter((l) => l.open);
+  const px = Object.fromEntries(open.map((l) => [l.id, 100]));
+  const ts = Date.parse('2026-11-04T05:00:00Z'); // 10:30 IST
+  // a price missing: refused
+  assert.throws(() => L.closeSaved(t, { px: { ...px, 1: '' }, beesPx: 265, ts }), /Exit price missing for 22500 PE/);
+  assert.throws(() => L.closeSaved(t, { px, ts }), /NIFTYBEES sell price missing/);
+  const c = L.closeSaved(t, { px, beesPx: 265, ts });
+  assert.ok(t.snap.legs[0].open, 'the trade passed in is not changed');
+  assert.ok(c.snap.legs.every((l) => !l.open));
+  const l1 = c.snap.legs.find((l) => l.id === 1);
+  assert.equal(l1.exitPx, 100);
+  assert.equal(l1.exitDay, '2026-11-04');
+  assert.equal(l1.exitClock, '10:30');
+  assert.equal(l1.exitMin, 75);
+  assert.equal(l1.exitAt, 'Live 10:30:00');
+  // the leg closed before keeps its own exit
+  assert.equal(c.snap.legs.find((l) => l.id === 2).exitPx, 150.56);
+  assert.equal(c.snap.mcc.exitPx, 265);
+  assert.equal(c.closedAt, ts);
+  assert.equal(c.snap.log.length, open.length + 1);
+  // the position read back: no open legs, everything realised
+  const pos = L.fromBuilder(c);
+  assert.ok(pos.done);
+  assert.equal(pos.legs.length, 0);
+  assert.equal(pos.expiry, '2026-11-23');
+  const lots = (l) => (l.action === 'B' ? 1 : -1) * l.lots * 65;
+  const want = saved.snap.legs.reduce((s, l) => s + lots(l) * ((l.open ? 100 : l.exitPx) - l.entryPx), 0);
+  near(pos.realised.CE + pos.realised.PE, want, 1e-6);
+  assert.equal(c.summary.open, 0);
+  assert.equal(c.summary.total, Math.round(want));
+  assert.equal(c.summary.bees, 4000 * 5);
+  assert.equal(pos.bees.exitPx, 265);
+  // nothing left to close
+  assert.throws(() => L.closeSaved(c, { px }), /no open legs/);
+  // undo: the same legs open again, the earlier exit kept, the NIFTYBEES sale removed
+  const r = L.reopenSaved(c, { ts: ts + 1000 });
+  assert.deepEqual(
+    r.snap.legs.map((l) => [l.id, l.open, l.exitPx ?? null]),
+    t.snap.legs.map((l) => [l.id, l.open, l.exitPx ?? null]),
+  );
+  assert.equal(r.snap.mcc.exitPx, undefined);
+  assert.equal(r.closedAt, undefined);
+  assert.equal(L.fromBuilder(r).legs.length, 5);
+  assert.throws(() => L.reopenSaved(r), /not closed from the Live trade tab/);
+});
+
+test('closeSaved: NIFTYBEES already sold in the Builder are left as they are', () => {
+  const t = { ...saved, snap: { ...saved.snap, mcc: { on: true, qty: 4000, price: 260, exitPx: 270 } } };
+  const px = Object.fromEntries(t.snap.legs.filter((l) => l.open).map((l) => [l.id, 0]));
+  const c = L.closeSaved(t, { px });
+  assert.equal(c.snap.mcc.exitPx, 270);
+  assert.equal(c.snap.mcc.exitBatch, undefined);
+  assert.equal(L.reopenSaved(c).snap.mcc.exitPx, 270);
+});
