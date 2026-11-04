@@ -635,6 +635,11 @@ body.nc-window { height: 100vh; padding: 8px; }
 .sb-exps .nav:disabled { opacity: .35; cursor: default; }
 .sb-trades-tbl tbody tr.sel td { background: rgba(88,166,255,.14); }
 .sb-trades-tbl td.legs-cell { min-width: 240px; }
+.sb-trades-tbl td.sb-del-cell { padding-left: 16px; }
+.sb-del-ask { display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
+.sb-del-ask .btn-sm { padding-left: 6px; padding-right: 6px; white-space: nowrap; }
+.sb-trades-tbl .sb-del { color: var(--down); border-color: color-mix(in srgb, var(--down) 45%, transparent); }
+.sb-trades-tbl .sb-del-yes { background: var(--down); border-color: var(--down); color: #fff; }
 /* vertical spreads closest to an arbitrage, listed when none clears the minimum edge */
 .arb-row.near { border-left-color: var(--muted); opacity: .8; }
 .arb-pnl { flex-basis: 100%; }

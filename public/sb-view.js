@@ -820,9 +820,23 @@
         : `Loaded "${t.name}"`,
     );
   }
+  // The row whose delete waits for its confirmation (Yes, delete / Keep); asked again after DEL_ASK_MS.
+  let delAsk = null;
+  let delAskT = null;
+  const DEL_ASK_MS = 10_000;
+  function askDelete(id) {
+    delAsk = id;
+    clearTimeout(delAskT);
+    delAskT = setTimeout(() => {
+      delAsk = null;
+      renderTrades();
+    }, DEL_ASK_MS);
+    renderTrades();
+  }
   async function deleteTrade(id) {
     const t = trades.find((x) => x.id === id);
-    if (!t || !confirm(`Delete the saved trade "${t.name}"?`)) return;
+    delAsk = null;
+    if (!t) return;
     await BT.api('/api/sb/trades/delete', { id });
     if (S.tradeId === id) {
       S.tradeId = null;
@@ -945,7 +959,7 @@
         !list.length
           ? '<div class="muted small pad">In the <b>Builder</b>, build a position (B / S in the chain, or Apply a strategy) and press <b>Save trade</b>. Live (paper) trades and replays are listed here; <b>Load</b> puts one back in the Builder with its payoff, to adjust it and save it again.</div>'
           : `<div class="tbl-wrap sb-trades-wrap"><table class="grid-tbl sb-trades-tbl">
-        <thead><tr><th class="l">Trade</th><th class="l">Mode</th><th class="l">Expiry</th><th class="l">Open legs</th><th>Entered</th><th>Realised</th><th>Open P&amp;L</th><th>Total at save</th><th title="Live paper trades at the current chain prices">Total now</th><th title="The options' P&amp;L: now for live trades with open legs, else as saved">Options P&amp;L</th><th title="Modified covered call: the NIFTYBEES held against the options, bought → sold (or → now while held)">NIFTYBEES P&amp;L</th><th title="Options + NIFTYBEES">Overall</th><th>Saved</th><th></th></tr></thead>
+        <thead><tr><th class="l">Trade</th><th class="l">Mode</th><th class="l">Expiry</th><th class="l">Open legs</th><th>Entered</th><th>Realised</th><th>Open P&amp;L</th><th>Total at save</th><th title="Live paper trades at the current chain prices">Total now</th><th title="The options' P&amp;L: now for live trades with open legs, else as saved">Options P&amp;L</th><th title="Modified covered call: the NIFTYBEES held against the options, bought → sold (or → now while held)">NIFTYBEES P&amp;L</th><th title="Options + NIFTYBEES">Overall</th><th></th><th>Saved</th><th></th></tr></thead>
         <tbody>${list
           .map((t) => {
             const u = t.summary;
@@ -967,8 +981,13 @@
                   : inrS(Math.round(x.bees)) + `<div class="muted small">${x.beesHow === 'sold' ? 'sold ₹' + x.m.exitPx.toFixed(2) : x.beesHow === 'live' ? 'now ₹' + beesNow.px.toFixed(2) : 'estimated from Nifty'}</div>`
             }</td>
             <td class="${cls(x.overall)} b">${x.overall == null ? '—' : inrS(Math.round(x.overall))}</td>
+            <td><button class="btn-sm ghost" data-load="${t.id}" title="Put this trade in the Builder: payoff, positions and P&amp;L, to adjust it and save it again">Load</button></td>
             <td class="muted small">${whenTxt(t.savedAt)}<div>at ${esc(u.at || '')}</div></td>
-            <td><button class="btn-sm ghost" data-load="${t.id}" title="Put this trade in the Builder: payoff, positions and P&amp;L, to adjust it and save it again">Load</button> <button class="icon" data-del="${t.id}" title="Delete this saved trade">✕</button></td></tr>`;
+            <td class="sb-del-cell">${
+              delAsk === t.id
+                ? `<div class="sb-del-ask"><span class="neg small">Delete this trade?</span><button class="btn-sm sb-del-yes" data-del-yes="${t.id}" title="Delete “${esc(t.name)}” for good">Yes, delete</button><button class="btn-sm ghost" data-del-no="1">Keep</button></div>`
+                : `<button class="btn-sm ghost sb-del" data-del="${t.id}" title="Delete this saved trade (asks you to confirm)">🗑</button>`
+            }</td></tr>`;
           })
           .join('')}</tbody></table></div>`
       }`;
@@ -1923,7 +1942,12 @@
     const b = e.target.closest('button');
     if (!b) return;
     if (b.dataset.load) openTrade(b.dataset.load);
-    else if (b.dataset.del) deleteTrade(b.dataset.del);
+    else if (b.dataset.del) askDelete(b.dataset.del);
+    else if (b.dataset.delYes) deleteTrade(b.dataset.delYes);
+    else if (b.dataset.delNo) {
+      delAsk = null;
+      renderTrades();
+    }
     else if (b.dataset.t === 'refresh') refreshTrades();
   });
   // The date picked in the top bar becomes the replay's start date.
