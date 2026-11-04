@@ -15,7 +15,6 @@ bt-data/scenario-cache.json
 bt-data/backtests.json
 bt-data/biweekly.json
 bt-data/backspread.json
-bt-data/paper-trades.json
 bt-data/data-sync.json
 bt-data/feedcmp-config-demo.json
 bt-data/cc-backtest.json
@@ -36,5 +35,4 @@ bt-data/surge-config.json
 reports/
 playwright-report/
 test-results/
-bt-data/mcc-live.json
 bt-data/mcc-live-demo.json
