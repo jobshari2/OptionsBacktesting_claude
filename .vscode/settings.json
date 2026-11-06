@@ -16,5 +16,5 @@
     ".git{,/**}",
     "holdings.xlsx",
     ".vscode{,/**}"
-]
+  ]
 }

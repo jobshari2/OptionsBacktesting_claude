@@ -393,8 +393,7 @@ test('holding a Nifty 50 index fund: modelled NAV at the close, stamp duty only,
 test('weekly insurance: the best suited structure pays the most per rupee in a bad week', () => {
   const { weeklyInsurance } = require('../bt/ccsuggest');
   const spot = 25030;
-  const chain = suggChains(spot, ['w'])
-    .get('w');
+  const chain = suggChains(spot, ['w']).get('w');
   const p = CC.normalize({ lotSize: 65, ins: { expiry: 'weekly' } });
   assert.equal(p.ins.expiry, 'weekly');
   assert.equal(CC.normalize({ ins: { expiry: 'daily' } }).ins.expiry, 'monthly');
@@ -406,7 +405,14 @@ test('weekly insurance: the best suited structure pays the most per rupee in a b
   assert.ok(wi.candidates.every((c) => c.badPay <= 0 || c.badRatio <= best.badRatio));
   // 12 % IV over a week: 1.5 σ is about 2.5 % under spot
   assert.ok(wi.badPct > 2 && wi.badPct < 3, String(wi.badPct));
-  const s = suggest({ today: '2026-10-21', spot, bees: 280, chains: suggChains(spot, ['2026-10-27', '2026-11-24']), expiries: ['2026-10-27', '2026-11-24'], params: { lotSize: 65, ins: { expiry: 'weekly' } } });
+  const s = suggest({
+    today: '2026-10-21',
+    spot,
+    bees: 280,
+    chains: suggChains(spot, ['2026-10-27', '2026-11-24']),
+    expiries: ['2026-10-27', '2026-11-24'],
+    params: { lotSize: 65, ins: { expiry: 'weekly' } },
+  });
   assert.equal(s.insWeek.expiry, '2026-10-27');
   assert.match(s.now.map((n) => n.text).join(' '), /Weekly insurance: buy the .* PE put butterfly \(2026-10-27\)/);
 });
@@ -417,7 +423,10 @@ test('paper trade: weekly insurance is closed at its expiry and the next week bo
   let c = p.state().paper.cycle;
   assert.ok(c.expiry > expiries[0]);
   assert.equal(c.ins.length, 3);
-  assert.ok(c.ins.every((l) => l.expiry === expiries[0]), 'on the nearest weekly series');
+  assert.ok(
+    c.ins.every((l) => l.expiry === expiries[0]),
+    'on the nearest weekly series',
+  );
   assert.equal(c.insWeeks.length, 1);
   // the day after the first weekly expiry: it settled at its close and the next series was bought
   await p.tick(Date.parse(addDays(expiries[0], 1) + 'T10:00:00+05:30'));

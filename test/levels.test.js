@@ -11,9 +11,18 @@ test('extend: a new high past the last swing level gets projected resistance abo
   const out = extend(lv([24000, 24300, 24500]), 24520);
   const above = out.levels.filter((l) => l.price > 24520);
   assert.ok(above.length >= 3, 'levels above spot');
-  assert.ok(above.every((l) => l.projected), 'all of them projected');
-  assert.ok(above.some((l) => l.price === 25000 && l.cls === 'major'), 'next 500 is a major level');
-  assert.ok(above.some((l) => l.price === 24600 && l.cls === 'minor'), 'next 100 is a minor level');
+  assert.ok(
+    above.every((l) => l.projected),
+    'all of them projected',
+  );
+  assert.ok(
+    above.some((l) => l.price === 25000 && l.cls === 'major'),
+    'next 500 is a major level',
+  );
+  assert.ok(
+    above.some((l) => l.price === 24600 && l.cls === 'minor'),
+    'next 100 is a minor level',
+  );
   assert.strictEqual(out.spot, 24520);
 });
 
@@ -28,7 +37,10 @@ test('extend: nothing is projected where swing levels still reach well beyond sp
   const base = lv([23000, 24000, 24400, 25400, 26000]);
   const out = extend(base, 24420);
   assert.strictEqual(out.levels.filter((l) => l.projected).length, 0);
-  assert.deepStrictEqual(out.levels.map((l) => l.price), [26000, 25400, 24400, 24000, 23000]);
+  assert.deepStrictEqual(
+    out.levels.map((l) => l.price),
+    [26000, 25400, 24400, 24000, 23000],
+  );
 });
 
 test('extend: leaves the input untouched and tolerates missing data', () => {

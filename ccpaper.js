@@ -386,7 +386,10 @@ function createCcPaper({
       const w = (cyc.insWeeks || []).find((x) => x.expiry === e);
       const pnl = s.pnl - s.cost - (w?.costs ?? 0); // after the charges of buying and settling it
       if (w) Object.assign(w, { spotOut: r2(x.spot), pnl: Math.round(pnl), costs: w.costs + s.cost });
-      log('ins-exp', `Weekly insurance ${legs.map((l) => l.strike).join(' / ')} PE (${e}) closed at its expiry ${x.how}, Nifty ${x.spot.toFixed(0)}: ${signed(pnl)} after charges`);
+      log(
+        'ins-exp',
+        `Weekly insurance ${legs.map((l) => l.strike).join(' / ')} PE (${e}) closed at its expiry ${x.how}, Nifty ${x.spot.toFixed(0)}: ${signed(pnl)} after charges`,
+      );
     }
     if (!due(cyc.expiry)) return;
     const x = await expirySpot(cyc.expiry, today, hhmm, spot);
@@ -618,7 +621,8 @@ function createCcPaper({
         v === 'weekly'
           ? 'Insurance switched to weekly: the best suited weekly structure, closed at each weekly expiry and the next one bought' +
               (st.cycle?.ins.some((l) => l.expiry === st.cycle.expiry) ? " (the month's insurance held now is kept to its expiry)" : '')
-          : "Insurance switched to monthly: bought on the month's expiry with the call" + (st.cycle?.ins.length ? " (the weekly one held now runs to its expiry, then the month's is bought)" : ''),
+          : "Insurance switched to monthly: bought on the month's expiry with the call" +
+              (st.cycle?.ins.length ? " (the weekly one held now runs to its expiry, then the month's is bought)" : ''),
       );
       save();
       await tick();

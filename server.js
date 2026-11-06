@@ -27,8 +27,18 @@ const { createKiteData } = require('./lib/kitedata');
 const { createKiteBasket } = require('./kitebasket');
 const { createCcPaper } = require('./ccpaper');
 const { runCoveredCall, modelPath: ccModelPath, DEFAULTS: CC_DEFAULTS } = require('./bt/coveredcall');
-const { runMcc, runMccStudy, runMccModel, DEFAULTS: MCC_DEFAULTS, STUDY: MCC_STUDY } = require('./bt/mcc');
-const { createMccPaper, weekdaysLeft } = require('./mccpaper');
+const {
+  runMcc,
+  runMccStudy,
+  runMccModel,
+  DEFAULTS: MCC_DEFAULTS,
+  STUDY: MCC_STUDY,
+  merge: mccMerge,
+  pickLegs: mccPickLegs,
+  shapeText: mccShapeText,
+  etfQty: mccEtfQty,
+} = require('./bt/mcc');
+const { createMccPaper, weekdaysLeft, monthlyFor } = require('./mccpaper');
 const mccLive = require('./bt/mcclive');
 const lab = require('./bt/lab');
 const { suggest: ccSuggest } = require('./bt/ccsuggest');
@@ -1000,8 +1010,14 @@ async function mccLiveState(key) {
     closed: Boolean(x.done),
     legs: x.legs.map(mccLive.legText).join(', '),
   }));
+  // None picked on the tab: no trade shown (the list still sent, to pick one or enter a new one)
+  // newest: the newest open trade (a trade just entered from this tab and saved in the Builder)
+  const want = key === 'newest' ? null : key || cfg.selected;
+  if (want === 'none') return { trades, key: 'none', pos: null };
   const pos =
-    all.find((x) => x.key === (key || cfg.selected)) ||
+    all.find((x) => x.key === want) ||
+    // else the newest open one (saved trades are kept in the order they were first saved)
+    all.findLast((x) => x.src === 'builder' && !x.done && (x.flag || mccLive.looksMcc(x.legs))) ||
     all.find((x) => !x.done && (x.flag || mccLive.looksMcc(x.legs))) ||
     all.find((x) => !x.done) ||
     all[0];
@@ -1218,6 +1234,55 @@ async function handleMcc(req, res, url, p) {
         writeJson(MCC_LIVE_FILE, cfg);
       }
       return sendJson(res, 200, mccLiveOut(await mccLiveState(b.key)));
+    }
+    // Enter a new trade: the expiries it can be built on (the default: the monthly series the paper trade would take),
+    // the legs the rules pick on that expiry's live chain (bt/mcc.js pickLegs: call ratio 1×2 + put 2-3-1, the ideal
+    // trade's flat zone), which the page opens in the Builder. Nothing is sent to a broker.
+    if (p === '/api/mcc/live/expiries') {
+      if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the trade is built on the live chain`);
+      const today = istDate();
+      const list = (await getExpiries()).filter((e) => e >= today).sort();
+      const lastOfMonth = new Map(list.map((e) => [e.slice(0, 7), e]));
+      const monthly = new Set(lastOfMonth.values());
+      return sendJson(res, 200, {
+        expiries: list.map((e) => ({ expiry: e, monthly: monthly.has(e), days: Math.round((Date.parse(e) - Date.parse(today)) / 86400_000) })),
+        dflt: monthlyFor(list, today, MCC_DEFAULTS.minDays) || list[0] || null,
+        minDays: MCC_DEFAULTS.minDays,
+        target: MCC_DEFAULTS.target.amount,
+      });
+    }
+    if (p === '/api/mcc/live/plan' && req.method === 'POST') {
+      if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the trade is built on the live chain`);
+      const b = JSON.parse((await readBody(req, 10_000)).toString('utf8') || '{}');
+      const chain = await mccLiveChain(String(b.expiry || ''), []);
+      if (!(chain?.spot > 0) || !chain.rows?.length) throw new Error(`No live chain for the ${b.expiry} expiry yet`);
+      const S = Number(b.spot) >= 1000 ? Number(b.spot) : chain.spot;
+      const lot = contracts.lot || MCC_DEFAULTS.lotSize;
+      const amount = Number(b.target);
+      const prm = mccMerge({ lotSize: lot, target: { on: amount !== 0, amount: amount > 0 ? amount : MCC_DEFAULTS.target.amount } });
+      const rows = new Map(chain.rows.map((r) => [r.strike, r]));
+      const q = (type, k) => rows.get(k)?.[type === 'CE' ? 'ce' : 'pe'];
+      const ltp = (type, k) => (q(type, k)?.ltp > 0 ? q(type, k).ltp : null);
+      const pick = mccPickLegs(S, prm, [...rows.keys()].sort((x, y) => x - y), ltp, lot);
+      const legs = pick.legs.map((l) => {
+        const o = q(l.type, l.strike) || {};
+        return { role: l.role, type: l.type, strike: l.strike, lots: l.lots, side: l.side, ltp: ltp(l.type, l.strike), bid: o.bid ?? null, ask: o.ask ?? null };
+      });
+      const bees = await mccBeesNow().catch(() => null);
+      const beesPx = bees?.px || S / 100;
+      return sendJson(res, 200, {
+        expiry: b.expiry,
+        spot: chain.spot,
+        S,
+        lot,
+        legs,
+        shape: pick.shape,
+        shapeText: mccShapeText(pick.shape, prm.target.amount),
+        target: prm.target,
+        atmIv: mccLive.market(chain, mccLive.yearsTo(b.expiry)).atmIv,
+        bees: { now: beesPx, live: Boolean(bees), qty: mccEtfQty(prm, S, beesPx) },
+        at: chain.updatedAt,
+      });
     }
     if (p === '/api/mcc/live/suggest' && req.method === 'POST') {
       if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the suggestions are priced on the live chain`);

@@ -648,7 +648,13 @@ function createFeedCompare({
         episodes: hit.slice(-limit).reverse(),
         paper: (() => {
           const trades = paper.list(date).filter((t) => !['u', 'k'].includes(q.pfeed) || t.entryFeed === q.pfeed);
-          return { summary: summarizePaper(trades), bySurge: summarizeBySurge(trades, cfg.paper.surgePct), surgeNow: getSurge(), live: summarizeLive(trades), trades: trades.slice(-300).reverse() };
+          return {
+            summary: summarizePaper(trades),
+            bySurge: summarizeBySurge(trades, cfg.paper.surgePct),
+            surgeNow: getSurge(),
+            live: summarizeLive(trades),
+            trades: trades.slice(-300).reverse(),
+          };
         })(),
         trading: live.state(),
       };

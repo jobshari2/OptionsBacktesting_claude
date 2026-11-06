@@ -642,6 +642,8 @@
     S.plan = (o.plan || []).map((e) => ({ ...e, m: minOf(e.time), done: false }));
     S.lotFix = S.src === 'hist' && o.lot > 0 ? o.lot : null; // a backtest trade: its lot size, not the contract's
     S.pay = { daysAhead: o.pay?.daysAhead || 0, ivShift: o.pay?.ivShift || 0 }; // a new position starts from today's market unless the sender had a what-if
+    // a Modified covered call (Trading Ideas › Live trade › Enter new trade): marked so, with its NIFTYBEES
+    if (o.mcc) S.mcc = { ...o.mcc };
     pending = o;
     save();
     window.app.setView('sb'); // fires 'viewchange' -> init() -> activate(), which places the pending position
@@ -865,7 +867,12 @@
         chains[e] = null;
       }
     }
-    if (trades.some((t) => { const m = t.snap.mcc; return m?.on && m.qty > 0 && m.price > 0 && !(m.exitPx > 0); })) {
+    if (
+      trades.some((t) => {
+        const m = t.snap.mcc;
+        return m?.on && m.qty > 0 && m.price > 0 && !(m.exitPx > 0);
+      })
+    ) {
       beesNow = await BT.api('/api/mcc/bees').catch(() => null);
       if (!niftyNow && !(beesNow?.px > 0)) {
         const exp = BT.meta.calendar?.live?.[0];
@@ -978,7 +985,8 @@
                 ? '<span class="muted">—</span>'
                 : x.bees == null
                   ? `<span class="muted small">${x.m.qty > 0 ? 'no price now' : 'not entered'}</span>`
-                  : inrS(Math.round(x.bees)) + `<div class="muted small">${x.beesHow === 'sold' ? 'sold ₹' + x.m.exitPx.toFixed(2) : x.beesHow === 'live' ? 'now ₹' + beesNow.px.toFixed(2) : 'estimated from Nifty'}</div>`
+                  : inrS(Math.round(x.bees)) +
+                    `<div class="muted small">${x.beesHow === 'sold' ? 'sold ₹' + x.m.exitPx.toFixed(2) : x.beesHow === 'live' ? 'now ₹' + beesNow.px.toFixed(2) : 'estimated from Nifty'}</div>`
             }</td>
             <td class="${cls(x.overall)} b">${x.overall == null ? '—' : inrS(Math.round(x.overall))}</td>
             <td><button class="btn-sm ghost" data-load="${t.id}" title="Put this trade in the Builder: payoff, positions and P&amp;L, to adjust it and save it again">Load</button></td>
@@ -1655,11 +1663,12 @@
     el.innerHTML = `<label class="mini" title="A call ratio spread + put butterfly held against NIFTYBEES: Trading Ideas › Covered call › Modified covered call › Live trade follows the saved trade with live NIFTYBEES prices and can close all of it"><input type="checkbox" data-mcc="on" ${m.on ? 'checked' : ''}> <b>Modified covered call</b></label>${
       m.on
         ? `<span class="lbl">NIFTYBEES</span>
+      <label class="mini" title="₹ to put in NIFTYBEES: the units are worked out at its price now (live, else the Bought-at price, else Nifty ÷ 100)">Amount ₹ <input class="num sm" type="number" min="0" step="1000" data-mcc="amount" value="${v(m.amount)}" placeholder="e.g. 1600000"></label>
       <label class="mini">Units <input class="num sm" type="number" min="0" step="1" data-mcc="qty" value="${v(m.qty)}" placeholder="e.g. 6500"></label>
       <label class="mini">Bought at ₹ <input class="num sm" type="number" min="0" step="0.01" data-mcc="price" value="${v(m.price)}" placeholder="e.g. 260.00"></label>
       <label class="mini">on <input type="date" data-mcc="day" value="${v(m.day)}"></label>
       ${m.exitPx > 0 || !openLegs().length ? `<label class="mini" title="The price the NIFTYBEES were sold at, once sold">Sold at ₹ <input class="num sm" type="number" min="0" step="0.01" data-mcc="exitPx" value="${v(m.exitPx)}"></label>` : ''}
-      <span class="muted small">${has ? `${Math.round(m.qty).toLocaleString('en-IN')} units worth ${inr(Math.round(m.qty * m.price))} at purchase` : 'Enter the units and the price they were bought at'}${
+      <span class="muted small">${mccAmtNote ? esc(mccAmtNote) + ' · ' : ''}${has ? `${Math.round(m.qty).toLocaleString('en-IN')} units worth ${inr(Math.round(m.qty * m.price))} at purchase` : 'Enter the units and the price they were bought at'}${
         sold != null
           ? ` · NIFTYBEES <b class="${cls(sold)}">${inrS(Math.round(sold))}</b>${P ? ` · with the options <b class="${cls(P.total + sold)}">${inrS(Math.round(P.total + sold))}</b>` : ''}`
           : ''
@@ -1668,11 +1677,35 @@
         : ''
     }`;
   }
-  $('sbMcc')?.addEventListener('change', (e) => {
+  // NIFTYBEES' price now for the Amount box: live (/api/mcc/bees), else the Bought-at price, else Nifty ÷ 100.
+  let mccAmtNote = '';
+  async function beesPriceNow(m) {
+    const live = S.src === 'live' ? await BT.api('/api/mcc/bees').catch(() => null) : null;
+    if (live?.px > 0) return { px: live.px, how: 'its live price' };
+    if (m.price > 0) return { px: m.price, how: 'the Bought-at price' };
+    const spot = market()?.spot;
+    return spot > 0 ? { px: spot / 100, how: 'Nifty ÷ 100 (no live price)' } : null;
+  }
+  $('sbMcc')?.addEventListener('change', async (e) => {
     const k = e.target.dataset?.mcc;
     if (!k) return;
     const m = { ...(S.mcc || {}) };
+    mccAmtNote = '';
     if (k === 'on') m.on = e.target.checked;
+    else if (k === 'amount') {
+      const n = Number(e.target.value);
+      if (!(n > 0)) delete m.amount;
+      else {
+        const b = await beesPriceNow(m);
+        if (!b) mccAmtNote = 'No NIFTYBEES price to work the units out: enter the Bought-at price';
+        else {
+          m.amount = n;
+          m.qty = Math.floor(n / b.px);
+          if (!(m.price > 0) || b.how === 'its live price') m.price = Math.round(b.px * 100) / 100;
+          mccAmtNote = `${inr(n)} ÷ ₹${b.px.toFixed(2)} (${b.how}) = ${m.qty.toLocaleString('en-IN')} units`;
+        }
+      }
+    }
     else if (k === 'day') {
       if (e.target.value) m.day = e.target.value;
       else delete m.day;
@@ -1680,6 +1713,7 @@
       const n = Number(e.target.value);
       if (e.target.value === '' || !(n > 0)) delete m[k];
       else m[k] = k === 'qty' ? Math.round(n) : n;
+      if (k === 'qty' || k === 'price') delete m.amount; // the units or price typed by hand: no longer worked out from an amount
       if (k === 'exitPx') {
         if (m.exitPx) m.exitDay ||= new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10);
         else for (const x of ['exitDay', 'exitAt', 'exitBatch']) delete m[x];
@@ -1947,8 +1981,7 @@
     else if (b.dataset.delNo) {
       delAsk = null;
       renderTrades();
-    }
-    else if (b.dataset.t === 'refresh') refreshTrades();
+    } else if (b.dataset.t === 'refresh') refreshTrades();
   });
   // The date picked in the top bar becomes the replay's start date.
   async function pickDay(v) {

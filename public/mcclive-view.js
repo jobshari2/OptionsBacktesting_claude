@@ -46,7 +46,7 @@
   }
   const allSug = () => (sug && !sug.error ? [...sug.list, ...(sug.protect || []), ...(sug.risky || [])] : []);
   async function findSuggestions() {
-    if (sugBusy || !st?.key || st.closed) return;
+    if (sugBusy || !st?.key || !st.pos || st.closed) return;
     sugBusy = true;
     drawSug();
     try {
@@ -71,7 +71,7 @@
   async function render(target) {
     el = target;
     el.innerHTML = '<div class="panel empty">Loading the live trade…</div>';
-    await load();
+    await Promise.all([load(), expList ? null : loadExpiries()]);
     draw();
     if (st?.pos && !st.closed && !sug) findSuggestions();
     poll();
@@ -112,6 +112,7 @@
     if (!el || !shown()) return;
     if (st?.error && st.error === el.dataset.err) return; // the same error is on screen: its trade picker is left open
     if (st?.closed) return shape() !== drawnShape ? draw() : undefined; // a closed trade: nothing moves
+    if (!st?.pos && !st?.error && el.dataset.nopos === String(st?.trades?.length ?? 0)) return; // no trade (None): left as drawn
     if (!st?.pos || st.error || shape() !== drawnShape || !$('mclKpis')) return draw();
     const n = nowPnl();
     $('mclStatus').innerHTML = statusHtml();
@@ -160,15 +161,19 @@
     // values typed in the NIFTYBEES form and not saved yet survive a redraw of the same trade
     const typed = drawnShape === shape() ? FORM.map((id) => $(id)?.dataset.typed && $(id).value) : null;
     el.dataset.err = st?.error || '';
+    el.dataset.nopos = !st?.pos && !st?.error ? String(st?.trades?.length ?? 0) : '';
     if (st?.error) {
       drawnShape = null;
       const pickTrade = st.trades?.length > 1 ? `<div class="set-row">${pickerHtml()}</div>` : '';
-      el.innerHTML = `<div class="panel cc-doc mcl-head">${pickTrade}<div class="err small">${esc(st.error)}</div></div>`;
+      el.innerHTML = `<div class="panel cc-doc mcl-head">${pickTrade}<div class="err small">${esc(st.error)}</div><div class="set-row">${enterBtn()}</div></div>`;
       bindPick();
+      bindPick();
+      bindEnter();
       return;
     }
     if (!st?.pos) {
-      el.innerHTML = `<div class="panel empty"><h3>No live trade</h3><p>Build the position in the <b>Builder</b> (call ratio 1 × 2 and put 2-3-1) and press <b>Save trade</b>: it is listed in <b>Trades › Saved trades</b> and shown here. The Modified covered call paper trade's open series is shown here too.</p></div>`;
+      el.innerHTML = `<div class="panel empty">${st?.trades?.length ? `<div class="set-row mcl-head"><h3>Live trade</h3>${pickerHtml()}</div>` : '<h3>No live trade</h3>'}<p>Build the position in the <b>Builder</b> (call ratio 1 × 2 and put 2-3-1) and press <b>Save trade</b>: it is listed in <b>Trades › Saved trades</b> and shown here. The Modified covered call paper trade's open series is shown here too. Or start one by the rules:</p><div class="set-row">${enterBtn()}</div></div>`;
+      bindEnter();
       return;
     }
     const P = st.pos;
@@ -180,6 +185,7 @@
       <div class="set-row"><h3>Live trade</h3>
         ${pickerHtml()}
         <button class="btn-sm ghost" id="mclRefresh" title="Price the trade at the live chain again">↻ Refresh</button>
+        ${enterBtn()}
         ${P.src === 'builder' ? `<button class="btn-sm ${closing ? '' : 'ghost'} danger" id="mclCloseBtn" title="Close every option leg and sell the NIFTYBEES: recorded in the saved trade (Builder › Trades) at the prices you confirm">${closing ? 'Cancel close' : 'Close entire trade…'}</button>` : ''}
         <span class="muted small" id="mclStatus">${statusHtml()}</span></div>
       <div class="muted small">${esc(P.legs.map(legLine).join(' · '))} · expiry ${dayLabel(P.expiry)} (${st.market.daysLeft} trading day${st.market.daysLeft === 1 ? '' : 's'} left)${P.closed.length ? ` · closed: ${esc(P.closed.map((c) => `${c.side > 0 ? 'B' : 'S'} ${c.lots}× ${c.strike} ${c.type} ${c.entry.toFixed(1)} → ${c.exit.toFixed(1)}`).join(', '))}` : ''}${P.otherExpiry ? ` · ${P.otherExpiry} leg(s) of another expiry left out` : ''}${P.src === 'builder' ? ' · P&amp;L before charges, as the Builder shows it' : ' · P&amp;L after costs, as the paper trade counts it'}</div>
@@ -224,7 +230,7 @@
   const FORM = ['mclQty', 'mclPx', 'mclEntry'];
 
   function pickerHtml() {
-    return `<select id="mclPick" title="Trades saved in the Builder (Trades › Saved trades) with open legs, and the paper trade's series">${st.trades
+    return `<select id="mclPick" title="Trades saved in the Builder (Trades › Saved trades) with open legs, and the paper trade's series"><option value="none" ${st.key === 'none' ? 'selected' : ''}>None</option>${st.trades
       .map(
         (t) =>
           `<option value="${esc(t.key)}" ${t.key === st.key ? 'selected' : ''}>${esc(t.name)}${t.closed ? ' (closed)' : t.mcc ? '' : ' (not a call ratio + put butterfly)'} · ${dayLabel(t.expiry)}</option>`,
@@ -893,6 +899,7 @@
     });
     bindSug();
     bindClose();
+    bindEnter();
     // the grid opens with Nifty now in the middle
     const g = el.querySelector('.mcl-grid');
     const now = g?.querySelector('tr.sel');
@@ -1059,7 +1066,9 @@
         msg.className = 'small neg';
         return;
       }
-      const lines = closeLegs().map((l) => `${l.side > 0 ? 'Sell' : 'Buy back'} ${l.lots} × ${l.strike} ${l.type} @ ${Number(closeVal(l.id, l.ltp)).toFixed(2)}`);
+      const lines = closeLegs().map(
+        (l) => `${l.side > 0 ? 'Sell' : 'Buy back'} ${l.lots} × ${l.strike} ${l.type} @ ${Number(closeVal(l.id, l.ltp)).toFixed(2)}`,
+      );
       if (beesToSell()) lines.push(`Sell ${st.bees.qty} NIFTYBEES @ ${Number(closeVal('bees', st.bees.now)).toFixed(2)}`);
       const sure = confirm(
         `Record the close of "${st.pos.name}"?\n\n${lines.join('\n')}\n\nTotal ${inrS(Math.round(t.total))} (options ${inrS(Math.round(t.opt))}, NIFTYBEES ${inrS(Math.round(t.bees))}).\nNothing is sent to a broker.`,
@@ -1079,6 +1088,72 @@
         msg.className = 'small neg';
       }
     });
+  }
+
+  // ---------- entering a new trade ----------
+  // The expiry picked beside the button (default: the monthly series the paper trade would take, 15+ days out). The
+  // button picks the legs by the rules on that expiry's live chain (/api/mcc/live/plan: call ratio 1×2 + put 2-3-1,
+  // the ideal trade's flat zone) and opens them in the Builder at the LTP, on that expiry, marked Modified covered call
+  // with the NIFTYBEES (65 × Nifty's worth at its price now). Saved there (💾 Save trade), the trade is listed in
+  // Trades and on this tab. Nothing is sent to a broker.
+  let expList = null; // /api/mcc/live/expiries
+  let expPick = null; // the expiry picked
+  let enterBusy = false;
+  async function loadExpiries() {
+    try {
+      expList = await BT.api('/api/mcc/live/expiries');
+      if (!expList.expiries.some((e) => e.expiry === expPick)) expPick = expList.dflt;
+    } catch {
+      expList = null;
+    }
+  }
+  const enterBtn = () => {
+    const opts = (expList?.expiries || [])
+      .map(
+        (e) =>
+          `<option value="${e.expiry}" ${e.expiry === expPick ? 'selected' : ''}>${dayLabel(e.expiry)}${e.monthly ? ' · monthly' : ''} · ${e.days} day${e.days === 1 ? '' : 's'}${e.expiry === expList.dflt ? ' (the rules’ series)' : ''}</option>`,
+      )
+      .join('');
+    return `<span class="mcl-enter-btn">${opts ? `<select id="mclEnterExp" title="The expiry the new trade is built on">${opts}</select>` : ''}<button class="btn-sm" id="mclEnterBtn" ${enterBusy ? 'disabled' : ''} title="Pick the legs by the rules (call ratio 1 × 2, put 2-3-1) on the expiry chosen and open them in the Builder with the NIFTYBEES, to check, change and save as a trade. Nothing is sent to a broker.">${enterBusy ? 'Building…' : '＋ Enter new trade'}</button></span>`;
+  };
+  async function enterTrade() {
+    const sb = BT.store.get('sb', {});
+    if (sb.legs?.some((l) => l.open) && !sb.tradeId && !confirm('The Builder holds a position that is not saved. Replace it with the new trade?')) return;
+    if (!expPick) await loadExpiries();
+    if (!expPick) return alert('No expiry listed: is the live chain logged in?');
+    enterBusy = true;
+    if ($('mclEnterBtn')) {
+      $('mclEnterBtn').disabled = true;
+      $('mclEnterBtn').textContent = 'Building…';
+    }
+    try {
+      const plan = await BT.api('/api/mcc/live/plan', { expiry: expPick });
+      const missing = plan.legs.filter((l) => !(l.ltp > 0));
+      if (missing.length) throw new Error('No price yet for ' + missing.map((l) => `${l.strike} ${l.type}`).join(', '));
+      const today = new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10);
+      // back on this tab, the newest open trade is shown (the one saved from the Builder), not the trade picked now
+      key = 'newest';
+      BT.store.set('mcclive-key', key);
+      BT.emit('open-builder', {
+        src: 'live',
+        expiry: plan.expiry,
+        note: `Modified covered call by the rules · ${plan.shapeText || 'fixed distances'}`,
+        legs: plan.legs.map((l) => ({ action: l.side > 0 ? 'B' : 'S', type: l.type, strike: l.strike, expiry: plan.expiry, lots: l.lots, px: l.ltp })),
+        mcc: { on: true, amount: Math.round(plan.bees.qty * plan.bees.now), qty: plan.bees.qty, price: Math.round(plan.bees.now * 100) / 100, day: today },
+      });
+    } catch (e) {
+      alert('Could not build the new trade: ' + e.message);
+    } finally {
+      enterBusy = false;
+      if ($('mclEnterBtn')) {
+        $('mclEnterBtn').disabled = false;
+        $('mclEnterBtn').textContent = '＋ Enter new trade';
+      }
+    }
+  }
+  function bindEnter() {
+    $('mclEnterExp')?.addEventListener('change', (e) => (expPick = e.target.value));
+    $('mclEnterBtn')?.addEventListener('click', enterTrade);
   }
 
   // A closed trade: its result as booked (options from the saved trade, NIFTYBEES bought → sold), no live prices.
@@ -1114,6 +1189,7 @@
     el.innerHTML = `<div class="panel cc-doc mcl-head">
       <div class="set-row"><h3>Live trade</h3>${pickerHtml()} <span class="cat-pill">closed</span>
         <button class="btn-sm ghost" id="mclToSb" title="Open this saved trade in the Builder">Load in Builder ▸</button>
+        ${enterBtn()}
         ${P.closeBatch ? '<button class="btn-sm ghost" id="mclReopen" title="Undo the close recorded on this tab: the legs it closed open again and the NIFTYBEES sale is removed">Undo close</button>' : ''}</div>
       <div class="muted small">${esc(P.name)} · expiry ${dayLabel(P.expiry)}${when ? ` · closed ${esc(when)}` : ''} · P&amp;L before charges, as the Builder shows it</div>
       <div class="kpis cc-kpis-main">
@@ -1128,9 +1204,15 @@
       <div class="panel cc-doc"><h3>Legs</h3><div class="tbl-wrap"><table class="grid-tbl mcl-legs"><thead><tr><th class="l">Leg</th><th class="l">Closed</th><th>Entry</th><th>Exit</th><th>P&amp;L</th></tr></thead><tbody>${legRows}${beesRow}
         <tr class="mcl-tot"><td class="l" colspan="4"><b>Total</b></td><td class="${cls(total)}"><b>${inrS(Math.round(total))}</b></td></tr></tbody></table></div></div>`;
     bindPick();
+    bindEnter();
     $('mclToSb')?.addEventListener('click', () => BT.emit('open-trade', P.id));
     $('mclReopen')?.addEventListener('click', async () => {
-      if (!confirm(`Undo the close of "${P.name}"? The legs closed on this tab open again at their entry prices, and the NIFTYBEES sale recorded with them is removed.`)) return;
+      if (
+        !confirm(
+          `Undo the close of "${P.name}"? The legs closed on this tab open again at their entry prices, and the NIFTYBEES sale recorded with them is removed.`,
+        )
+      )
+        return;
       try {
         st = await BT.api('/api/mcc/live/reopen', { key: st.key, confirm: true });
         sug = null;

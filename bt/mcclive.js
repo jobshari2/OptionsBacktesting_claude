@@ -153,7 +153,10 @@ function closeSaved(t, { px = {}, beesPx = null, ts = Date.now() } = {}) {
   if (bees && !bees.exitPx) {
     Object.assign(snap.mcc, { exitPx: Number(beesPx), exitDay: day, exitAt: hms.slice(0, 5), exitBatch: ts });
     const b = bees.qty * (Number(beesPx) - bees.price);
-    snap.log.unshift({ at, text: `Sell ${bees.qty} NIFTYBEES @ ${Number(beesPx).toFixed(2)} (bought ${bees.price.toFixed(2)}) · ${b >= 0 ? '+' : '−'}₹${Math.abs(Math.round(b)).toLocaleString('en-IN')}` });
+    snap.log.unshift({
+      at,
+      text: `Sell ${bees.qty} NIFTYBEES @ ${Number(beesPx).toFixed(2)} (bought ${bees.price.toFixed(2)}) · ${b >= 0 ? '+' : '−'}₹${Math.abs(Math.round(b)).toLocaleString('en-IN')}`,
+    });
   }
   snap.log = snap.log.slice(0, 200);
   out.summary = summaryOf(out, at);

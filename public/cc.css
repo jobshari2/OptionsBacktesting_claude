@@ -266,3 +266,8 @@ tr.mcl-sug-detail:hover > td { background: color-mix(in srgb, #f0616d 6%, transp
 .mcl-cover-t .grid-tbl td { padding: 4px 6px; }
 .mcl-cover ol { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.55; }
 @media (max-width: 900px) { .mcl-cover-b { grid-template-columns: minmax(0, 1fr); } }
+.mcl-enter-btn { display: inline-flex; align-items: center; gap: 0; border-radius: 7px; box-shadow: 0 0 0 2px color-mix(in srgb, var(--up, #3fb68b) 45%, transparent); }
+.mcl-enter-btn select { border-radius: 7px 0 0 7px; border-right: none; max-width: 260px; }
+.mcl-enter-btn #mclEnterBtn { background: var(--up, #3fb68b); border-color: var(--up, #3fb68b); color: #fff; font-weight: 700; padding: 5px 14px; border-radius: 0 7px 7px 0; }
+.mcl-enter-btn #mclEnterBtn:only-child { border-radius: 7px; }
+.mcl-enter-btn #mclEnterBtn:hover:not(:disabled) { filter: brightness(1.1); }

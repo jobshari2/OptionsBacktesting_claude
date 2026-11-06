@@ -54,7 +54,7 @@ module.exports = defineConfig([
   },
   {
     // Loaded by the server with require() and by the page as /lib/*.js
-    files: ['lib/pricing.js', 'lib/costs.js'],
+    files: ['lib/pricing.js', 'lib/costs.js', 'lib/backspread.js'],
     languageOptions: { globals: { self: 'readonly' } },
   },
   {

@@ -163,9 +163,18 @@ function weeklyInsurance(chain, spot, p, dte, units, iv = atmIv(chain, spot)) {
         badRatio: r2(badPay / debit),
       });
     }
-  const best = out.filter((c) => c.badPay > 0).reduce((b, c) => (!b || c.badRatio > b.badRatio ? c : b), null) || out.reduce((b, c) => (!b || c.payRatio > b.payRatio ? c : b), null);
+  const best =
+    out.filter((c) => c.badPay > 0).reduce((b, c) => (!b || c.badRatio > b.badRatio ? c : b), null) ||
+    out.reduce((b, c) => (!b || c.payRatio > b.payRatio ? c : b), null);
   for (const c of out) c.tags = c === best ? ['suited'] : [];
-  return { candidates: out, pick: best ? out.indexOf(best) : null, iv: r2(iv * 100), sigmaPct: r2(sigma * 100), bad: r2(bad), badPct: r2(BAD_WEEK * sigma * 100) };
+  return {
+    candidates: out,
+    pick: best ? out.indexOf(best) : null,
+    iv: r2(iv * 100),
+    sigmaPct: r2(sigma * 100),
+    bad: r2(bad),
+    badPct: r2(BAD_WEEK * sigma * 100),
+  };
 }
 
 // Weekly contra spreads for the regime: every short distance × wing width, scored by credit ÷ maximum loss among those
@@ -370,7 +379,10 @@ function suggest({ today, spot, bees = null, chains, expiries, params, paper = n
     const exp = cyc?.ins?.length ? [...new Set(cyc.ins.map((l) => l.expiry))].sort() : [];
     if (insWeek?.held) {
       const e = insWeek.held[0].expiry;
-      now.push({ kind: 'hold', text: `Weekly insurance ${insWeek.held.map((l) => l.strike).join(' / ')} PE open to ${e}: it is closed at its expiry and the next week's bought.` });
+      now.push({
+        kind: 'hold',
+        text: `Weekly insurance ${insWeek.held.map((l) => l.strike).join(' / ')} PE open to ${e}: it is closed at its expiry and the next week's bought.`,
+      });
     } else if (c)
       now.push({
         kind: 'buy',
