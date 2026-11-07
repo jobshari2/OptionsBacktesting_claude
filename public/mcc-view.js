@@ -1,4 +1,4 @@
-// Trading Ideas › Covered call › Modified covered call (left menu of the Covered call screen): NIFTYBEES worth one
+// Trading Ideas › Covered call: the Modified covered call, the one idea of the Covered call screen. NIFTYBEES worth one
 // lot plus a monthly call ratio spread and a 2-3-1 put butterfly, with rolls of the sold strikes (bt/mcc.js,
 // mccpaper.js). Tabs: Strategy & rules, Backtest (with and without adjustments, and the study of when to adjust),
 // Paper trade, Live trade (mcclive-view.js: a trade saved in the Builder, with its NIFTYBEES). Paper only: nothing here
@@ -28,7 +28,6 @@
   let meta = null;
   let params = null;
   let tab = BT.store.get('mcc-tab', 'rules');
-  let idea = BT.store.get('cc-idea', 'cc');
   let saved = { backtest: null, study: null }; // as shown: raw rescaled to the NIFTYBEES budget (rebudgetAll)
   let raw = { backtest: null, study: null }; // as the server ran them
   let started = false;
@@ -186,24 +185,11 @@
       .join('');
   const monthName = (d) => new Date(d + 'T00:00:00Z').toLocaleDateString('en-IN', { month: 'short', year: 'numeric', timeZone: 'UTC' });
 
-  // ---------- the left menu: Covered call | Modified covered call ----------
+  // ---------- the Covered call screen opened ----------
   function applyIdea() {
-    const menu = $('ccMenu');
-    if (!menu) return;
-    if (!menu.querySelector('[data-idea="mcc"]')) return; // cc-view.js has not drawn the menu yet
-    menu.querySelectorAll('[data-idea]').forEach((b) => b.classList.toggle('on', b.dataset.idea === idea));
-    document.querySelector('#cc > .bt-main:not(#mccMain)')?.classList.toggle('hidden', idea === 'mcc');
-    $('mccMain').classList.toggle('hidden', idea !== 'mcc');
-    if (idea === 'mcc') init();
+    init();
     poll();
   }
-  $('ccMenu').addEventListener('click', (e) => {
-    const b = e.target.closest('[data-idea]');
-    if (!b || b.dataset.idea === idea) return;
-    idea = b.dataset.idea;
-    BT.store.set('cc-idea', idea);
-    applyIdea();
-  });
 
   async function init() {
     if (started) return;
@@ -1693,9 +1679,7 @@
   }
   function bindMccTrades(el) {
     el.querySelector('[data-mct="open"]')?.addEventListener('click', () => {
-      idea = 'mcc';
       tab = 'paper';
-      BT.store.set('cc-idea', idea);
       BT.store.set('mcc-tab', tab);
       window.app.setView('cc');
       if (started && params) render(); // else init() draws it once the settings are loaded
@@ -1714,9 +1698,9 @@
 
   function poll() {
     clearTimeout(pollT);
-    if (tab !== 'paper' || idea !== 'mcc' || window.app?.state.view !== 'cc' || !started) return;
+    if (tab !== 'paper' || window.app?.state.view !== 'cc' || !started) return;
     pollT = setTimeout(async () => {
-      if (!document.hidden && tab === 'paper' && idea === 'mcc' && window.app?.state.view === 'cc' && document.activeElement?.id !== 'mccBudget') {
+      if (!document.hidden && tab === 'paper' && window.app?.state.view === 'cc' && document.activeElement?.id !== 'mccBudget') {
         await loadPaper();
         renderPaper();
       }

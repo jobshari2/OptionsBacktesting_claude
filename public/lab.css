@@ -1,4 +1,8 @@
-/* Trading Ideas › Strategy lab (lab-view.js); layout from surge.css (.surge-screen, .sr-body), documents from cc.css */
+/* Trading Ideas › Strategy lab (lab-view.js); documents from cc.css */
+.surge-screen { flex: 1; min-height: 0; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+.sr-tabs-panel { flex-direction: row; align-items: center; gap: 12px; flex-wrap: wrap; }
+.sr-body { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.sr-body .panel { overflow: visible; }
 .lab-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 8px 0; }
 .lab-set { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: 8px 0; font-size: 12px; }
 .lab-set label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }

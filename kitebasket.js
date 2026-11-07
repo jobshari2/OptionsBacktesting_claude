@@ -12,7 +12,7 @@
 //     closes a long position Kite already holds (same instrument and product, enough quantity): an exit, never a short.
 //   - a SELL leg that does not fill in time is cancelled too, and the basket is reported as partial: the legs bought
 //     stay open in Kite and have to be managed there
-// Safety, as in the Feeds live trader (feedlive.js): needs a Kite login; an enctoken web session (unofficial) only with
+// Safety: needs a Kite login; an enctoken web session (unofficial) only with
 // KITE_ORDERS_ENCTOKEN=1; only in market hours and before 15:25 IST; at most MAX_LEGS legs; no order above Nifty's freeze
 // quantity; one basket at a time; the same basket is not sent twice within 15 s. Every basket is logged (logs/).
 // In demo mode nothing is sent: the fills are simulated.

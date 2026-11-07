@@ -1,6 +1,5 @@
-/* Trading Ideas › Covered call (cc-view.js) */
-.cc-menu-head { padding: 10px 12px 6px; text-transform: uppercase; letter-spacing: .4px; }
-.cc-menu-foot { padding: 10px 12px; line-height: 1.45; }
+/* Trading Ideas › Covered call: the Modified covered call (mcc-view.js, mcclive-view.js) */
+.cc-screen { grid-template-columns: minmax(0, 1fr); }
 .cc-tabs-panel { flex: none; padding: 8px 14px; }
 .cc-tabs-panel .seg button { padding: 6px 16px; font-size: 13px; }
 

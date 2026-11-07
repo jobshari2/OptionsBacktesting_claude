@@ -39,17 +39,15 @@
         </div>
         <div class="lc-time muted small">${esc(BT.timingLabel(s))}</div>
         <div class="lc-actions">
-          <button class="btn-sm" data-act="bt">Backtest</button>
-          <button class="btn-sm ghost" data-act="edit">${mine ? 'Edit' : 'Customise'}</button>
-          <button class="btn-sm ghost" data-act="deploy">Deploy live</button>
-          <button class="btn-sm ghost" data-act="builder" title="Open in the Builder on the live chain: paper trade it with payoff, adjustments and P&amp;L">Builder ▸</button>
+          <button class="btn-sm" data-act="deploy">Deploy live</button>
+          <button class="btn-sm ghost" data-act="builder" title="Open in the Builder on the live chain: paper trade or customise it with payoff and P&amp;L">Builder ▸</button>
           ${mine ? '<button class="btn-sm ghost danger" data-act="del" title="Delete">✕</button>' : ''}
           ${s.edited ? '<button class="btn-sm ghost" data-act="reset" title="Restore the original built-in strategy">Reset</button>' : ''}
         </div>
       </div>`;
         })
         .join('') ||
-      `<div class="panel empty">${cat === 'My strategies' ? 'No saved strategies yet. Customise a ready-made one (or build one in Backtest) and press Save — it can then be backtested or deployed on any expiry.' : 'Nothing matches.'}</div>`;
+      `<div class="panel empty">${cat === 'My strategies' ? 'No saved strategies yet. Deploy a ready-made one and press Save as my strategy (or build one in the Builder and save it there) — it can then be deployed on any expiry.' : 'Nothing matches.'}</div>`;
   }
 
   // Schematic payoff at the near expiry: spot 100, 0.2-point strike step (≈ Nifty 50 / 25,000), 14% vol, 4 days.
@@ -138,15 +136,13 @@
     }
   });
   $('libSearch').addEventListener('input', renderCards);
-  $('libNew').addEventListener('click', () => BT.emit('open-backtest', { strategy: { ...BT.blankStrategy(), id: null }, run: false }));
+  $('libNew').addEventListener('click', () => window.app.setView('sb'));
   $('libCards').addEventListener('click', async (e) => {
     const b = e.target.closest('button');
     const card = e.target.closest('.lib-card');
     if (!b || !card) return;
     const s = BT.findStrategy(card.dataset.id);
     if (!s) return;
-    if (b.dataset.act === 'bt') BT.emit('open-backtest', { strategy: s, run: true });
-    if (b.dataset.act === 'edit') BT.emit('open-backtest', { strategy: s, run: false });
     if (b.dataset.act === 'deploy') deploy(s, 0);
     if (b.dataset.act === 'builder') BT.emit('open-builder', { strategy: s, src: 'live' });
     if (b.dataset.act === 'del' && confirm(`Delete "${s.name}"?`)) await BT.deleteStrategy(s.id);
@@ -294,7 +290,6 @@
         <button class="btn-sm kite" data-act="kite" title="Send these exact legs (strikes, lots, the prices shown) to Zerodha Kite as real orders: buys first, sells only after the buys fill. Asks you to confirm first.">Trade on Kite</button>
         <button class="btn-sm" data-act="builder" title="Open these exact legs (strikes, lots, entry prices, what-if settings) in the Builder on the live chain, to paper trade, adjust and roll them">Customise in Builder ▸</button>
         <button class="btn-sm ghost" data-act="save" title="Save as a strategy defined relative to ATM, reusable on any expiry">Save as my strategy</button>
-        <button class="btn-sm ghost" data-act="bt">Backtest it</button>
         <span class="muted small">* = strike changed from the rule; it is saved as an ATM offset.</span>
       </div>
       <div class="muted small pad">Chance of profit uses a lognormal model at ATM IV. Greeks are Black-Scholes at each leg's IV. Margin is a rough estimate: check with your broker. Not investment advice.</div>`;
@@ -368,8 +363,7 @@
     else if (b.dataset.act === 'close') {
       dep = null;
       renderDeployEmpty();
-    } else if (b.dataset.act === 'bt') BT.emit('open-backtest', { strategy: asStrategy(), run: false });
-    else if (b.dataset.act === 'kite') {
+    } else if (b.dataset.act === 'kite') {
       window.KiteOrder?.open({
         title: dep.strategy.name,
         sub: `deployed for ${dayShort(dep.live.base)} at ${dep.pricing === 'market' ? 'bid / ask' : 'LTP'}`,

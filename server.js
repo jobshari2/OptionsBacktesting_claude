@@ -5,18 +5,14 @@ const path = require('path');
 const { createSignals, signalConfig } = require('./signals');
 const { logError, LOG_FILE } = require('./errorlog');
 const { createFeed } = require('./feed');
-const { createFlow, flowConfig } = require('./flow');
-const { createTape, tapeDays, readTape } = require('./tape');
+const { createFlow, flowConfig } = require('./flow'); // live order-flow read: an input of the Pulse
+const { createTape, readTape } = require('./tape');
 const { createPulse } = require('./pulse');
-const { readDay, listDays } = require('./pulse-signals');
-const { createBook } = require('./book');
 const { createOrderflow } = require('./orderflow');
 const { createHedge } = require('./hedge');
-const { replayFlow } = require('./replay');
 const { buildStats } = require('./sigstats');
 const { createBacktester } = require('./bt');
 const { createAnomalyLive } = require('./anomaly-live');
-const { execFile } = require('child_process');
 const { istDate, isMarketOpen } = require('./lib/time');
 const { loadEnv, num } = require('./lib/env');
 const { createAuth, LOGIN_PAGE } = require('./lib/auth');
@@ -25,8 +21,6 @@ const { createOptionCandles, respond, demoRows, OPT_TFS } = require('./lib/optca
 const { createKiteSession, loginUrl: kiteLoginUrl, exchangeRequestToken, profile: kiteProfile, invalidate: kiteInvalidate } = require('./lib/kite');
 const { createKiteData } = require('./lib/kitedata');
 const { createKiteBasket } = require('./kitebasket');
-const { createCcPaper } = require('./ccpaper');
-const { runCoveredCall, modelPath: ccModelPath, DEFAULTS: CC_DEFAULTS } = require('./bt/coveredcall');
 const {
   runMcc,
   runMccStudy,
@@ -41,12 +35,7 @@ const {
 const { createMccPaper, weekdaysLeft, monthlyFor } = require('./mccpaper');
 const mccLive = require('./bt/mcclive');
 const lab = require('./bt/lab');
-const { suggest: ccSuggest } = require('./bt/ccsuggest');
-const { createFeedCompare } = require('./feedcmp');
 const { createTickStore } = require('./lib/ticks');
-const { createSurgeRadar } = require('./surgeradar');
-const surgeLab = require('./bt/surge');
-const surgeVol = require('./bt/surgevol');
 
 loadEnv(path.join(__dirname, '.env'));
 
@@ -119,16 +108,8 @@ const ticks = createTickStore(); // every trade of the streamed instruments toda
 const upstoxFeed = createFeed({
   getToken: () => token,
   logError,
-  // every message, as it arrives, to the tick store (while Upstox is the source) and to the Feeds screen's
-  // Upstox-vs-Kite comparison (created further down)
-  onTick: (keys, at) => {
-    if (!useKite()) recordTicks(upstoxFeed, keys, at);
-    try {
-      feedCmp?.onUpstoxTicks(keys, at);
-    } catch (e) {
-      logError('feedcmp-tick', e);
-    }
-  },
+  // every message, as it arrives, to the tick store (while Upstox is the source)
+  onTick: (keys, at) => !useKite() && recordTicks(upstoxFeed, keys, at),
 });
 // Kite's tick feed, in feed.js's shape: the live screens' feed while Kite is the source.
 const kiteFeed = kiteData.createFeed({
@@ -171,9 +152,6 @@ const pulse = createPulse({
   getLot: () => contracts.lot,
   logError,
 });
-// Trading Ideas › Option surges › Live radar: options climbing off today's low (paper record only)
-const surgeRadar = createSurgeRadar({ dir: CFG.signals.dir, logError, minLow: () => surgeConfig().minPrice });
-const book = createBook({ strikesAround: num(env.BOOK_STRIKES, 10), pressureStrikes: num(env.PULSE_STRIKES, 5) });
 // Order flow of the chart: minute rows of aggressor volume, today live and earlier days from the recorded tape.
 const orderflow = createOrderflow({
   dir: CFG.signals.dir,
@@ -183,11 +161,10 @@ const orderflow = createOrderflow({
   getLot: () => contracts.lot,
   logError,
 });
-// Give the pulse and the order-book view today's context after a restart.
+// Give the pulse and the order flow today's context after a restart.
 try {
   const todayTape = readTape(CFG.signals.dir, istDate());
   pulse.seed(todayTape);
-  book.seed(todayTape);
   orderflow.seed(todayTape);
 } catch (e) {
   logError('tape-seed', e);
@@ -195,7 +172,6 @@ try {
 let lastError = null;
 let lastClientAt = 0;
 let polling = false;
-let feedCmp = null; // Upstox vs Kite tick comparison (Feeds screen), set up below
 let future = null; // the near-month Nifty future: { key, symbol, expiry, lot, day }
 let futureRetryAt = 0;
 let futureError = null;
@@ -362,19 +338,11 @@ function targetExpiries() {
 function snapshotAll() {
   for (const e of targetExpiries()) {
     const built = buildSnapshot(e);
-    if (built) {
-      try {
-        surgeRadar.update(built.snap);
-      } catch (err) {
-        logError('surge-radar', err);
-      }
-    }
     if (built && e === nearestExpiry) {
       signals.onSnapshot(built.hist, built.snap);
       flow.onSnapshot(built.hist, built.snap);
       tape.record(built.hist[built.hist.length - 1], built.snap);
       pulse.update(built.hist[built.hist.length - 1], built.snap, flow.state().live, signals.state());
-      book.update(built.hist[built.hist.length - 1]);
       orderflow.update(built.hist[built.hist.length - 1]);
     }
   }
@@ -383,8 +351,7 @@ function snapshotAll() {
 // Subscribe to the index, the Nifty future, whatever the chart shows and FEED_STRIKES strikes either side of ATM (calls
 // and puts) per tracked expiry.
 function updateSubscriptions() {
-  const cmpKeys = feedCmp?.upstoxKeys() || [];
-  const keys = new Set([NIFTY_KEY, ...(future ? [future.key] : []), ...(useKite() ? [] : cmpKeys)]);
+  const keys = new Set([NIFTY_KEY, ...(future ? [future.key] : [])]);
   for (const [k, at] of chartKeys) {
     if (Date.now() - at < IDLE_STOP_MS) keys.add(k);
     else chartKeys.delete(k);
@@ -404,7 +371,7 @@ function updateSubscriptions() {
   }
   if (useKite()) {
     kiteFeed.setSubscriptions([...keys]);
-    upstoxFeed.setSubscriptions(cmpKeys.length ? [NIFTY_KEY, ...cmpKeys] : []); // the Feeds screen's Upstox side only
+    upstoxFeed.setSubscriptions([]);
   } else {
     upstoxFeed.setSubscriptions([...keys]);
     kiteFeed.setSubscriptions([]);
@@ -422,8 +389,7 @@ async function restLoop() {
     // Shut market: nothing changes, so no tick feed and no re-polling of a chain we already hold, even with a page open.
     const feedOn = active && !DEMO && marketOpen;
     kiteFeed.setEnabled(useKite() && feedOn);
-    // Upstox streams for the screens, or (Kite as the source) only for the Feeds screen's comparison
-    upstoxFeed.setEnabled(useKite() ? Boolean(token) && !DEMO && marketOpen && (feedCmp?.upstoxKeys() || []).length > 0 : feedOn);
+    upstoxFeed.setEnabled(!useKite() && feedOn); // Upstox streams for the screens while it is the source
     if (!active) return;
     const list = await getExpiries();
     nearestExpiry = list[0];
@@ -511,51 +477,6 @@ function buildResponse(expiry) {
   };
 }
 
-// Volume added per time bucket over the last 15 minutes, for strikes around ATM (CE and PE separately).
-function surgeHistory(expiry, bucketSec, around) {
-  const hist = histories.get(expiry) || [];
-  const snap = snapshots.get(expiry);
-  if (!hist.length || !snap) return { buckets: [], strikes: [], ce: [], pe: [], spot: [] };
-  const bucketMs = bucketSec * 1000;
-  const n = Math.floor((15 * 60_000) / bucketMs);
-  const now = snap.updatedAt;
-  // First history entry at or after time t (null if t is before the history starts).
-  const at = (t) => {
-    if (t < hist[0].t) return null;
-    let lo = 0;
-    let hi = hist.length - 1;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (hist[mid].t >= t) hi = mid;
-      else lo = mid + 1;
-    }
-    return hist[lo];
-  };
-  const marks = Array.from({ length: n + 1 }, (_, i) => at(now - (n - i) * bucketMs));
-
-  const rows = snap.rows;
-  let atm = 0;
-  rows.forEach((r, i) => {
-    if (Math.abs(r.strike - snap.spot) < Math.abs(rows[atm].strike - snap.spot)) atm = i;
-  });
-  const strikes = rows.slice(Math.max(0, atm - around), atm + around + 1).map((r) => r.strike);
-
-  const added = (k, idx, i) => {
-    const a = marks[i]?.d[k]?.[idx];
-    const b = marks[i + 1]?.d[k]?.[idx];
-    return a == null || b == null ? null : Math.max(0, b - a);
-  };
-  return {
-    bucketSec,
-    atm: rows[atm]?.strike ?? null,
-    buckets: marks.slice(1).map((_, i) => now - (n - i - 1) * bucketMs),
-    strikes,
-    ce: strikes.map((k) => marks.slice(1).map((_, i) => added(k, 1, i))),
-    pe: strikes.map((k) => marks.slice(1).map((_, i) => added(k, 4, i))),
-    spot: marks.slice(1).map((m) => m?.spot ?? null),
-  };
-}
-
 // Also records the LTP change over the same window (null when there's no price to compare).
 function fillChange(o, w, baseVol, baseLtp) {
   o.dLtp[w] = baseLtp != null && o.ltp != null ? o.ltp - baseLtp : null;
@@ -611,21 +532,21 @@ async function handleCallback(res, code) {
   }
 }
 
-// Strategy backtester (Backtest / Compare / Strategies / Data tabs): expired-option history from Upstox,
-// cached under bt-cache/, saved strategies in bt-data/strategies.json.
+// Strategy store and history (Strategies / Builder / Data tabs): expired-option history from Upstox, cached under
+// bt-cache/, saved strategies in bt-data/strategies.json.
 const backtester = createBacktester({
   getToken: () => token,
   upstox: upstoxClient,
   getRestChain: restChain,
   cacheDir: env.BT_CACHE_DIR ? path.resolve(env.BT_CACHE_DIR) : path.join(__dirname, 'bt-cache'),
   storeFile: path.join(__dirname, 'bt-data', 'strategies.json'),
-  tapeDir: CFG.signals.dir, // the recorded quotes the Arbitrage screen's quote scan reads
   logError,
   // with Kite as the live source: today's Nifty candles and the live expiries come from Kite
   liveData: () => (useKite() && kiteSession.get() ? { niftyIntraday: kiteData.niftyIntraday, contracts: () => kiteData.call('/option/contract') } : null),
 });
 
-// Live anomaly scanner on the nearest expiry (Anomalies tab), logging to bt-data/anomaly-log/.
+// Live anomaly scanner on the nearest expiry, in the background: Strategies › Deploy live reads it for the entry
+// conditions of signal strategies (the library's Arbitrage category). Logs to bt-data/anomaly-log/.
 const anomalyLive = createAnomalyLive({
   getChain: () => {
     const snap = nearestExpiry && snapshots.get(nearestExpiry);
@@ -658,39 +579,6 @@ const hedge = createHedge({
   logError,
 });
 
-// The Feeds screen: Kite's ticks against Upstox's on the same options. Its Upstox side always reads Upstox, also while
-// Kite is the live source (then from a chain of its own, refreshed once a minute).
-const upstoxOnlyChains = new Map(); // expiry -> { fetchedAt, spot, rows } read from Upstox while Kite is the source
-async function upstoxChain(expiry) {
-  if (!useKite()) return snapshots.get(expiry) ? restChains.get(expiry) : await restChain(expiry, 60_000);
-  const c = upstoxOnlyChains.get(expiry);
-  if (c && Date.now() - c.fetchedAt < 60_000) return c;
-  const fresh = { fetchedAt: Date.now(), ...parseChain(await upstoxClient.live('/option/chain', { instrument_key: NIFTY_KEY, expiry_date: expiry })) };
-  upstoxOnlyChains.set(expiry, fresh);
-  return fresh;
-}
-feedCmp = createFeedCompare({
-  dir: CFG.signals.dir,
-  configFile: path.join(__dirname, 'bt-data', DEMO ? 'feedcmp-config-demo.json' : 'feedcmp-config.json'),
-  demo: DEMO,
-  isMarketOpen,
-  upstox: {
-    getExpiries,
-    // the chain screen keeps its expiries fresh; another expiry is re-read once a minute for its instrument keys
-    getChain: async (expiry) => (token ? await upstoxChain(expiry) : null),
-    tick: (key) => upstoxFeed.tick(key),
-    status: () => upstoxFeed.status(),
-    getSpot: () => upstoxFeed.tick(NIFTY_KEY)?.ltp ?? (nearestExpiry ? snapshots.get(nearestExpiry)?.spot : null) ?? null,
-  },
-  kite: kiteSession,
-  getLot: () => contracts.lot, // the paper trades on big gaps are sized in lots
-  getSurge: () => signals.breadth(), // volume breadth: tags the paper trades, and the optional broad-surge gate
-  // live orders (Feeds screen): Kite Connect logins only unless KITE_ORDERS_ENCTOKEN=1; market protection optional
-  allowEnctokenOrders: env.KITE_ORDERS_ENCTOKEN === '1',
-  marketProtection: env.KITE_MARKET_PROTECTION || null,
-  logError,
-});
-
 // The login as the screens see it: whether orders through an enctoken web session are allowed (KITE_ORDERS_ENCTOKEN=1).
 // Also the live data source and the Redirect URL the Kite Connect app must have.
 const kiteRedirect = (req) => `http://${req?.headers?.host || 'localhost:' + CFG.port}/kite/callback`;
@@ -702,9 +590,8 @@ const kiteStatus = (req) => ({
   redirectUrl: kiteRedirect(req),
   data: useKite() ? { feed: kiteFeed.status(), ...kiteData.status() } : null,
 });
-// After a Kite login or logout: the Feeds screen's socket, the live feed and the instrument list start again.
+// After a Kite login or logout: the live feed and the instrument list start again.
 function kiteChanged() {
-  feedCmp.restartKite();
   kiteFeed.restart();
   if (useKite()) resetLive();
 }
@@ -712,7 +599,7 @@ function kiteChanged() {
 // Orders of Live Ideas: a trade idea's legs sent to Kite as one basket, after the screen's confirmation (kitebasket.js).
 const kiteBasket = createKiteBasket({
   getAuth: kiteSession.get,
-  symbolFor: async (expiry, strike, type) => (DEMO ? null : (await kiteData.symbolFor(expiry, strike, type)) || feedCmp.symbolFor(expiry, strike, type)),
+  symbolFor: async (expiry, strike, type) => (DEMO ? null : await kiteData.symbolFor(expiry, strike, type)),
   getLot: () => contracts.lot,
   allowEnctoken: env.KITE_ORDERS_ENCTOKEN === '1',
   marketProtection: env.KITE_MARKET_PROTECTION || null, // sent with MARKET orders only
@@ -722,10 +609,7 @@ const kiteBasket = createKiteBasket({
   logError,
 });
 
-// Trading Ideas › Covered call: the backtest on the cached history (a job the page polls; the last result is kept in
-// bt-data/cc-backtest.json) and the live paper trade (ccpaper.js), checked every 30 s. Paper only: no orders.
-const CC_BT_FILE = path.join(__dirname, 'bt-data', 'cc-backtest.json');
-// NIFTYBEES's LTP, read at most every 20 s (the paper trade and the suggestions share it); null in demo mode.
+// NIFTYBEES's LTP for the Modified covered call (paper trade and live trade), read at most every 20 s; null in demo mode.
 let ccBees = { at: 0, px: null };
 async function ccBeesPrice(maxAgeMs = 20_000) {
   if (DEMO) return null; // the demo models NIFTYBEES from its synthetic Nifty
@@ -734,143 +618,6 @@ async function ccBeesPrice(maxAgeMs = 20_000) {
   ccBees = { at: Date.now(), px: Object.values(d || {})[0]?.last_price || null };
   return ccBees.px;
 }
-const ccPaper = createCcPaper({
-  file: path.join(__dirname, 'bt-data', DEMO ? 'cc-paper-demo.json' : 'cc-paper.json'),
-  demo: DEMO,
-  isMarketOpen,
-  getExpiries,
-  getChain: (expiry) => restChain(expiry, 30_000),
-  closeOf: async (day) => {
-    await backtester.data.loadIndex(day, day);
-    const a = backtester.data.spotDay(day);
-    return a ? a[a.length - 1] : null;
-  },
-  beesCloseOf: async (day) => {
-    await backtester.data.loadSeries(backtester.data.BEES, day, day);
-    const a = backtester.data.seriesDay(backtester.data.BEES, day);
-    return a ? a[a.length - 1] : null;
-  },
-  beesPrice: ccBeesPrice,
-  getLot: () => contracts.lot,
-  logError,
-});
-setInterval(() => {
-  if (liveLoggedIn()) ccPaper.tick();
-}, 30_000);
-const ccJobs = new Map();
-
-async function handleCc(req, res, url, p) {
-  lastClientAt = Date.now();
-  try {
-    if (p === '/api/cc/meta') {
-      const cal = await backtester.data.expiryCalendar().catch(() => null);
-      const monthly = cal ? [...cal.monthly].filter((e) => cal.expiredSet.has(e)).sort() : [];
-      return sendJson(res, 200, { defaults: CC_DEFAULTS, lot: contracts.lot || CC_DEFAULTS.lotSize, monthly, indexStart: backtester.data.indexStart() });
-    }
-    if (p === '/api/cc/backtest' && req.method !== 'POST') {
-      let saved = null;
-      try {
-        saved = JSON.parse(fs.readFileSync(CC_BT_FILE, 'utf8'));
-      } catch {}
-      return sendJson(res, 200, { saved });
-    }
-    if (p === '/api/cc/backtest' && req.method === 'POST') {
-      const b = JSON.parse((await readBody(req, 50_000)).toString('utf8') || '{}');
-      const id = Math.random().toString(36).slice(2, 10);
-      const job = { id, status: 'running', progress: { phase: 'Starting', done: 0, total: 0 }, startedAt: Date.now() };
-      ccJobs.set(id, job);
-      while (ccJobs.size > 6) ccJobs.delete(ccJobs.keys().next().value);
-      runCoveredCall(backtester.data, b.params || {}, { from: b.from, to: b.to }, { onProgress: (x) => (job.progress = x), stopped: () => Boolean(job.stop) })
-        .then((r) => {
-          job.result = { at: Date.now(), result: r };
-          job.status = 'done';
-          fs.mkdirSync(path.dirname(CC_BT_FILE), { recursive: true });
-          fs.writeFileSync(CC_BT_FILE + '.tmp', JSON.stringify(job.result));
-          fs.renameSync(CC_BT_FILE + '.tmp', CC_BT_FILE);
-        })
-        .catch((e) => {
-          job.status = 'error';
-          job.error = e.message;
-          logError('cc-backtest', e);
-        });
-      return sendJson(res, 200, { id, status: job.status });
-    }
-    if (p === '/api/cc/job') {
-      const job = ccJobs.get(url.searchParams.get('id'));
-      if (!job) return sendJson(res, 404, { error: 'Job not found (the server may have restarted): run it again' });
-      return sendJson(res, 200, {
-        id: job.id,
-        status: job.status,
-        progress: job.progress,
-        error: job.error,
-        result: job.status === 'done' ? job.result : undefined,
-      });
-    }
-    if (p === '/api/cc/job/stop' && req.method === 'POST') {
-      const job = ccJobs.get(JSON.parse((await readBody(req, 2_000)).toString('utf8') || '{}').id);
-      if (job) job.stop = true;
-      return sendJson(res, 200, { ok: Boolean(job) });
-    }
-    if (p === '/api/cc/paper') return sendJson(res, 200, ccPaper.state());
-    // Strategy & rules › Month by month: the strategy repeated every month on a chosen Nifty path (a model)
-    if (p === '/api/cc/model' && req.method === 'POST') {
-      const b = JSON.parse((await readBody(req, 20_000)).toString('utf8') || '{}');
-      const spot0 = Number(b.spot) > 0 ? Number(b.spot) : 25000;
-      const bees0 = Number(b.bees) > 0 ? Number(b.bees) : spot0 * 0.0112;
-      return sendJson(
-        res,
-        200,
-        ccModelPath({
-          params: { ...(b.params || {}), lotSize: contracts.lot },
-          spot0,
-          bees0,
-          totalPct: b.totalPct,
-          months: b.months,
-          iv: (Number(b.iv) || 13) / 100,
-          swings: b.swings !== false,
-        }),
-      );
-    }
-    // Suggestions on the live chain: the current and next monthly expiry and this week's contra spread.
-    if (p === '/api/cc/suggest' && req.method === 'POST') {
-      if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the suggestions read the live chain`);
-      const b = JSON.parse((await readBody(req, 50_000)).toString('utf8') || '{}');
-      const expiries = await getExpiries();
-      const today = istDate();
-      // the current and next month, and one more for the roll after a held paper month
-      const monthly = [...new Map(expiries.map((e) => [e.slice(0, 7), e])).values()].filter((e) => e >= today).slice(0, 3);
-      const weekly = expiries.find((e) => e > today);
-      const chains = new Map();
-      for (const e of new Set([expiries[0], ...monthly, weekly].filter(Boolean))) chains.set(e, await restChain(e, 30_000));
-      const spot = chains.get(expiries[0])?.spot;
-      if (!spot) throw new Error('No Nifty price on the live chain yet');
-      const bees = await ccBeesPrice().catch(() => null);
-      const paper = ccPaper.state().paper;
-      // a running paper trade is judged with its own parameters
-      const params = paper ? paper.params : { ...(b.params || {}), lotSize: contracts.lot };
-      return sendJson(res, 200, { ...ccSuggest({ today, spot, bees, chains, expiries, params, paper }), marketOpen: DEMO || isMarketOpen(), demo: DEMO });
-    }
-    if (p.startsWith('/api/cc/paper/') && req.method === 'POST') {
-      const b = JSON.parse((await readBody(req, 50_000)).toString('utf8') || '{}');
-      if (p === '/api/cc/paper/start') {
-        if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the paper trade follows the live chain`);
-        await ccPaper.start(b.params || {});
-      } else if (p === '/api/cc/paper/pause') ccPaper.pause();
-      else if (p === '/api/cc/paper/resume') await ccPaper.resume();
-      else if (p === '/api/cc/paper/insurance') await ccPaper.setInsurance(b.expiry);
-      else if (p === '/api/cc/paper/reset') {
-        if (b.confirm !== true) throw new Error('Resetting deletes the paper trade: it needs confirmation');
-        ccPaper.reset();
-      } else return sendJson(res, 404, { error: 'Not found' });
-      return sendJson(res, 200, ccPaper.state());
-    }
-    return sendJson(res, 404, { error: 'Not found' });
-  } catch (e) {
-    logError('cc', e);
-    return sendJson(res, 400, { error: e.message });
-  }
-}
-
 // ---------- Trading Ideas › Covered call › Modified covered call (bt/mcc.js, mccpaper.js) ----------
 // Backtest (current settings + the same without adjustments) and the adjustment study run as jobs the page polls; the
 // last of each is kept in bt-data/mcc-backtest.json / mcc-study.json. The paper trade is checked every 30 s. No orders.
@@ -1263,7 +1010,13 @@ async function handleMcc(req, res, url, p) {
       const rows = new Map(chain.rows.map((r) => [r.strike, r]));
       const q = (type, k) => rows.get(k)?.[type === 'CE' ? 'ce' : 'pe'];
       const ltp = (type, k) => (q(type, k)?.ltp > 0 ? q(type, k).ltp : null);
-      const pick = mccPickLegs(S, prm, [...rows.keys()].sort((x, y) => x - y), ltp, lot);
+      const pick = mccPickLegs(
+        S,
+        prm,
+        [...rows.keys()].sort((x, y) => x - y),
+        ltp,
+        lot,
+      );
       const legs = pick.legs.map((l) => {
         const o = q(l.type, l.strike) || {};
         return { role: l.role, type: l.type, strike: l.strike, lots: l.lots, side: l.side, ltp: ltp(l.type, l.strike), bid: o.bid ?? null, ask: o.ask ?? null };
@@ -1329,26 +1082,7 @@ async function handleMcc(req, res, url, p) {
   }
 }
 
-// ---------- Trading Ideas › Option surges (bt/surge.js, bt/surgevol.js, surgeradar.js) ----------
-const SURGE_CACHE = env.BT_CACHE_DIR ? path.resolve(env.BT_CACHE_DIR) : path.join(__dirname, 'bt-cache');
-const SURGE_FILES = {
-  scan: path.join(__dirname, 'bt-data', 'surge-scan.json'),
-  backtest: path.join(__dirname, 'bt-data', 'surge-backtest.json'),
-  grid: path.join(__dirname, 'bt-data', 'surge-grid.json'),
-  calendar: path.join(__dirname, 'bt-data', 'surge-calendar.json'), // optional: [["YYYY-MM-DD", "what happened"], …]
-  config: path.join(__dirname, 'bt-data', 'surge-config.json'), // the screen's settings: { minPrice }
-};
-// Minimum option price (₹) a surge may start from: used by the scan, the live radar and the backtest's default.
-let surgeCfg = null;
-function surgeConfig() {
-  if (!surgeCfg) {
-    const saved = readJson(SURGE_FILES.config) || {};
-    const x = Number(saved.minPrice);
-    surgeCfg = { minPrice: Number.isFinite(x) && x >= 0.5 ? x : surgeLab.SCAN_DEFAULTS.minBase };
-  }
-  return surgeCfg;
-}
-const surgeJobs = new Map();
+// JSON files under bt-data/ (Covered call, Strategy lab, saved trades)
 const readJson = (file) => {
   try {
     return JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -1361,36 +1095,6 @@ function writeJson(file, obj) {
   fs.writeFileSync(file + '.tmp', JSON.stringify(obj));
   fs.renameSync(file + '.tmp', file);
 }
-// The saved scan is a few MB: gzipped when the browser takes it.
-function sendJsonGz(req, res, obj) {
-  if (!/\bgzip\b/.test(req.headers['accept-encoding'] || '')) return sendJson(res, 200, obj);
-  res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Encoding': 'gzip', 'Cache-Control': 'no-store' });
-  res.end(require('zlib').gzipSync(JSON.stringify(obj), { level: 5 }));
-}
-function surgeJob(kind, run) {
-  const id = Math.random().toString(36).slice(2, 10);
-  const job = { id, kind, status: 'running', progress: { phase: 'Starting', done: 0, total: 0 }, startedAt: Date.now() };
-  surgeJobs.set(id, job);
-  while (surgeJobs.size > 6) surgeJobs.delete(surgeJobs.keys().next().value);
-  const ctl = { onProgress: (x) => (job.progress = x), stopped: () => Boolean(job.stop) };
-  run(ctl)
-    .then((r) => {
-      job.result = r;
-      job.status = 'done';
-    })
-    .catch((e) => {
-      job.status = 'error';
-      job.error = e.message;
-      logError('surge-' + kind, e);
-    });
-  return job;
-}
-const runSurgeScan = (ctl) =>
-  surgeLab.scanSurges(backtester.data, SURGE_CACHE, { minBase: surgeConfig().minPrice }, { calendarFile: SURGE_FILES.calendar, ...ctl }).then((r) => {
-    writeJson(SURGE_FILES.scan, r);
-    return { at: r.at, rows: r.rows.length };
-  });
-
 // ---------- Trading Ideas › Strategy lab (bt/lab.js) ----------
 // Any options structure written as legs from ATM, backtested on every monthly (or weekly) series like the Modified
 // covered call, and every preset compared on the same series. Jobs the page polls; the last of each is kept in
@@ -1455,129 +1159,6 @@ async function handleLab(req, res, url, p) {
   } catch (e) {
     logError('lab', e);
     return sendJson(res, 500, { error: e.message });
-  }
-}
-
-async function handleSurge(req, res, url, p) {
-  lastClientAt = Date.now();
-  try {
-    const body = async () => (req.method === 'POST' ? JSON.parse((await readBody(req, 50_000)).toString('utf8') || '{}') : {});
-    if (p === '/api/surge/meta') {
-      const scan = readJson(SURGE_FILES.scan);
-      let volFiles = 0;
-      try {
-        for (const e of fs.readdirSync(path.join(SURGE_CACHE, 'vol'))) volFiles += fs.readdirSync(path.join(SURGE_CACHE, 'vol', e)).length;
-      } catch {}
-      return sendJson(res, 200, {
-        btDefaults: { ...surgeLab.BT_DEFAULTS, minBase: surgeConfig().minPrice },
-        config: surgeConfig(),
-        scanAt: scan?.at || null,
-        scanRows: scan?.rows?.length || 0,
-        scanMinPrice: scan?.params?.minBase ?? null,
-        volFiles,
-        macro: surgeLab.MACRO,
-        backtest: readJson(SURGE_FILES.backtest),
-        grid: readJson(SURGE_FILES.grid),
-        demo: DEMO,
-      });
-    }
-    if (p === '/api/surge/scan' && req.method !== 'POST') {
-      const scan = readJson(SURGE_FILES.scan);
-      if (!scan) return sendJson(res, 200, { scan: null });
-      return sendJsonGz(req, res, { scan });
-    }
-    if (p === '/api/surge/scan' && req.method === 'POST') return sendJson(res, 200, { id: surgeJob('scan', runSurgeScan).id, status: 'running' });
-    // The minimum option price: saved, used by the radar at once and by the next scan (the page rescans after a change).
-    if (p === '/api/surge/config' && req.method === 'POST') {
-      const x = Number((await body()).minPrice);
-      if (!Number.isFinite(x) || x < 0.5 || x > 1000) throw new Error('Minimum option price: a number from ₹0.5 to ₹1,000');
-      surgeCfg = { ...surgeConfig(), minPrice: Math.round(x * 100) / 100 };
-      writeJson(SURGE_FILES.config, surgeCfg);
-      return sendJson(res, 200, { config: surgeCfg });
-    }
-    // Volume and OI of the contracts that tripled (downloaded from Upstox), then the scan again so its rows carry them.
-    if (p === '/api/surge/volume' && req.method === 'POST') {
-      if (DEMO) throw new Error('Volume and OI come from Upstox: not in demo mode');
-      const scan = readJson(SURGE_FILES.scan);
-      if (!scan) throw new Error('Scan the history first');
-      const I = (k) => scan.cols.indexOf(k);
-      const list = scan.rows
-        .filter((r) => r[I('mult')] >= 3)
-        .map((r) => ({ expiry: r[I('expiry')], strike: r[I('strike')], type: r[I('type')], troughDay: r[I('troughDay')], peakDay: r[I('peakDay')] }))
-        .reverse(); // newest first
-      const job = surgeJob('volume', async (ctl) => {
-        const got = await surgeVol.fetchVolumes(backtester.data.api, SURGE_CACHE, list, { ...ctl, logError });
-        const r = await runSurgeScan(ctl);
-        return { ...got, ...r };
-      });
-      return sendJson(res, 200, { id: job.id, status: 'running' });
-    }
-    if (p === '/api/surge/backtest' && req.method === 'POST') {
-      const b = await body();
-      const grid = Boolean(b.grid);
-      const job = surgeJob(grid ? 'grid' : 'backtest', async (ctl) => {
-        const variants = grid ? surgeLab.gridVariants(b.params || {}) : [b.params || {}];
-        const out = await surgeLab.backtestSurge(backtester.data, SURGE_CACHE, variants, { from: b.from || null, to: b.to || null, keepTrades: !grid, ...ctl });
-        const saved = grid
-          ? {
-              at: Date.now(),
-              base: b.params || {},
-              rows: out.map((x) => ({ params: x.params, summary: { ...x.summary, equity: undefined, byMonth: undefined } })),
-            }
-          : { at: Date.now(), ...out[0] };
-        writeJson(grid ? SURGE_FILES.grid : SURGE_FILES.backtest, saved);
-        return saved;
-      });
-      return sendJson(res, 200, { id: job.id, status: 'running' });
-    }
-    if (p === '/api/surge/job') {
-      const job = surgeJobs.get(url.searchParams.get('id'));
-      if (!job) return sendJson(res, 404, { error: 'Job not found (the server may have restarted): run it again' });
-      return sendJson(res, 200, {
-        id: job.id,
-        status: job.status,
-        progress: job.progress,
-        error: job.error,
-        result: job.status === 'done' ? job.result : undefined,
-      });
-    }
-    if (p === '/api/surge/job/stop' && req.method === 'POST') {
-      const job = surgeJobs.get((await body()).id);
-      if (job) job.stop = true;
-      return sendJson(res, 200, { ok: Boolean(job) });
-    }
-    // One contract around a surge: its minute bars, Nifty's closes, and volume / OI when downloaded.
-    if (p === '/api/surge/series') {
-      const q = url.searchParams;
-      const expiry = q.get('expiry');
-      const strike = Number(q.get('strike'));
-      const type = q.get('type') === 'PE' ? 'PE' : 'CE';
-      const from = q.get('from');
-      const to = q.get('to');
-      if (![expiry, from, to].every((d) => /^\d{4}-\d{2}-\d{2}$/.test(d || ''))) throw new Error('expiry, from and to are dates');
-      const days = surgeLab.readContract(SURGE_CACHE, expiry, strike, type);
-      if (!days) throw new Error('That contract is not in the cache');
-      await backtester.data.loadIndex(from, to, 'soft');
-      const out = { expiry, strike, type, days: [] };
-      for (const [d, a] of days) {
-        if (d < from || d > to) continue;
-        const n = backtester.data.spotDay(d);
-        const opt = [];
-        const nifty = [];
-        for (let m = 0; m < backtester.data.MPD; m++) {
-          if (a[m * 4 + 3] > 0) opt.push([m, a[m * 4] / 100, a[m * 4 + 1] / 100, a[m * 4 + 2] / 100, a[m * 4 + 3] / 100]);
-          if (n) nifty.push([m, Math.round(n[m * 4 + 3] * 100) / 100]);
-        }
-        out.days.push({ day: d, opt, nifty });
-      }
-      out.vol = surgeVol.volSeries(SURGE_CACHE, expiry, strike, type, from, to);
-      return sendJson(res, 200, out);
-    }
-    if (p === '/api/surge/live') return sendJson(res, 200, { loggedIn: liveLoggedIn(), marketOpen: DEMO || isMarketOpen(), ...surgeRadar.state() });
-    return sendJson(res, 404, { error: 'Not found' });
-  } catch (e) {
-    logError('surge', e);
-    return sendJson(res, 400, { error: e.message });
   }
 }
 
@@ -1815,7 +1396,6 @@ const server = http.createServer(async (req, res) => {
         data: buildResponse(expiry),
         feed: DEMO ? null : feed.status(),
         signals: { expiry: list[0], ...signals.state() },
-        flow: flow.state(),
         pulse: pulse.state(),
       });
     } catch (e) {
@@ -1851,68 +1431,11 @@ const server = http.createServer(async (req, res) => {
 
   if (p.startsWith('/api/hedge/')) return handleHedge(req, res, p);
 
-  if (p.startsWith('/api/cc/')) return handleCc(req, res, url, p);
-
   if (p.startsWith('/api/mcc/')) return handleMcc(req, res, url, p);
-
-  if (p.startsWith('/api/surge/')) return handleSurge(req, res, url, p);
 
   if (p.startsWith('/api/lab/')) return handleLab(req, res, url, p);
 
   if (p === '/kite/login' || p === '/kite/callback' || p.startsWith('/api/kite/')) return handleKite(req, res, url, p);
-
-  // Feeds screen: Upstox vs Kite prices, the gaps between them and the day's episodes (filtered).
-  if (p === '/api/feedcmp/state') {
-    lastClientAt = Date.now(); // keeps the chain, and so the Upstox feed and the watch list, running
-    try {
-      return sendJson(res, 200, feedCmp.state(Object.fromEntries(url.searchParams)));
-    } catch (e) {
-      logError('feedcmp', e);
-      return sendJson(res, 500, { error: e.message });
-    }
-  }
-  if (p === '/api/feedcmp/days') return sendJson(res, 200, feedCmp.days());
-  // Live orders on Kite (feedlive.js): switch on / off (on needs confirm: true), the test order, square off.
-  if (
-    req.method === 'POST' &&
-    ['/api/feedcmp/live', '/api/feedcmp/live-test', '/api/feedcmp/squareoff', '/api/feedcmp/live-close', '/api/feedcmp/funds'].includes(p)
-  ) {
-    try {
-      const body = JSON.parse((await readBody(req, 5_000)).toString('utf8') || '{}');
-      if (p === '/api/feedcmp/live') {
-        if (body.on && body.confirm !== true) throw new Error('Switching live trading on needs confirmation');
-        feedCmp.setLive(Boolean(body.on));
-        return sendJson(res, 200, { ok: true });
-      }
-      if (p === '/api/feedcmp/live-test') return sendJson(res, 200, await feedCmp.testOrder(['CE', 'PE', 'check'].includes(body.kind) ? body.kind : 'CE'));
-      if (p === '/api/feedcmp/funds') return sendJson(res, 200, { ok: true, funds: await feedCmp.refreshFunds() });
-      if (p === '/api/feedcmp/live-close') {
-        if (!feedCmp.closeLive(String(body.id || ''))) throw new Error('That position is not open (it may already be closed)');
-        return sendJson(res, 200, { ok: true });
-      }
-      return sendJson(res, 200, { ok: true, closing: feedCmp.squareOff() });
-    } catch (e) {
-      return sendJson(res, 400, { error: e.message });
-    }
-  }
-  if (p === '/api/feedcmp/config' && req.method === 'POST') {
-    try {
-      const body = JSON.parse((await readBody(req, 20_000)).toString('utf8') || '{}');
-      return sendJson(res, 200, { ok: true, config: feedCmp.saveConfig(body) });
-    } catch (e) {
-      return sendJson(res, 400, { error: e.message });
-    }
-  }
-
-  if (p === '/api/book') {
-    lastClientAt = Date.now();
-    try {
-      return sendJson(res, 200, book.state(nearestExpiry ? snapshots.get(nearestExpiry) : null));
-    } catch (e) {
-      logError('book', e);
-      return sendJson(res, 500, { error: e.message });
-    }
-  }
 
   // Order flow per minute (rows [t, callBuy, callSell, putBuy, putSell, bookLean, niftyClose]) from `since` on, and
   // the read of the latest session. Earlier days are read from the tape in the background: `pending` while they are.
@@ -1925,98 +1448,6 @@ const server = http.createServer(async (req, res) => {
       logError('orderflow', e);
       return sendJson(res, 500, { error: e.message });
     }
-  }
-
-  if (p === '/api/flow-series') {
-    lastClientAt = Date.now();
-    return sendJson(res, 200, flow.series());
-  }
-
-  // The Pulse trade idea's saved paper ledger: the days that have one (with their totals), and one day's trades.
-  if (p === '/api/pulse/days') return sendJson(res, 200, { days: listDays(CFG.signals.dir) });
-  if (p === '/api/pulse/signals') {
-    const day = url.searchParams.get('day') || '';
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return sendJson(res, 400, { error: 'day must be YYYY-MM-DD' });
-    const d = readDay(CFG.signals.dir, day);
-    return d ? sendJson(res, 200, d) : sendJson(res, 404, { error: `no saved pulse signals for ${day}` });
-  }
-
-  // Replay a recorded day through the Volume Flow logic, optionally with different settings.
-  if (p === '/api/flow-days') {
-    return sendJson(res, 200, tapeDays(CFG.signals.dir));
-  }
-  if (p === '/api/flow-replay') {
-    const day = url.searchParams.get('date') || '';
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return sendJson(res, 400, { error: 'date must be YYYY-MM-DD' });
-    const q = (k) => (url.searchParams.has(k) ? Number(url.searchParams.get(k)) : undefined);
-    try {
-      return sendJson(
-        res,
-        200,
-        replayFlow(
-          CFG.signals.dir,
-          day,
-          flowConfig(env, {
-            mode: url.searchParams.get('mode') || undefined,
-            imbalance: q('imbalance'),
-            holdSec: q('holdSec'),
-            minQty: q('minQty'),
-            reactPts: q('reactPts'),
-            horizonMin: q('horizonMin'),
-          }),
-        ),
-      );
-    } catch (e) {
-      logError('replay', e);
-      return sendJson(res, 500, { error: e.message });
-    }
-  }
-
-  // Backtest the signals over recorded days. Runs signal-backtest.js in its own process: a day takes a few
-  // seconds, and this way live data isn't held up and the signals.js on disk is what gets tested.
-  if (p === '/api/signal-backtest') {
-    const date = url.searchParams.get('date') || 'all';
-    if (date !== 'all' && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return sendJson(res, 400, { error: 'date must be YYYY-MM-DD or all' });
-    const args = [path.join(__dirname, 'signal-backtest.js'), '--json', '--dir', CFG.signals.dir];
-    if (date !== 'all') args.push(date);
-    for (const [k, v] of url.searchParams) {
-      if (k !== 'date' && /^[a-zA-Z]+$/.test(k) && Number.isFinite(Number(v))) args.push('--' + k, String(Number(v)));
-    }
-    return execFile(process.execPath, args, { maxBuffer: 256 * 1024 * 1024 }, (err, stdout, stderr) => {
-      if (err) {
-        logError('signal-backtest', stderr || err);
-        return sendJson(res, 500, { error: (stderr || err.message).trim().split('\n').slice(0, 3).join(' ') });
-      }
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
-      res.end(stdout);
-    });
-  }
-
-  if (p === '/api/surge-history') {
-    lastClientAt = Date.now();
-    const expiry = url.searchParams.get('expiry') || activeExpiry;
-    const bucketSec = Math.min(300, Math.max(15, num(url.searchParams.get('bucket'), 60)));
-    const around = Math.min(40, Math.max(3, num(url.searchParams.get('strikes'), 12)));
-    return sendJson(res, 200, surgeHistory(expiry, bucketSec, around));
-  }
-
-  if (p === '/api/an/live') {
-    lastClientAt = Date.now(); // keep the chain (and so the scanner) running while the page watches
-    return sendJson(res, 200, anomalyLive.state());
-  }
-  if (p === '/api/an/config' && req.method === 'POST') {
-    let body = '';
-    req.on('data', (c) => {
-      if (body.length < 100_000) body += c;
-    });
-    req.on('end', () => {
-      try {
-        sendJson(res, 200, { ok: true, config: anomalyLive.saveConfig(JSON.parse(body || '{}')) });
-      } catch (e) {
-        sendJson(res, 400, { error: e.message });
-      }
-    });
-    return;
   }
 
   // Latest Nifty tick for the chart (Chain screen and its pop-out window). Counts as a browser watching, so the
@@ -2120,8 +1551,8 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
-  // Option pricing (public/bt-common.js), trading charges (public/an-view.js) and the back spread picker
-  // (public/ideas-view.js) shared with the page: the files the server itself uses.
+  // Option pricing (public/bt-common.js), trading charges (Live Ideas, Covered call, the Kite order dialog) and the
+  // back spread picker (public/ideas-view.js) shared with the page: the files the server itself uses.
   if (p === '/lib/pricing.js' || p === '/lib/costs.js' || p === '/lib/backspread.js') {
     return fs.readFile(path.join(__dirname, p.slice(1)), (err, buf) => {
       if (err) return sendJson(res, 404, { error: 'Not found' });
@@ -2214,7 +1645,6 @@ function setLiveSource(s) {
 function resetLive() {
   restChains.clear();
   snapshots.clear();
-  upstoxOnlyChains.clear();
   contracts = { expiries: [], lot: contracts.lot, fetchedAt: 0 };
   future = null;
   futureRetryAt = 0;

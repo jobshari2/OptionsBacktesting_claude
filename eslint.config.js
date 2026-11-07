@@ -33,15 +33,13 @@ module.exports = defineConfig([
   },
   {
     // The page's scripts are plain <script> files. They share code through these namespaces on `window`
-    // (bt-common.js, bt-view.js, bw-view.js, sb-adjust.js, /lib/costs.js) and use Chart.js from /vendor/chart.js.
+    // (bt-common.js, sb-adjust.js, /lib/costs.js) and use Chart.js from /vendor/chart.js.
     files: ['public/**/*.js'],
     languageOptions: {
       sourceType: 'script',
       globals: {
         ...globals.browser,
         BT: 'readonly',
-        BTView: 'readonly',
-        BWView: 'readonly',
         SBAdjust: 'readonly',
         Costs: 'readonly',
         Chart: 'readonly',

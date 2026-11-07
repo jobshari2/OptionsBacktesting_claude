@@ -101,7 +101,7 @@ function createFeed({ getToken, logError, onTick }) {
     }
     lastTickAt = now;
     version++;
-    onTick?.(keys, now); // the instruments in this message and when it arrived (the Feeds screen times them)
+    onTick?.(keys, now); // the instruments in this message and when it arrived
   }
 
   // Split new volume into buyer- vs seller-initiated (cumulative since subscribing), using the quote

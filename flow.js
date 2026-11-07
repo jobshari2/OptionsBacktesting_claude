@@ -358,7 +358,7 @@ function createFlow(cfg, logError) {
   };
 }
 
-// One predictions.csv row (shared by the live recorder and replay.js).
+// One predictions.csv row (the live recorder).
 function predictionRow(p) {
   const sec = (a, b) => (a && b ? Math.round((b - a) / 1000) : '');
   const day = istDate(p.at);

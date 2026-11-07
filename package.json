@@ -2,7 +2,7 @@
   "name": "option-live-data",
   "version": "0.1.0",
   "private": true,
-  "description": "Nifty options lab on the Upstox API: live chain and analysis, strategy backtester, portfolio hedge",
+  "description": "Nifty options lab on the Upstox API: live chain and ideas, strategies, Builder replays, covered call, portfolio hedge",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -19,7 +19,6 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.131.0",
     "chart.js": "^4.5.1",
     "lightweight-charts": "^5.2.1",
     "protobufjs": "^7.6.6"

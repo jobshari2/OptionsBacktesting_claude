@@ -1,4 +1,4 @@
-// Nifty candlestick chart: on the Chain and Market Pulse screens and, with the full tool set, in its own window (chart.html).
+// Nifty candlestick chart: on the Chain screen (and copies in Live Ideas and the Builder) and, with the full tool set, in its own window (chart.html).
 // History comes from /api/bt/candles (the cached 1-minute files, a block of sessions at a time: scrolling back
 // loads more); today's candles are re-read every 30 s and in between the last candle follows the live tick
 // from /api/nifty/ltp. Support / resistance levels are drawn across it (hover one for its details).
@@ -1609,10 +1609,6 @@
     const chainChart = mount(panel, { full, options: !full, indicators: true });
     if (!full) window.chainChart = chainChart;
   } else if (panel) panel.innerHTML = MISSING;
-  // Market Pulse: the same chart, opening on 1-minute candles.
-  const pulsePanel = document.getElementById('pulseChart');
-  if (pulsePanel && LC) mount(pulsePanel, { store: 'ncp.', tf0: '1', flow0: false });
-  else if (pulsePanel) pulsePanel.innerHTML = MISSING;
   // Live Ideas: the floating copy of it (ideas-view.js moves and resizes the panel around it).
   const ideasPanel = document.getElementById('ideasChart');
   if (ideasPanel && LC) window.ideasChart = mount(ideasPanel, { store: 'nci.', tf0: '1', flow0: false, options: true });

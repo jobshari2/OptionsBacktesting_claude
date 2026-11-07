@@ -50,7 +50,7 @@ test('every script and stylesheet of the page is served', async ({ page }) => {
 });
 
 test('every screen opens without a script error', async ({ page }) => {
-  test.slow(); // fifteen screens, some of them drawing saved results
+  test.slow(); // nine screens, some of them drawing saved results
   const errors = scriptErrors(page);
   await page.goto('/');
   await expect(page.locator('#chainBody tr').first()).toBeVisible(); // the live screens are drawn from the chain

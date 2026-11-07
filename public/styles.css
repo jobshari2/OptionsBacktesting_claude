@@ -116,8 +116,6 @@ select {
   .main-col { grid-template-rows: auto auto; }
   .surge-panel { flex-direction: column; height: auto !important; }
   .surge-side { width: auto !important; border-right: 0 !important; }
-  .charts-grid { grid-template-columns: 1fr !important; grid-template-rows: none !important; }
-  .chart-card { height: 340px; }
 }
 .panel {
   background: var(--panel); border: 1px solid var(--line); border-radius: 10px;

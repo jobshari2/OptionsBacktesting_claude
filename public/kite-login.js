@@ -1,4 +1,4 @@
-// The one place to log in to Zerodha Kite, shared by the top bar's Kite chip, the Feeds screen, the login panel (Kite as
+// The one place to log in to Zerodha Kite, shared by the top bar's Kite chip, the login panel (Kite as
 // the live source) and the order dialogs. Three ways: the Kite Connect redirect (the app's API key and API secret, typed
 // in here or KITE_API_KEY / KITE_API_SECRET in .env), the enctoken of a Kite web login sent by the "Send Kite login here"
 // bookmarklet (kite-link.html), or a pasted token. Also the top bar's "Live data: Upstox | Kite" switch. The login itself
@@ -10,7 +10,7 @@
 (() => {
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-  const AUTO_KEY = 'oc.feeds.autoLogin'; // the Feeds screen's setting, kept under its old name
+  const AUTO_KEY = 'oc.feeds.autoLogin'; // kept under the name of the screen that first had it
   const local = (k, d) => {
     try {
       return localStorage.getItem(k) ?? d;
@@ -248,7 +248,7 @@ addEventListener('message',function h(ev){if(ev.origin!==o||ev.data!=='ready')re
     chip.innerHTML = `<i class="fd-dot ${on ? 'on' : 'warn'}"></i>Kite ${KL.demo() ? '<span class="muted">demo</span>' : k?.loggedIn ? esc(k.userId || '') : '<span class="muted">log in</span>'}`;
     chip.title = k?.loggedIn
       ? `Logged in to Zerodha Kite as ${k.userId || ''} (${k.mode === 'enctoken' ? 'web session' : 'Kite Connect'}): click to manage`
-      : 'Log in to Zerodha Kite (Kite live data, the Feeds screen and the Trade on Kite buttons)';
+      : 'Log in to Zerodha Kite (Kite live data and the Trade on Kite buttons)';
   }
 
   let last = '';

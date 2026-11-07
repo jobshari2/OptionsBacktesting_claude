@@ -144,7 +144,7 @@
 
   // ---------- P&L of one spread ----------
   // Held to expiry, the spread pays between edge (Nifty past both strikes the wrong way) and edge + strike gap (Nifty
-  // on the right side of both), whatever Nifty does. Charges are the Arbitrage screen's (an-view.js money()): ₹20 an
+  // on the right side of both), whatever Nifty does. Charges (COST below): ₹20 an
   // order, STT on the sell, exchange + SEBI fees, GST on brokerage and fees, stamp duty on the buy, plus the STT a
   // long option pays when exercised in the money (taken at today's Nifty). Only the two entry orders are charged.
   const COST = { brokerage: 20, stt: 0.001, txn: 0.0003503, sebi: 0.000001, gst: 0.18, stamp: 0.00003, exStt: 0.00125 };

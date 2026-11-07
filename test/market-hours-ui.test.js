@@ -23,9 +23,7 @@ test('every poller on the portal checks marketClosed() before it asks the server
   const pollers = {
     'app.js': ['marketClosed() ? scheduleWake()', 'if (!force && marketClosed()'],
     'chain-chart.js': ['window.app?.marketClosed?.()'],
-    'an-view.js': ['window.app.marketClosed()'],
     'sb-view.js': ['window.app.marketClosed()'],
-    'feeds-view.js': ['window.app.marketClosed()'],
     'bt-common.js': ['window.app?.marketClosed?.()'],
   };
   for (const [file, needles] of Object.entries(pollers)) {

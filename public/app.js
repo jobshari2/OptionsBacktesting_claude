@@ -107,7 +107,6 @@ async function refresh() {
     if (json.data && json.data.updatedAt !== state.data?.updatedAt) {
       state.data = json.data;
       state.signals = json.signals;
-      state.flow = json.flow;
       state.pulse = json.pulse;
       showViews();
       render();
@@ -308,9 +307,9 @@ function render() {
   runScreenHooks();
 }
 
-// The live-analysis screens (charts.js, flow-view.js, …) draw themselves from `state` on every refresh; each hook
-// returns at once unless its screen is the one showing.
-const SCREEN_HOOKS = ['onAppRender', 'onFlowRender', 'onPulseRender', 'onIdeasRender', 'onBookRender', 'onHedgeRender', 'onSignalTestRender'];
+// The screens drawn from the live chain (ideas-view.js, hedge-view.js) draw themselves from `state` on every refresh;
+// each hook returns at once unless its screen is the one showing.
+const SCREEN_HOOKS = ['onIdeasRender', 'onHedgeRender'];
 function runScreenHooks() {
   for (const h of SCREEN_HOOKS) window[h]?.();
 }
@@ -528,7 +527,7 @@ function renderSurge(d, rows) {
     .join('');
 }
 
-// One-line Market Pulse headline in the Signals panel (click to open the full screen).
+// One-line Market Pulse headline in the Signals panel (pulse.js on the server; the same read as Live Ideas › Pulse trade idea).
 function renderPulseLine() {
   const p = state.pulse;
   const el = $('pulseLine');
@@ -962,7 +961,7 @@ const VIEWS = Object.fromEntries(
     .flat()
     .map((v) => [v, v === 'chain' ? 'app' : v]),
 ); // screen -> its <main>
-const NO_LOGIN = new Set(['sigtest']); // reads recorded days only, so it also works before logging in
+const NO_LOGIN = new Set(); // screens that also work before logging in (none at present)
 const NEEDS_DATA = new Set(GROUPS.live.filter((v) => !NO_LOGIN.has(v))); // drawn from the live chain: shown once it has arrived
 function groupOf(view) {
   return Object.keys(GROUPS).find((g) => GROUPS[g].includes(view));
@@ -977,8 +976,7 @@ function showViews() {
   document.querySelectorAll('.chain-only').forEach((el) => el.classList.toggle('hidden', !live));
 }
 function setView(view) {
-  if (view === 'backtest') view = 'sigtest'; // what this screen was called in OptionLiveData (still in localStorage)
-  if (!VIEWS[view]) view = 'chain';
+  if (!VIEWS[view]) view = 'chain'; // also a screen removed since it was saved in localStorage
   state.view = view;
   localSet('view', view);
   const group = groupOf(view);

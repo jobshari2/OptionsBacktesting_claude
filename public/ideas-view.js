@@ -547,8 +547,7 @@
       `<span class="id-ctl" title="The best ${BS_SHOW} of each side, or every trade that fits the window">Show ${seg('bsall', C.bsAll ? 1 : 0, [
         [0, `Best ${BS_SHOW}`],
         [1, 'All'],
-      ])}</span>` +
-      `<button class="btn-sm ghost" data-bsbt="1" title="Backtest this selection on Strategies › Back spread: at every past entry the best strikes within ATM ±${win} are picked the same way">Backtest ATM ±${win} ▸</button>`;
+      ])}</span>`;
     out.info =
       `${fits * forms.length} combinations fit ATM ±${win} (widths ${BS.WIDTHS.join(' / ')}, every centre from the money to the edge of the window, ${formSel === 'best' ? 'iron and single-type butterflies, the cheaper kept' : formSel === 'iron' ? 'iron flies only' : 'single-type butterflies only'})` +
       (untradable ? `; ${untradable} left out because a leg has no ${book ? `two-sided quote within ${QSPREAD} pts` : 'price'}` : '') +
@@ -1479,8 +1478,8 @@
     }
   }
 
-  // ---------- Pulse trade idea: Pulse › Option writers & buyers ----------
-  // The Pulse screen's own read (state.pulse.play: what writers and buyers are doing, the option it would buy, its
+  // ---------- Pulse trade idea: the Pulse's option writers & buyers ----------
+  // The Pulse's own read (state.pulse.play: what writers and buyers are doing, the option it would buy, its
   // target and exit, the reasons) with the writers / buyers activity behind it and the Pulse's paper record of the
   // day. The Pulse reads the nearest expiry; the buttons act on the same option priced on the live chain shown.
   const ACT = { 'long-buildup': 'Long build-up', 'short-buildup': 'Writing', 'short-covering': 'Short covering', 'long-unwinding': 'Unwinding' };
@@ -1544,7 +1543,7 @@
     }
     const html = `<div class="idp ${I ? 'id-pulse-card' : ''}"${I ? ` data-id="${esc(I.id)}"` : ''}>
       <div class="idp-main">
-        <div class="idp-head"><span class="idp-call ${kind}">${word}</span><span class="muted small">Pulse › Option writers &amp; buyers · read on the nearest expiry (${dayShort(nearestExpiry() || '')})</span></div>
+        <div class="idp-head"><span class="idp-call ${kind}">${word}</span><span class="muted small">Pulse · option writers &amp; buyers · read on the nearest expiry (${dayShort(nearestExpiry() || '')})</span></div>
         ${y.happening?.length ? `<div class="idp-happening">${y.happening.map(esc).join(' ')}</div>` : ''}
         ${strike}
         ${act}
@@ -2039,15 +2038,7 @@
     else if (b.dataset.bswin) C.bsWin = Number(b.dataset.bswin);
     else if (b.dataset.bsall) C.bsAll = b.dataset.bsall === '1';
     else if (b.dataset.bsform) C.bsForm = b.dataset.bsform;
-    else if (b.dataset.bsbt) {
-      BT.emit('bs-preset', {
-        wins: [BS.WINDOWS.includes(C.bsWin) ? C.bsWin : 10],
-        rank: C.bsRank || 'loss',
-        forms: C.bsForm === 'iron' || C.bsForm === 'same' ? [C.bsForm] : ['same', 'iron'],
-        maxLossPerUnit: (Number(C.bsMaxLoss) || 0) / lots(), // here it is for the lots shown, there per trade of its units
-      });
-      return window.app.setView('bs');
-    } else if (b.dataset.basis) C.basis = b.dataset.basis;
+    else if (b.dataset.basis) C.basis = b.dataset.basis;
     else if (b.dataset.chainw) {
       C.chainW = Number(b.dataset.chainw);
       centredFor = null;
