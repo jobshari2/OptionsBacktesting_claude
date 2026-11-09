@@ -411,8 +411,9 @@ const etfCost = (turn, buy, slip) => turn * (slip + (buy ? 0.00015 : 0.00001) + 
 // One run over the monthly series in [from, to]. Returns { months, summary, params }.
 // The ETF is reported both ways from the same option trades: bought once and held ('once'), or bought at each
 // series start and sold at its expiry ('monthly'), always 65 × lots × Nifty worth at that entry (the budget when set).
-async function runMcc(data, params = {}, range = {}, { onProgress = () => {}, stopped = () => false } = {}) {
-  const p = merge(params);
+// E: the strategy's legs and rules (default this file's; bt/psc.js passes its own and reuses the rest).
+async function runMcc(data, params = {}, range = {}, { onProgress = () => {}, stopped = () => false } = {}, E = ENGINE) {
+  const p = E.merge(params);
   const lot = p.lotSize;
   const cal = await data.expiryCalendar();
   const monthly = [...cal.monthly].filter((e) => cal.expiredSet.has(e)).sort();
@@ -431,7 +432,7 @@ async function runMcc(data, params = {}, range = {}, { onProgress = () => {}, st
   for (let i = 0; i < series.length; i++) {
     if (stopped()) break;
     onProgress({ phase: 'Simulating', done: i, total: series.length });
-    const r = await runMonth(data, p, series[i], once);
+    const r = await runMonth(data, p, series[i], once, E);
     if (r.once) once = r.once;
     months.push(r.month);
   }
@@ -439,7 +440,7 @@ async function runMcc(data, params = {}, range = {}, { onProgress = () => {}, st
   return { at: Date.now(), params: p, months, summary: summarize(months, lot * p.lots, p.budget) };
 }
 
-async function runMonth(data, p, { P, E }, once) {
+async function runMonth(data, p, { P, E }, once, X = ENGINE) {
   const lot = p.lotSize;
   const month = { expiry: E, prevExpiry: P, events: [], ok: false };
   const days = await data.loadIndex(addDays(P, 1), E);
@@ -488,8 +489,8 @@ async function runMonth(data, p, { P, E }, once) {
   const S0 = spotAt(d0, p.entryMin);
   const pos = newPosition(E, S0);
   // the ideal trade prices every strike its search may use; the month then rolls with the shape it picked
-  if (p.target?.on) await Promise.all(shapeStrikes(S0, strikes).map((x) => load(x.type, x.strike)));
-  const pick = pickLegs(S0, p, strikes, priceOn(d0, p.entryMin), lot);
+  if (p.target?.on) await Promise.all(X.shapeStrikes(S0, strikes).map((x) => load(x.type, x.strike)));
+  const pick = X.pickLegs(S0, p, strikes, priceOn(d0, p.entryMin), lot);
   const legs = pick.legs;
   p = pick.p;
   await Promise.all(legs.map((l) => load(l.type, l.strike)));
@@ -504,7 +505,7 @@ async function runMonth(data, p, { P, E }, once) {
     ...at0,
     kind: 'entry',
     spot: S0,
-    text: 'Opened ' + pos.legs.map(legText).join(' · ') + (pick.shape ? ' · ' + shapeText(pick.shape, p.target.amount) : ''),
+    text: 'Opened ' + pos.legs.map(legText).join(' · ') + (pick.shape ? ' · ' + X.shapeText(pick.shape, p.target.amount) : ''),
   });
 
   // the ETF
@@ -532,7 +533,7 @@ async function runMonth(data, p, { P, E }, once) {
       const S = spotAt(d, m);
       if (S == null) continue;
       const price = priceOn(d, m);
-      const acts = decide(pos, S, { daysLeft, strikes, px: (l) => price(l.type, l.strike) }, p);
+      const acts = X.decide(pos, S, { daysLeft, strikes, px: (l) => price(l.type, l.strike) }, p);
       for (const a of acts) {
         await Promise.all(needs(pos, a).map((x) => load(x.type, x.strike)));
         const at = { day: d, time: timeOf(m) };
@@ -677,13 +678,14 @@ const deepMerge = (a, b) => {
   return out;
 };
 
-async function runMccStudy(data, base = {}, range = {}, { onProgress = () => {}, stopped = () => false } = {}) {
+async function runMccStudy(data, base = {}, range = {}, { onProgress = () => {}, stopped = () => false } = {}, E = ENGINE) {
+  const STUDY = E.STUDY;
   const rows = [];
   for (let i = 0; i < STUDY.length; i++) {
     if (stopped()) break;
     const [id, label, over] = STUDY[i];
-    const params = deepMerge({ ...merge(base), adj: { ...DEFAULTS.adj }, up: { ...DEFAULTS.up } }, over);
-    const r = await runMcc(data, params, range, { onProgress: (x) => onProgress({ phase: label, done: i, total: STUDY.length, inner: x }), stopped });
+    const params = deepMerge({ ...E.merge(base), adj: { ...E.DEFAULTS.adj }, up: { ...E.DEFAULTS.up } }, over);
+    const r = await runMcc(data, params, range, { onProgress: (x) => onProgress({ phase: label, done: i, total: STUDY.length, inner: x }), stopped }, E);
     rows.push({
       id,
       label,
@@ -729,9 +731,9 @@ function modelPath({ S0 = 24000, pct = 10, months = 12, iv = 13, swings = true }
   }
   return out;
 }
-function runMccModel(params = {}, opts = {}) {
+function runMccModel(params = {}, opts = {}, E = ENGINE) {
   const { bsm } = require('../lib/pricing');
-  const base = merge(params);
+  const base = E.merge(params);
   const iv = (opts.iv ?? 13) / 100;
   const path = modelPath(opts);
   const lot = base.lotSize;
@@ -754,13 +756,13 @@ function runMccModel(params = {}, opts = {}) {
         costsBy: { CE: 0, PE: 0 },
       };
       const pos = newPosition('model', S0);
-      const pick = pickLegs(S0, p, strikes, priceAt(S0, MODEL_DAYS), lot); // the month rolls with the shape it picked
+      const pick = E.pickLegs(S0, p, strikes, priceAt(S0, MODEL_DAYS), lot); // the month rolls with the shape it picked
       openLegs(pos, pick.legs, priceAt(S0, MODEL_DAYS), book, { day: 0 });
       const events = [];
       for (let d = 1; d < MODEL_DAYS; d++) {
         const S = days[d];
         const px = priceAt(S, MODEL_DAYS - d);
-        for (const a of decide(pos, S, { daysLeft: MODEL_DAYS - d, strikes, px: (l) => px(l.type, l.strike) }, pick.p))
+        for (const a of E.decide(pos, S, { daysLeft: MODEL_DAYS - d, strikes, px: (l) => px(l.type, l.strike) }, pick.p))
           if (apply(pos, a, px, book, { day: d })) events.push({ day: d, kind: a.kind, spot: S, text: a.reason });
       }
       const SE = days[MODEL_DAYS];
@@ -777,7 +779,11 @@ function runMccModel(params = {}, opts = {}) {
   return { path, withAdj: run(base), without: run(off), params: base };
 }
 
+// What runMcc / runMccStudy / runMccModel take from the strategy (bt/psc.js builds its own).
+const ENGINE = { merge, pickLegs, shapeStrikes, shapeText, decide, STUDY, DEFAULTS };
+
 module.exports = {
+  ENGINE,
   modelPath,
   runMccModel,
   splitPnl,

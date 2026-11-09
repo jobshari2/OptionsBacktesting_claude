@@ -499,3 +499,88 @@ test('closeSaved: NIFTYBEES already sold in the Builder are left as they are', (
   assert.equal(c.snap.mcc.exitBatch, undefined);
   assert.equal(L.reopenSaved(c).snap.mcc.exitPx, 270);
 });
+
+// ---------- the Put spread collar on the same Live trade engine ----------
+const collar = {
+  id: 'pt-c',
+  name: 'Live collar',
+  summary: { lot: 65, spot: 24000 },
+  snap: {
+    src: 'live',
+    liveExpiry: '2026-11-23',
+    mcc: { on: true, kind: 'psc', qty: 6500, price: 240 },
+    legs: [
+      { id: 1, action: 'S', type: 'CE', strike: 24100, lots: 1, expiry: '2026-11-23', entryPx: 300, spotIn: 24000, open: true },
+      { id: 2, action: 'B', type: 'PE', strike: 23900, lots: 1, expiry: '2026-11-23', entryPx: 250, spotIn: 24000, open: true },
+      { id: 3, action: 'S', type: 'PE', strike: 23800, lots: 1, expiry: '2026-11-23', entryPx: 210, spotIn: 24000, open: true },
+    ],
+  },
+};
+
+test('collar: a saved trade marked Put spread collar is flagged for the collar only; its shape is recognised', () => {
+  const asPsc = L.fromBuilder(collar, 'psc');
+  const asMcc = L.fromBuilder(collar, 'mcc');
+  assert.equal(asPsc.flag, true);
+  assert.equal(asMcc.flag, false);
+  assert.deepEqual(asPsc.bees, { qty: 6500, price: 240, day: null, exitPx: null, exitDay: null, exitAt: null });
+  assert.ok(L.looksPsc(asPsc.legs));
+  assert.ok(!L.looksMcc(asPsc.legs));
+  assert.ok(!L.looksPsc(L.fromBuilder(saved).legs)); // the call ratio + 2-3-1 is not a collar
+  // a Modified covered call trade (no kind) stays the Covered call's
+  assert.equal(L.fromBuilder(saved, 'psc').flag, false);
+  assert.equal(L.kindOf({ on: true }), 'mcc');
+  assert.equal(
+    L.fromPaper(
+      { params: { lotSize: 65 }, cycle: { expiry: '2026-11-23', legs: asPsc.legs, closed: [], spot0: 24000, etf: { onceFrom: 240 } } },
+      'Put spread collar',
+    ).name,
+    'Put spread collar paper trade · 2026-11-23',
+  );
+});
+
+test('collar suggestions: its own names, the sold put kept under the bought put, the bought put rolled on its own', () => {
+  const pos = L.fromBuilder(collar, 'psc');
+  const T = 20 / 365;
+  const M = L.market(chainAt(24000, T), T);
+  const c = L.candidates(pos, M, { qty: 6500, now: 240, price: 240 }, new Map(), 'psc');
+  const titles = c.map((x) => x.title);
+  assert.ok(titles.includes('Close the sold call'));
+  assert.ok(titles.includes('Close the put spread'));
+  assert.ok(titles.some((t) => /^Move the whole put spread/.test(t)));
+  assert.ok(titles.some((t) => /^Buy back the sold 24100 call \(NIFTYBEES runs free/.test(t)));
+  assert.ok(!titles.some((t) => /call ratio|butterfly/.test(t)));
+  // one sold call: no "move the whole call" (it is the roll)
+  assert.ok(!c.some((x) => x.id.startsWith('ceShift:')));
+  // sold put rolls stay under the bought 23900 put; bought put rolls stay over the sold 23800 put
+  const peRolls = c.filter((x) => x.id.startsWith('peRoll:')).map((x) => x.open[0].strike);
+  assert.ok(peRolls.length && peRolls.every((k) => k < 23900));
+  const peL = c.filter((x) => x.id.startsWith('peLRoll:')).map((x) => x.open[0].strike);
+  assert.ok(peL.length && peL.every((k) => k > 23800));
+  // the Covered call's candidates on its own trade are unchanged in kind
+  const mcc = L.candidates(L.fromBuilder(saved), L.market(chainAt(23400, T), T), null, new Map());
+  assert.ok(mcc.some((x) => x.title === 'Close the call ratio spread'));
+  assert.ok(!mcc.some((x) => x.id.startsWith('peLRoll:')));
+  // suggest runs on the collar's candidates
+  const moves = [];
+  for (let i = -40; i <= 40; i++) moves.push(i / 400);
+  const out = L.suggest(pos, M, { qty: 6500, now: 240, price: 240 }, moves, { shape: 'psc' });
+  assert.ok(out.tried > 50);
+  for (const v of [...out.list, ...out.protect, ...out.risky]) assert.ok(!/call ratio|butterfly/.test(v.title));
+});
+
+test('collar study rules: due in the collar’s words (put spread up on a rise, sold call down on a fall)', () => {
+  const pos = L.fromBuilder(collar, 'psc');
+  const T = 20 / 365;
+  const months = [{ expiry: '2026-01-27', ok: true, opt: 1000 }];
+  const study = {
+    rows: [
+      { id: 'none', label: 'No adjustments', params: { adj: { on: false } }, months },
+      { id: 'move2', label: 'Roll at a 2 % move', params: { adj: { on: true, trigger: 'move', movePct: 2, call: true, put: true } }, months },
+    ],
+  };
+  const up = L.studyRules(study, pos, L.market(chainAt(24600, T), T), 24000, 'psc')[0];
+  assert.match(up.due, /put spread up/);
+  const down = L.studyRules(study, pos, L.market(chainAt(23400, T), T), 24000, 'psc')[0];
+  assert.match(down.due, /sold call down/);
+  assert.equal(L.studyRules(study, pos, L.market(chainAt(24100, T), T), 24000, 'psc')[0].due, null);
+});

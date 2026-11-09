@@ -959,13 +959,13 @@
         !list.length
           ? '<div class="muted small pad">In the <b>Builder</b>, build a position (B / S in the chain, or Apply a strategy) and press <b>Save trade</b>. Live (paper) trades and replays are listed here; <b>Load</b> puts one back in the Builder with its payoff, to adjust it and save it again.</div>'
           : `<div class="tbl-wrap sb-trades-wrap"><table class="grid-tbl sb-trades-tbl">
-        <thead><tr><th class="l">Trade</th><th class="l">Mode</th><th class="l">Expiry</th><th class="l">Open legs</th><th>Entered</th><th>Realised</th><th>Open P&amp;L</th><th>Total at save</th><th title="Live paper trades at the current chain prices">Total now</th><th title="The options' P&amp;L: now for live trades with open legs, else as saved">Options P&amp;L</th><th title="Modified covered call: the NIFTYBEES held against the options, bought → sold (or → now while held)">NIFTYBEES P&amp;L</th><th title="Options + NIFTYBEES">Overall</th><th></th><th>Saved</th><th></th></tr></thead>
+        <thead><tr><th class="l">Trade</th><th class="l">Mode</th><th class="l">Expiry</th><th class="l">Open legs</th><th>Entered</th><th>Realised</th><th>Open P&amp;L</th><th>Total at save</th><th title="Live paper trades at the current chain prices">Total now</th><th title="The options' P&amp;L: now for live trades with open legs, else as saved">Options P&amp;L</th><th title="Modified covered call / Put spread collar: the NIFTYBEES held against the options, bought → sold (or → now while held)">NIFTYBEES P&amp;L</th><th title="Options + NIFTYBEES">Overall</th><th></th><th>Saved</th><th></th></tr></thead>
         <tbody>${list
           .map((t) => {
             const u = t.summary;
             const now = tradesNow[t.id];
             const x = splitOf(t);
-            return `<tr class="${t.id === S.tradeId ? 'sel' : ''}"><td class="l"><b>${esc(t.name)}</b> ${x.mcc ? '<span class="cat-pill c-bullish" title="Modified covered call (call ratio + put butterfly against NIFTYBEES)">MCC</span> ' : ''}${u.open ? '' : '<span class="cat-pill">closed</span>'}</td>
+            return `<tr class="${t.id === S.tradeId ? 'sel' : ''}"><td class="l"><b>${esc(t.name)}</b> ${x.mcc ? (x.m.kind === 'psc' ? '<span class="cat-pill c-bullish" title="Put spread collar (a sold call + put spread against NIFTYBEES)">Collar</span> ' : '<span class="cat-pill c-bullish" title="Modified covered call (call ratio + put butterfly against NIFTYBEES)">MCC</span> ') : ''}${u.open ? '' : '<span class="cat-pill">closed</span>'}</td>
             <td class="l"><span class="cat-pill ${u.src === 'live' ? 'c-bullish' : 'c-neutral'}">${u.src === 'live' ? 'Live (paper)' : 'Replay'}</span></td>
             <td class="l">${(u.expiries || []).map(dayShort).join(', ')}</td>
             <td class="l legs-cell">${esc(u.legs || '—')}${u.closed ? ` <span class="muted small">+${u.closed} closed</span>` : ''}</td>
@@ -1651,9 +1651,12 @@
     const has = m.qty > 0 && m.price > 0;
     const sold = has && m.exitPx > 0 ? m.qty * (m.exitPx - m.price) : null;
     const v = (x) => (x == null ? '' : esc(String(x)));
-    el.innerHTML = `<label class="mini" title="A call ratio spread + put butterfly held against NIFTYBEES: Trading Ideas › Covered call › Modified covered call › Live trade follows the saved trade with live NIFTYBEES prices and can close all of it"><input type="checkbox" data-mcc="on" ${m.on ? 'checked' : ''}> <b>Modified covered call</b></label>${
+    // which strategy (snap.mcc.kind: 'psc' = Put spread collar, none = Modified covered call): its Live trade tab lists it
+    const psc = m.kind === 'psc';
+    el.innerHTML = `<label class="mini" title="Options held against NIFTYBEES — a Modified covered call (call ratio + put butterfly) or a Put spread collar (sold call + put spread): that strategy's Live trade tab in Trading Ideas follows the saved trade with live NIFTYBEES prices and can close all of it"><input type="checkbox" data-mcc="on" ${m.on ? 'checked' : ''}> <b>Held against NIFTYBEES${m.on ? ':' : ' (Covered call / Put spread collar)'}</b></label>${
       m.on
-        ? `<span class="lbl">NIFTYBEES</span>
+        ? `<select data-mcc="kind" title="The Trading Ideas strategy this trade is: its Live trade tab shows it"><option value="mcc"${psc ? '' : ' selected'}>Modified covered call</option><option value="psc"${psc ? ' selected' : ''}>Put spread collar</option></select>
+      <span class="lbl">NIFTYBEES</span>
       <label class="mini" title="₹ to put in NIFTYBEES: the units are worked out at its price now (live, else the Bought-at price, else Nifty ÷ 100)">Amount ₹ <input class="num sm" type="number" min="0" step="1000" data-mcc="amount" value="${v(m.amount)}" placeholder="e.g. 1600000"></label>
       <label class="mini">Units <input class="num sm" type="number" min="0" step="1" data-mcc="qty" value="${v(m.qty)}" placeholder="e.g. 6500"></label>
       <label class="mini">Bought at ₹ <input class="num sm" type="number" min="0" step="0.01" data-mcc="price" value="${v(m.price)}" placeholder="e.g. 260.00"></label>
@@ -1664,7 +1667,7 @@
           ? ` · NIFTYBEES <b class="${cls(sold)}">${inrS(Math.round(sold))}</b>${P ? ` · with the options <b class="${cls(P.total + sold)}">${inrS(Math.round(P.total + sold))}</b>` : ''}`
           : ''
       }</span>
-      <span class="muted small">${S.tradeId ? '💾 Save changes' : '💾 Save trade'} keeps it with the trade; its live P&amp;L is on Trading Ideas › Covered call › Modified covered call › Live trade.</span>`
+      <span class="muted small">${S.tradeId ? '💾 Save changes' : '💾 Save trade'} keeps it with the trade; its live P&amp;L is on Trading Ideas › ${psc ? 'Put spread collar' : 'Covered call › Modified covered call'} › Live trade.</span>`
         : ''
     }`;
   }
@@ -1683,7 +1686,10 @@
     const m = { ...(S.mcc || {}) };
     mccAmtNote = '';
     if (k === 'on') m.on = e.target.checked;
-    else if (k === 'amount') {
+    else if (k === 'kind') {
+      if (e.target.value === 'psc') m.kind = 'psc';
+      else delete m.kind; // the Modified covered call, as trades saved before the collar existed
+    } else if (k === 'amount') {
       const n = Number(e.target.value);
       if (!(n > 0)) delete m.amount;
       else {

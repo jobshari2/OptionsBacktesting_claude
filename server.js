@@ -34,6 +34,7 @@ const {
 } = require('./bt/mcc');
 const { createMccPaper, weekdaysLeft, monthlyFor } = require('./mccpaper');
 const mccLive = require('./bt/mcclive');
+const psc = require('./bt/psc');
 const lab = require('./bt/lab');
 const adjust = require('./bt/adjust');
 const { createTickStore } = require('./lib/ticks');
@@ -669,11 +670,14 @@ const MCC_LIVE_FILE = path.join(__dirname, 'bt-data', DEMO ? 'mcc-live-demo.json
 // The Builder's saved trades (bt/index.js keeps them; written here only by the Live trade's NIFTYBEES entry, close and
 // undo, compact like bt/index.js writes them).
 const SB_TRADES_FILE = path.join(__dirname, 'bt-data', 'paper-trades.json');
-// Saved trades with open legs, and closed ones marked "Modified covered call" (their final result is shown).
-function mccLiveTrades() {
+// Saved trades with open legs, and closed ones marked as this strategy (L.kind) in the Builder (their final result
+// is shown), and the strategy's paper trade series.
+function liveTrades(L) {
   const saved = readJson(SB_TRADES_FILE) || [];
-  const list = saved.filter((t) => t?.snap?.legs?.some((l) => l.open) || (t?.snap?.mcc?.on && t.snap.legs?.length)).map(mccLive.fromBuilder);
-  const paper = mccLive.fromPaper(mccPaper.state().paper);
+  const list = saved
+    .filter((t) => t?.snap?.legs?.some((l) => l.open) || (t?.snap?.mcc?.on && mccLive.kindOfTrade(t) === L.kind && t.snap.legs?.length))
+    .map((t) => mccLive.fromBuilder(t, L.kind));
+  const paper = mccLive.fromPaper(L.paper().state().paper, L.name);
   if (paper) list.push(paper);
   return list.filter((x) => (x.legs.length || x.done) && x.expiry);
 }
@@ -746,39 +750,64 @@ async function mccBeesNow() {
   return px > 0 ? { px, at: ccBees.at, how: 'ltp' } : null;
 }
 
-async function mccLiveState(key) {
-  const cfg = readJson(MCC_LIVE_FILE) || {};
-  const all = mccLiveTrades();
+// Nifty and NIFTYBEES now, for a Live trade tab with no open trade on it (a closed trade, or none): Nifty's streamed
+// tick, else the nearest expiry's chain; NIFTYBEES streamed (watched from here on) or its LTP. null when not read.
+async function liveNow() {
+  const tick = DEMO ? null : feed.tick(NIFTY_KEY);
+  let [spot, at] = tick?.ltp > 0 ? [tick.ltp, tick.at || Date.now()] : [null, null];
+  if (!spot) {
+    const e = nearestExpiry || (await getExpiries())[0];
+    const snap = e ? snapshots.get(e) : null;
+    if (snap?.spot > 0) [spot, at] = [snap.spot, snap.updatedAt];
+    else if (e) {
+      const c = await restChain(e, 30_000);
+      if (c?.spot > 0) [spot, at] = [c.spot, c.fetchedAt];
+    }
+  }
+  if (!(spot > 0)) return null;
+  if (!DEMO) watchKey(backtester.data.BEES);
+  const b = await mccBeesNow().catch(() => null);
+  return { spot, at, bees: b?.px || null, beesAt: b?.at || null, beesHow: b?.how || null };
+}
+
+// fresh: the tab is being opened (not a poll or a pick), so a remembered closed trade or None gives way to an open
+// trade of this strategy, and the tab opens on live prices.
+async function liveState(L, key, fresh = false) {
+  const cfg = readJson(L.file) || {};
+  const all = liveTrades(L);
   const trades = all.map((x) => ({
     key: x.key,
     name: x.name,
     src: x.src,
     expiry: x.expiry,
-    mcc: Boolean(x.flag) || mccLive.looksMcc(x.legs.length ? x.legs : x.closed),
+    mcc: Boolean(x.flag) || L.looks(x.legs.length ? x.legs : x.closed), // this strategy (marked, or its shape)
     closed: Boolean(x.done),
     legs: x.legs.map(mccLive.legText).join(', '),
   }));
+  const now = () => liveNow().catch(() => null);
+  // the newest open one of this strategy (saved trades are kept in the order they were first saved)
+  const ownOpen = () =>
+    all.findLast((x) => x.src === 'builder' && !x.done && (x.flag || L.looks(x.legs))) || all.find((x) => !x.done && (x.flag || L.looks(x.legs)));
   // None picked on the tab: no trade shown (the list still sent, to pick one or enter a new one)
   // newest: the newest open trade (a trade just entered from this tab and saved in the Builder)
   const want = key === 'newest' ? null : key || cfg.selected;
-  if (want === 'none') return { trades, key: 'none', pos: null };
-  const pos =
-    all.find((x) => x.key === want) ||
-    // else the newest open one (saved trades are kept in the order they were first saved)
-    all.findLast((x) => x.src === 'builder' && !x.done && (x.flag || mccLive.looksMcc(x.legs))) ||
-    all.find((x) => !x.done && (x.flag || mccLive.looksMcc(x.legs))) ||
-    all.find((x) => !x.done) ||
-    all[0];
-  if (!pos) return { trades, pos: null };
+  let pos = all.find((x) => x.key === want) || null;
+  if (fresh && (want === 'none' || pos?.done)) pos = ownOpen() || pos;
+  if (want === 'none' && !pos) return { trades, key: 'none', pos: null, now: await now() };
+  pos ||=
+    ownOpen() ||
+    // strict (the collar): none of its own → no trade shown (another strategy's trade only when picked)
+    (L.strict ? null : all.find((x) => !x.done) || all[0]);
+  if (!pos) return { trades, pos: null, now: await now() };
   // NIFTYBEES entered on this tab before the Builder kept them: moved into the saved trade once (values unchanged, its
   // saved time kept), so the Builder shows them too. Not in demo mode: it shares the real saved trades.
-  if (!DEMO && pos.src === 'builder' && !pos.bees && cfg.trades?.[pos.key]?.bees?.qty > 0 && cfg.trades[pos.key].bees.price > 0) {
+  if (!DEMO && L.kind === 'mcc' && pos.src === 'builder' && !pos.bees && cfg.trades?.[pos.key]?.bees?.qty > 0 && cfg.trades[pos.key].bees.price > 0) {
     try {
       editSavedTrade(pos.id, (t) => withLegacyBees(t, cfg));
       pos.bees = mccLive.beesOfSnap(withLegacyBees({ id: pos.id, snap: {} }, cfg).snap);
       pos.flag = true;
       delete cfg.trades[pos.key].bees;
-      writeJson(MCC_LIVE_FILE, cfg);
+      writeJson(L.file, cfg);
     } catch (e) {
       logError('mcc-live bees move', e);
     }
@@ -796,6 +825,7 @@ async function mccLiveState(key) {
       closed: true,
       bees: b ? { qty: b.qty, price: b.price, exitPx: b.exitPx || null, exitDay: b.exitDay || null, exitAt: b.exitAt || null } : null,
       entrySpot: own.entrySpot > 0 ? own.entrySpot : pos.spotIn,
+      now: await now(),
     };
   }
   // no chain for it (expired, not listed): the list is still sent, so another trade can be picked
@@ -804,7 +834,7 @@ async function mccLiveState(key) {
     chain = await mccLiveChain(pos.expiry, pos.legs);
     if (!chain?.spot) throw new Error(`No live chain for the ${pos.expiry} expiry yet`);
   } catch (e) {
-    return { trades, key: pos.key, pos: null, error: e.message };
+    return { trades, key: pos.key, pos: null, error: e.message, now: await now() };
   }
   const T = mccLive.yearsTo(pos.expiry);
   const M = mccLive.market(chain, T);
@@ -857,7 +887,166 @@ async function mccLiveState(key) {
     cover: mccLive.beesCover(pos, M, bees),
   };
 }
-const mccLiveOut = (st) => ({ ...st, M: undefined, marketOpen: DEMO || isMarketOpen(), demo: DEMO });
+const liveOut = (st) => ({ ...st, M: undefined, marketOpen: DEMO || isMarketOpen(), demo: DEMO });
+// The strategies' Live trade tabs (bt/mcclive.js): the same screen for each, with what differs here. kind: how a
+// saved trade's NIFTYBEES are marked in the Builder (snap.mcc.kind, none = Covered call); file: the tab's own
+// settings (entry Nifty, the paper trade's NIFTYBEES override, the trade picked); plan: the legs its rules pick on a
+// live chain for "Enter new trade". The Put spread collar's entry is added with its routes (LIVE.psc).
+const LIVE = {
+  mcc: {
+    kind: 'mcc',
+    name: 'Modified covered call',
+    file: MCC_LIVE_FILE,
+    paper: () => mccPaper,
+    looks: mccLive.looksMcc,
+    studyFile: () => MCC_FILES.study,
+    defaults: MCC_DEFAULTS,
+    // bt/mcc.js pickLegs: call ratio 1×2 + put 2-3-1, the ideal trade's flat zone (b.target ₹, 0 = fixed distances)
+    plan(S, strikes, ltp, lot, b) {
+      const amount = Number(b.target);
+      const prm = mccMerge({ lotSize: lot, target: { on: amount !== 0, amount: amount > 0 ? amount : MCC_DEFAULTS.target.amount } });
+      const pick = mccPickLegs(S, prm, strikes, ltp, lot);
+      return { prm, pick, shapeText: mccShapeText(pick.shape, prm.target.amount) };
+    },
+  },
+};
+// A Live trade tab's routes: p is the part after /api/<strategy> ('/live', '/live/config', …); errors go to the caller.
+async function handleLive(req, res, url, p, L) {
+  if (p === '/live' && req.method !== 'POST') {
+    if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the live trade is priced on the live chain`);
+    return sendJson(res, 200, liveOut(await liveState(L, url.searchParams.get('key'), url.searchParams.get('fresh') === '1')));
+  }
+  if (p === '/live/config' && req.method === 'POST') {
+    const b = JSON.parse((await readBody(req, 10_000)).toString('utf8') || '{}');
+    if (typeof b.key !== 'string' || !b.key) throw new Error('Which trade?');
+    const num = (v, lo, hi) => (v === '' || v == null ? null : Number.isFinite(Number(v)) && Number(v) >= lo && Number(v) <= hi ? Number(v) : NaN);
+    const cfg = readJson(L.file) || {};
+    cfg.trades ||= {};
+    const t = (cfg.trades[b.key] ||= {});
+    if (b.bees) {
+      const qty = num(b.bees.qty, 0, 1e8);
+      const price = num(b.bees.price, 1, 1e5);
+      if (Number.isNaN(qty) || Number.isNaN(price)) throw new Error('NIFTYBEES: units 0 – 10 crore, price ₹1 – ₹1,00,000');
+      if (b.key.startsWith('builder:')) {
+        // kept in the saved trade itself (snap.mcc), where the Builder shows and saves them too
+        editSavedTrade(b.key.slice(8), (tr) => {
+          const m = { ...(tr.snap.mcc || {}), on: true };
+          if (!tr.snap.mcc?.on) m.kind = L.kind; // first entered here: marked as this strategy
+          if (qty == null && price == null) for (const k of ['qty', 'price', 'day']) delete m[k];
+          else Object.assign(m, { qty: qty ?? 0, price }, b.bees.day ? { day: String(b.bees.day).slice(0, 10) } : {});
+          return { ...tr, savedAt: Date.now(), snap: { ...tr.snap, mcc: m } };
+        });
+        delete t.bees;
+      } else {
+        t.bees = qty == null && price == null ? undefined : { qty: qty ?? 0, price };
+        if (b.bees.day) t.bees.day = String(b.bees.day).slice(0, 10);
+      }
+    }
+    if ('entrySpot' in b) {
+      const e = num(b.entrySpot, 1000, 1e6);
+      if (Number.isNaN(e)) throw new Error('Entry Nifty: a level like 22960');
+      t.entrySpot = e ?? undefined;
+    }
+    cfg.selected = b.key;
+    writeJson(L.file, cfg);
+    return sendJson(res, 200, liveOut(await liveState(L, b.key)));
+  }
+  // Close the whole saved Builder trade: every open leg at the prices sent, the NIFTYBEES sold at beesPx — recorded
+  // in the saved trade as the Builder records exits. Nothing is sent to a broker. reopen undoes the last such close.
+  if ((p === '/live/close' || p === '/live/reopen') && req.method === 'POST') {
+    const b = JSON.parse((await readBody(req, 20_000)).toString('utf8') || '{}');
+    if (typeof b.key !== 'string' || !b.key.startsWith('builder:'))
+      throw new Error('Only a trade saved in the Builder can be closed here (the paper trade is run on its own tab)');
+    if (b.confirm !== true) throw new Error('Closing the trade needs confirmation');
+    const cfg = readJson(L.file) || {};
+    editSavedTrade(b.key.slice(8), (t) =>
+      p.endsWith('/close') ? mccLive.closeSaved(withLegacyBees(t, cfg), { px: b.px || {}, beesPx: b.beesPx }) : mccLive.reopenSaved(t),
+    );
+    // NIFTYBEES entered on this tab before now live in the trade
+    if (cfg.trades?.[b.key]?.bees) {
+      delete cfg.trades[b.key].bees;
+      writeJson(L.file, cfg);
+    }
+    return sendJson(res, 200, liveOut(await liveState(L, b.key)));
+  }
+  // Enter a new trade: the expiries it can be built on (the default: the monthly series the paper trade would take),
+  // the legs the rules pick on that expiry's live chain (bt/mcc.js pickLegs: call ratio 1×2 + put 2-3-1, the ideal
+  // trade's flat zone), which the page opens in the Builder. Nothing is sent to a broker.
+  if (p === '/live/expiries') {
+    if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the trade is built on the live chain`);
+    const today = istDate();
+    const list = (await getExpiries()).filter((e) => e >= today).sort();
+    const lastOfMonth = new Map(list.map((e) => [e.slice(0, 7), e]));
+    const monthly = new Set(lastOfMonth.values());
+    return sendJson(res, 200, {
+      expiries: list.map((e) => ({ expiry: e, monthly: monthly.has(e), days: Math.round((Date.parse(e) - Date.parse(today)) / 86400_000) })),
+      dflt: monthlyFor(list, today, L.defaults.minDays) || list[0] || null,
+      minDays: L.defaults.minDays,
+      target: L.defaults.target?.on ? L.defaults.target.amount : 0,
+    });
+  }
+  if (p === '/live/plan' && req.method === 'POST') {
+    if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the trade is built on the live chain`);
+    const b = JSON.parse((await readBody(req, 10_000)).toString('utf8') || '{}');
+    const chain = await mccLiveChain(String(b.expiry || ''), []);
+    if (!(chain?.spot > 0) || !chain.rows?.length) throw new Error(`No live chain for the ${b.expiry} expiry yet`);
+    const S = Number(b.spot) >= 1000 ? Number(b.spot) : chain.spot;
+    const lot = contracts.lot || L.defaults.lotSize;
+    const rows = new Map(chain.rows.map((r) => [r.strike, r]));
+    const q = (type, k) => rows.get(k)?.[type === 'CE' ? 'ce' : 'pe'];
+    const ltp = (type, k) => (q(type, k)?.ltp > 0 ? q(type, k).ltp : null);
+    const { prm, pick, shapeText } = L.plan(
+      S,
+      [...rows.keys()].sort((x, y) => x - y),
+      ltp,
+      lot,
+      b,
+    );
+    const legs = pick.legs.map((l) => {
+      const o = q(l.type, l.strike) || {};
+      return { role: l.role, type: l.type, strike: l.strike, lots: l.lots, side: l.side, ltp: ltp(l.type, l.strike), bid: o.bid ?? null, ask: o.ask ?? null };
+    });
+    const bees = await mccBeesNow().catch(() => null);
+    const beesPx = bees?.px || S / 100;
+    return sendJson(res, 200, {
+      expiry: b.expiry,
+      spot: chain.spot,
+      S,
+      lot,
+      legs,
+      shape: pick.shape,
+      shapeText,
+      target: prm.target,
+      atmIv: mccLive.market(chain, mccLive.yearsTo(b.expiry)).atmIv,
+      bees: { now: beesPx, live: Boolean(bees), qty: mccEtfQty(prm, S, beesPx) },
+      at: chain.updatedAt,
+    });
+  }
+  if (p === '/live/suggest' && req.method === 'POST') {
+    if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the suggestions are priced on the live chain`);
+    const b = JSON.parse((await readBody(req, 10_000)).toString('utf8') || '{}');
+    const st = await liveState(L, b.key);
+    if (!st.pos) throw new Error('No trade to suggest for');
+    const closes = await mccHistory();
+    const days = Math.max(1, st.market.daysLeft);
+    const moves = mccLive.pastMoves(closes, days, st.M.atmIv);
+    if (moves.length < 100) throw new Error(`Only ${moves.length} past ${days}-day moves in the cached history: too few to test on`);
+    const slip = (L.defaults.costs.slipPct || 0.5) / 100;
+    const out = mccLive.suggest(st.pos, st.M, st.bees, moves, { slip, day: istDate(), days, shape: L.kind });
+    for (const v of [...out.list, ...out.protect, ...out.risky]) {
+      v.after.legs = v.after.legs.map((l) => ({ ...l, ltp: st.M.px(l.type, l.strike), iv: st.M.iv(l.type, l.strike), cal: mccLive.legCal(l, st.M) }));
+    }
+    return sendJson(res, 200, {
+      key: st.key,
+      ...out,
+      rules: mccLive.studyRules(readJson(L.studyFile()), st.pos, st.M, st.entrySpot, L.kind),
+      sample: { n: moves.length, days, from: closes[0]?.day, to: closes[closes.length - 1]?.day, ivNow: st.M.atmIv, slipPct: slip * 100 },
+      spot: st.M.spot,
+      at: Date.now(),
+    });
+  }
+  return sendJson(res, 404, { error: 'Not found' });
+}
 
 async function handleMcc(req, res, url, p) {
   lastClientAt = Date.now();
@@ -927,140 +1116,7 @@ async function handleMcc(req, res, url, p) {
       const b = liveLoggedIn() ? await mccBeesNow().catch(() => null) : null;
       return sendJson(res, 200, { px: b?.px || null, how: b?.how || null, at: b?.at || null });
     }
-    if (p === '/api/mcc/live' && req.method !== 'POST') {
-      if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the live trade is priced on the live chain`);
-      return sendJson(res, 200, mccLiveOut(await mccLiveState(url.searchParams.get('key'))));
-    }
-    if (p === '/api/mcc/live/config' && req.method === 'POST') {
-      const b = JSON.parse((await readBody(req, 10_000)).toString('utf8') || '{}');
-      if (typeof b.key !== 'string' || !b.key) throw new Error('Which trade?');
-      const num = (v, lo, hi) => (v === '' || v == null ? null : Number.isFinite(Number(v)) && Number(v) >= lo && Number(v) <= hi ? Number(v) : NaN);
-      const cfg = readJson(MCC_LIVE_FILE) || {};
-      cfg.trades ||= {};
-      const t = (cfg.trades[b.key] ||= {});
-      if (b.bees) {
-        const qty = num(b.bees.qty, 0, 1e8);
-        const price = num(b.bees.price, 1, 1e5);
-        if (Number.isNaN(qty) || Number.isNaN(price)) throw new Error('NIFTYBEES: units 0 – 10 crore, price ₹1 – ₹1,00,000');
-        if (b.key.startsWith('builder:')) {
-          // kept in the saved trade itself (snap.mcc), where the Builder shows and saves them too
-          editSavedTrade(b.key.slice(8), (tr) => {
-            const m = { ...(tr.snap.mcc || {}), on: true };
-            if (qty == null && price == null) for (const k of ['qty', 'price', 'day']) delete m[k];
-            else Object.assign(m, { qty: qty ?? 0, price }, b.bees.day ? { day: String(b.bees.day).slice(0, 10) } : {});
-            return { ...tr, savedAt: Date.now(), snap: { ...tr.snap, mcc: m } };
-          });
-          delete t.bees;
-        } else {
-          t.bees = qty == null && price == null ? undefined : { qty: qty ?? 0, price };
-          if (b.bees.day) t.bees.day = String(b.bees.day).slice(0, 10);
-        }
-      }
-      if ('entrySpot' in b) {
-        const e = num(b.entrySpot, 1000, 1e6);
-        if (Number.isNaN(e)) throw new Error('Entry Nifty: a level like 22960');
-        t.entrySpot = e ?? undefined;
-      }
-      cfg.selected = b.key;
-      writeJson(MCC_LIVE_FILE, cfg);
-      return sendJson(res, 200, mccLiveOut(await mccLiveState(b.key)));
-    }
-    // Close the whole saved Builder trade: every open leg at the prices sent, the NIFTYBEES sold at beesPx — recorded
-    // in the saved trade as the Builder records exits. Nothing is sent to a broker. reopen undoes the last such close.
-    if ((p === '/api/mcc/live/close' || p === '/api/mcc/live/reopen') && req.method === 'POST') {
-      const b = JSON.parse((await readBody(req, 20_000)).toString('utf8') || '{}');
-      if (typeof b.key !== 'string' || !b.key.startsWith('builder:'))
-        throw new Error('Only a trade saved in the Builder can be closed here (the paper trade is run on its own tab)');
-      if (b.confirm !== true) throw new Error('Closing the trade needs confirmation');
-      const cfg = readJson(MCC_LIVE_FILE) || {};
-      editSavedTrade(b.key.slice(8), (t) =>
-        p.endsWith('/close') ? mccLive.closeSaved(withLegacyBees(t, cfg), { px: b.px || {}, beesPx: b.beesPx }) : mccLive.reopenSaved(t),
-      );
-      // NIFTYBEES entered on this tab before now live in the trade
-      if (cfg.trades?.[b.key]?.bees) {
-        delete cfg.trades[b.key].bees;
-        writeJson(MCC_LIVE_FILE, cfg);
-      }
-      return sendJson(res, 200, mccLiveOut(await mccLiveState(b.key)));
-    }
-    // Enter a new trade: the expiries it can be built on (the default: the monthly series the paper trade would take),
-    // the legs the rules pick on that expiry's live chain (bt/mcc.js pickLegs: call ratio 1×2 + put 2-3-1, the ideal
-    // trade's flat zone), which the page opens in the Builder. Nothing is sent to a broker.
-    if (p === '/api/mcc/live/expiries') {
-      if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the trade is built on the live chain`);
-      const today = istDate();
-      const list = (await getExpiries()).filter((e) => e >= today).sort();
-      const lastOfMonth = new Map(list.map((e) => [e.slice(0, 7), e]));
-      const monthly = new Set(lastOfMonth.values());
-      return sendJson(res, 200, {
-        expiries: list.map((e) => ({ expiry: e, monthly: monthly.has(e), days: Math.round((Date.parse(e) - Date.parse(today)) / 86400_000) })),
-        dflt: monthlyFor(list, today, MCC_DEFAULTS.minDays) || list[0] || null,
-        minDays: MCC_DEFAULTS.minDays,
-        target: MCC_DEFAULTS.target.amount,
-      });
-    }
-    if (p === '/api/mcc/live/plan' && req.method === 'POST') {
-      if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the trade is built on the live chain`);
-      const b = JSON.parse((await readBody(req, 10_000)).toString('utf8') || '{}');
-      const chain = await mccLiveChain(String(b.expiry || ''), []);
-      if (!(chain?.spot > 0) || !chain.rows?.length) throw new Error(`No live chain for the ${b.expiry} expiry yet`);
-      const S = Number(b.spot) >= 1000 ? Number(b.spot) : chain.spot;
-      const lot = contracts.lot || MCC_DEFAULTS.lotSize;
-      const amount = Number(b.target);
-      const prm = mccMerge({ lotSize: lot, target: { on: amount !== 0, amount: amount > 0 ? amount : MCC_DEFAULTS.target.amount } });
-      const rows = new Map(chain.rows.map((r) => [r.strike, r]));
-      const q = (type, k) => rows.get(k)?.[type === 'CE' ? 'ce' : 'pe'];
-      const ltp = (type, k) => (q(type, k)?.ltp > 0 ? q(type, k).ltp : null);
-      const pick = mccPickLegs(
-        S,
-        prm,
-        [...rows.keys()].sort((x, y) => x - y),
-        ltp,
-        lot,
-      );
-      const legs = pick.legs.map((l) => {
-        const o = q(l.type, l.strike) || {};
-        return { role: l.role, type: l.type, strike: l.strike, lots: l.lots, side: l.side, ltp: ltp(l.type, l.strike), bid: o.bid ?? null, ask: o.ask ?? null };
-      });
-      const bees = await mccBeesNow().catch(() => null);
-      const beesPx = bees?.px || S / 100;
-      return sendJson(res, 200, {
-        expiry: b.expiry,
-        spot: chain.spot,
-        S,
-        lot,
-        legs,
-        shape: pick.shape,
-        shapeText: mccShapeText(pick.shape, prm.target.amount),
-        target: prm.target,
-        atmIv: mccLive.market(chain, mccLive.yearsTo(b.expiry)).atmIv,
-        bees: { now: beesPx, live: Boolean(bees), qty: mccEtfQty(prm, S, beesPx) },
-        at: chain.updatedAt,
-      });
-    }
-    if (p === '/api/mcc/live/suggest' && req.method === 'POST') {
-      if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the suggestions are priced on the live chain`);
-      const b = JSON.parse((await readBody(req, 10_000)).toString('utf8') || '{}');
-      const st = await mccLiveState(b.key);
-      if (!st.pos) throw new Error('No trade to suggest for');
-      const closes = await mccHistory();
-      const days = Math.max(1, st.market.daysLeft);
-      const moves = mccLive.pastMoves(closes, days, st.M.atmIv);
-      if (moves.length < 100) throw new Error(`Only ${moves.length} past ${days}-day moves in the cached history: too few to test on`);
-      const slip = (MCC_DEFAULTS.costs.slipPct || 0.5) / 100;
-      const out = mccLive.suggest(st.pos, st.M, st.bees, moves, { slip, day: istDate(), days });
-      for (const v of [...out.list, ...out.protect, ...out.risky]) {
-        v.after.legs = v.after.legs.map((l) => ({ ...l, ltp: st.M.px(l.type, l.strike), iv: st.M.iv(l.type, l.strike), cal: mccLive.legCal(l, st.M) }));
-      }
-      return sendJson(res, 200, {
-        key: st.key,
-        ...out,
-        rules: mccLive.studyRules(readJson(MCC_FILES.study), st.pos, st.M, st.entrySpot),
-        sample: { n: moves.length, days, from: closes[0]?.day, to: closes[closes.length - 1]?.day, ivNow: st.M.atmIv, slipPct: slip * 100 },
-        spot: st.M.spot,
-        at: Date.now(),
-      });
-    }
+    if (p.startsWith('/api/mcc/live')) return await handleLive(req, res, url, p.slice(8), LIVE.mcc);
     if (p === '/api/mcc/paper') return sendJson(res, 200, { ...mccPaper.state(), demo: DEMO });
     if (p.startsWith('/api/mcc/paper/') && req.method === 'POST') {
       const b = JSON.parse((await readBody(req, 50_000)).toString('utf8') || '{}');
@@ -1083,7 +1139,158 @@ async function handleMcc(req, res, url, p) {
   }
 }
 
-// JSON files under bt-data/ (Covered call, Strategy lab, saved trades)
+// ---------- Trading Ideas › Put spread collar (bt/psc.js on bt/mcc.js's runner, mccpaper.js with engine) ----------
+// NIFTYBEES + a sold call (ATM + 100) + a put spread (ATM − 100 / − 200). Same jobs, files and paper trade as the
+// Covered call, kept apart: bt-data/psc-backtest.json, psc-study.json, psc-paper(-demo).json. No orders.
+const PSC_FILES = { backtest: path.join(__dirname, 'bt-data', 'psc-backtest.json'), study: path.join(__dirname, 'bt-data', 'psc-study.json') };
+const pscPaper = createMccPaper({
+  file: path.join(__dirname, 'bt-data', DEMO ? 'psc-paper-demo.json' : 'psc-paper.json'),
+  demo: DEMO,
+  isMarketOpen: () => DEMO || isMarketOpen(),
+  getExpiries,
+  getChain: (expiry) => restChain(expiry, 30_000),
+  closeOf: async (day) => {
+    await backtester.data.loadIndex(day, day);
+    const a = backtester.data.spotDay(day);
+    return a ? a[a.length - 1] : null;
+  },
+  beesPrice: ccBeesPrice,
+  getLot: () => contracts.lot,
+  logError,
+  engine: psc,
+  tag: 'psc-paper',
+});
+setInterval(() => {
+  if (liveLoggedIn()) pscPaper.tick();
+}, 30_000);
+// Its Live trade tab (handleLive): a saved Builder trade (marked Put spread collar, or one shaped like it) or the paper
+// trade's series; its own settings in bt-data/psc-live.json.
+LIVE.psc = {
+  kind: 'psc',
+  name: 'Put spread collar',
+  file: path.join(__dirname, 'bt-data', DEMO ? 'psc-live-demo.json' : 'psc-live.json'),
+  paper: () => pscPaper,
+  looks: mccLive.looksPsc,
+  strict: true,
+  studyFile: () => PSC_FILES.study,
+  defaults: psc.DEFAULTS,
+  // the strikes at the page's settings (b.params: the Backtest tab's distances and lots), else the defaults
+  plan(S, strikes, ltp, lot, b) {
+    const prm = psc.merge({ ...(b.params || {}), lotSize: lot });
+    const pick = psc.pickLegs(S, prm, strikes);
+    return { prm, pick, shapeText: `call ATM+${prm.ce.sellOff}, put spread ATM−${prm.pe.buyOff}/−${prm.pe.buyOff + prm.pe.sellGap}` };
+  },
+};
+const pscJobs = new Map();
+function pscJob(kind, run) {
+  const id = Math.random().toString(36).slice(2, 10);
+  const job = { id, kind, status: 'running', progress: { phase: 'Starting', done: 0, total: 0 }, startedAt: Date.now() };
+  pscJobs.set(id, job);
+  while (pscJobs.size > 6) pscJobs.delete(pscJobs.keys().next().value);
+  run({ onProgress: (x) => (job.progress = { ...x, api: backtester.data.apiStats() }), stopped: () => Boolean(job.stop) })
+    .then((r) => {
+      job.result = r;
+      job.status = 'done';
+      if (!PSC_FILES[kind]) return; // 'run': a study rule opened on the Backtest tab, not kept
+      fs.mkdirSync(path.dirname(PSC_FILES[kind]), { recursive: true });
+      fs.writeFileSync(PSC_FILES[kind] + '.tmp', JSON.stringify(r));
+      fs.renameSync(PSC_FILES[kind] + '.tmp', PSC_FILES[kind]);
+    })
+    .catch((e) => {
+      job.status = 'error';
+      job.error = e.message;
+      logError('psc-' + kind, e);
+    });
+  return job;
+}
+async function handlePsc(req, res, url, p) {
+  lastClientAt = Date.now();
+  const body = async () => JSON.parse((await readBody(req, 50_000)).toString('utf8') || '{}');
+  try {
+    if (p === '/api/psc/meta') {
+      const cal = await backtester.data.expiryCalendar().catch(() => null);
+      const monthly = cal ? [...cal.monthly].filter((e) => cal.expiredSet.has(e)).sort() : [];
+      return sendJson(res, 200, {
+        defaults: psc.DEFAULTS,
+        study: psc.STUDY.map(([id, label]) => ({ id, label })),
+        lot: contracts.lot || psc.DEFAULTS.lotSize,
+        monthly,
+        demo: DEMO,
+      });
+    }
+    if ((p === '/api/psc/backtest' || p === '/api/psc/study') && req.method !== 'POST') return sendJson(res, 200, { saved: readJson(PSC_FILES[p.slice(9)]) });
+    // backtest: the settings and the same without adjustments, saved; run: the same for one study rule, not saved
+    if ((p === '/api/psc/backtest' || p === '/api/psc/run') && req.method === 'POST') {
+      const b = await body();
+      const range = { from: b.from, to: b.to };
+      const params = b.params || {};
+      const job = pscJob(p.slice(9), async ({ onProgress, stopped }) => {
+        const withAdj = await psc.runPsc(backtester.data, params, range, { onProgress: (x) => onProgress({ ...x, phase: 'With adjustments' }), stopped });
+        const off = { ...params, adj: { ...(params.adj || {}), on: false }, up: { ...(params.up || {}), mode: 'none' } };
+        const without = await psc.runPsc(backtester.data, off, range, { onProgress: (x) => onProgress({ ...x, phase: 'Without adjustments' }), stopped });
+        return { at: Date.now(), range, withAdj, without };
+      });
+      return sendJson(res, 200, { id: job.id, status: job.status });
+    }
+    if (p === '/api/psc/study' && req.method === 'POST') {
+      const b = await body();
+      const job = pscJob('study', (o) => psc.runPscStudy(backtester.data, b.params || {}, { from: b.from, to: b.to }, o));
+      return sendJson(res, 200, { id: job.id, status: job.status });
+    }
+    if (p === '/api/psc/job') {
+      const job = pscJobs.get(url.searchParams.get('id'));
+      if (!job) return sendJson(res, 404, { error: 'Job not found (the server may have restarted): run it again' });
+      return sendJson(res, 200, {
+        id: job.id,
+        status: job.status,
+        progress: job.progress,
+        error: job.error,
+        result: job.status === 'done' ? job.result : undefined,
+      });
+    }
+    if (p === '/api/psc/job/stop' && req.method === 'POST') {
+      const job = pscJobs.get((await body()).id);
+      if (job) job.stop = true;
+      return sendJson(res, 200, { ok: Boolean(job) });
+    }
+    if (p === '/api/psc/model' && req.method === 'POST') {
+      // Strategy & rules › Month by month: the model path, every month priced by Black-Scholes (nothing saved)
+      const b = await body();
+      const o = b.opts || {};
+      const clamp = (v, lo, hi, d) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d);
+      const opts = {
+        S0: clamp(o.S0, 5000, 100000, 24000),
+        pct: clamp(o.pct, -60, 100, 10),
+        months: Math.round(clamp(o.months, 1, 36, 12)),
+        iv: clamp(o.iv, 5, 60, 13),
+        swings: o.swings !== false,
+      };
+      return sendJson(res, 200, psc.runPscModel(b.params || {}, opts));
+    }
+    if (p.startsWith('/api/psc/live')) return await handleLive(req, res, url, p.slice(8), LIVE.psc);
+    if (p === '/api/psc/paper') return sendJson(res, 200, { ...pscPaper.state(), demo: DEMO });
+    if (p.startsWith('/api/psc/paper/') && req.method === 'POST') {
+      const b = await body();
+      if (p === '/api/psc/paper/start') {
+        if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the paper trade follows the live chain`);
+        await pscPaper.start(b.params || {});
+      } else if (p === '/api/psc/paper/pause') pscPaper.pause();
+      else if (p === '/api/psc/paper/resume') await pscPaper.resume();
+      else if (p === '/api/psc/paper/budget') await pscPaper.setBudget(b.budget);
+      else if (p === '/api/psc/paper/reset') {
+        if (b.confirm !== true) throw new Error('Resetting deletes the paper trade: it needs confirmation');
+        pscPaper.reset();
+      } else return sendJson(res, 404, { error: 'Not found' });
+      return sendJson(res, 200, { ...pscPaper.state(), demo: DEMO });
+    }
+    return sendJson(res, 404, { error: 'Not found' });
+  } catch (e) {
+    logError('psc', e);
+    return sendJson(res, 400, { error: e.message });
+  }
+}
+
+// JSON files under bt-data/ (Covered call, Put spread collar, Strategy lab, saved trades)
 const readJson = (file) => {
   try {
     return JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -1489,6 +1696,8 @@ const server = http.createServer(async (req, res) => {
   if (p.startsWith('/api/hedge/')) return handleHedge(req, res, p);
 
   if (p.startsWith('/api/mcc/')) return handleMcc(req, res, url, p);
+
+  if (p.startsWith('/api/psc/')) return handlePsc(req, res, url, p);
 
   if (p.startsWith('/api/lab/')) return handleLab(req, res, url, p);
 

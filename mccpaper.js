@@ -10,7 +10,7 @@
 //     user's rule: the holding grows from the profits); between series, at the next series' entry.
 const fs = require('fs');
 const path = require('path');
-const M = require('./bt/mcc');
+const MCC = require('./bt/mcc');
 const { istDate, istTime } = require('./lib/time');
 
 const minuteNow = () => {
@@ -35,7 +35,9 @@ function monthlyFor(expiries, today, minDays = 0) {
   return [...last.values()].sort().find((e) => e > today && daysTo(e) >= minDays) || null;
 }
 
-function createMccPaper({ file, demo, isMarketOpen, getExpiries, getChain, closeOf, beesPrice, getLot, logError = () => {} }) {
+// engine: the strategy's legs and rules (bt/mcc.js; Put spread collar passes bt/psc.js, same interface); tag names its errors.
+function createMccPaper({ file, demo, isMarketOpen, getExpiries, getChain, closeOf, beesPrice, getLot, logError = () => {}, engine = MCC, tag = 'mcc-paper' }) {
+  const M = engine;
   let st = { paper: null };
   try {
     st = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -319,7 +321,7 @@ function createMccPaper({ file, demo, isMarketOpen, getExpiries, getChain, close
       }
     } catch (e) {
       P.lastError = { at: Date.now(), message: e.message };
-      logError('mcc-paper', e);
+      logError(tag, e);
     } finally {
       busy = false;
     }
