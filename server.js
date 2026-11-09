@@ -784,7 +784,7 @@ async function liveState(L, key, fresh = false) {
     closed: Boolean(x.done),
     legs: x.legs.map(mccLive.legText).join(', '),
   }));
-  const now = () => liveNow().catch(() => null);
+  const marketNow = () => liveNow().catch(() => null);
   // the newest open one of this strategy (saved trades are kept in the order they were first saved)
   const ownOpen = () =>
     all.findLast((x) => x.src === 'builder' && !x.done && (x.flag || L.looks(x.legs))) || all.find((x) => !x.done && (x.flag || L.looks(x.legs)));
@@ -793,12 +793,12 @@ async function liveState(L, key, fresh = false) {
   const want = key === 'newest' ? null : key || cfg.selected;
   let pos = all.find((x) => x.key === want) || null;
   if (fresh && (want === 'none' || pos?.done)) pos = ownOpen() || pos;
-  if (want === 'none' && !pos) return { trades, key: 'none', pos: null, now: await now() };
+  if (want === 'none' && !pos) return { trades, key: 'none', pos: null, now: await marketNow() };
   pos ||=
     ownOpen() ||
     // strict (the collar): none of its own → no trade shown (another strategy's trade only when picked)
     (L.strict ? null : all.find((x) => !x.done) || all[0]);
-  if (!pos) return { trades, pos: null, now: await now() };
+  if (!pos) return { trades, pos: null, now: await marketNow() };
   // NIFTYBEES entered on this tab before the Builder kept them: moved into the saved trade once (values unchanged, its
   // saved time kept), so the Builder shows them too. Not in demo mode: it shares the real saved trades.
   if (!DEMO && L.kind === 'mcc' && pos.src === 'builder' && !pos.bees && cfg.trades?.[pos.key]?.bees?.qty > 0 && cfg.trades[pos.key].bees.price > 0) {
@@ -825,7 +825,7 @@ async function liveState(L, key, fresh = false) {
       closed: true,
       bees: b ? { qty: b.qty, price: b.price, exitPx: b.exitPx || null, exitDay: b.exitDay || null, exitAt: b.exitAt || null } : null,
       entrySpot: own.entrySpot > 0 ? own.entrySpot : pos.spotIn,
-      now: await now(),
+      now: await marketNow(),
     };
   }
   // no chain for it (expired, not listed): the list is still sent, so another trade can be picked
@@ -834,7 +834,7 @@ async function liveState(L, key, fresh = false) {
     chain = await mccLiveChain(pos.expiry, pos.legs);
     if (!chain?.spot) throw new Error(`No live chain for the ${pos.expiry} expiry yet`);
   } catch (e) {
-    return { trades, key: pos.key, pos: null, error: e.message, now: await now() };
+    return { trades, key: pos.key, pos: null, error: e.message, now: await marketNow() };
   }
   const T = mccLive.yearsTo(pos.expiry);
   const M = mccLive.market(chain, T);
@@ -856,8 +856,21 @@ async function liveState(L, key, fresh = false) {
     fromBuilder: pos.src === 'builder' && Boolean(pos.bees), // kept in the saved trade (the Builder shows them too)
     exitPx: beesIn?.exitPx || null, // already sold (recorded in the Builder)
   };
-  // cal: what the page adds to the model so each leg is worth its LTP at Nifty now (bt/mcclive.js valueToday)
-  const legs = pos.legs.map((l) => ({ ...l, ltp: M.px(l.type, l.strike), iv: M.iv(l.type, l.strike), cal: mccLive.legCal(l, M) }));
+  // ltp: what the leg is worth now (bt/mcclive.js markOf: the bid / ask mid, else the LTP; how says which), last: its
+  // last traded price; cal: what the page adds to the model so each leg is worth that at Nifty now (valueToday)
+  const legs = pos.legs.map((l) => {
+    const q = M.quote(l.type, l.strike);
+    return {
+      ...l,
+      ltp: M.px(l.type, l.strike),
+      how: M.how(l.type, l.strike),
+      last: q.ltp,
+      bid: q.bid,
+      ask: q.ask,
+      iv: M.iv(l.type, l.strike),
+      cal: mccLive.legCal(l, M),
+    };
+  });
   // legs of other expiries (closed with the whole trade): their LTP when that chain has been read
   const others = (pos.others || []).map((l) => {
     const r = restChains.get(l.expiry)?.rows?.find((x) => x.strike === l.strike);

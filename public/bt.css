@@ -355,6 +355,13 @@ body.nc-window { height: 100vh; padding: 8px; }
 .sb-mcc { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; margin: -4px 12px 12px; padding: 8px 14px; border: 1px dashed var(--line); border-radius: 8px; font-size: 13px; }
 .sb-mcc input.num.sm { width: 92px; }
 .sb-mcc.hidden { display: none; }
+.sb-held { grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 10px 14px 0; }
+.sb-held.hidden { display: none; }
+.sb-held .k-v { font-size: 17px; }
+.sb-held .sb-held-tot { border-color: var(--accent); background: rgba(88,166,255,.10); }
+.sb-held .sb-held-tot .k-v { font-size: 20px; }
+.sb-bees-row td { border-top: 1px dashed var(--line); }
+@media (max-width: 700px) { .sb-held { grid-template-columns: 1fr; } }
 .sb-pos-tbl .sb-avg { font-size: 10px; color: var(--accent); border: 1px solid var(--accent); border-radius: 6px; padding: 0 4px; }
 /* no positions: the panel shrinks to its header */
 .sb-grid > .sb-pos.empty { height: auto; min-height: 0; }

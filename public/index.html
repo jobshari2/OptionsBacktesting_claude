@@ -553,6 +553,8 @@
       <section class="panel sb-payoff">
         <div class="panel-head"><h3>Payoff</h3><span class="muted small" id="sbPayInfo"></span>
           <label class="mini hidden" id="sbPayOnBox" title="Date the main payoff curve, max profit / loss and breakevens are taken on (end of that day). Legs that have expired by then count at intrinsic value; later expiries keep their time value (Black-Scholes at today's IV).">Payoff on <select id="sbPayOn"></select></label></div>
+        <!-- Held against NIFTYBEES: the whole trade (Put spread collar / Modified covered call), options + NIFTYBEES -->
+        <div class="kpis sb-held hidden" id="sbHeldBox"></div>
         <div class="dep-kpis" id="sbKpis"></div>
         <div class="pay-ctl" id="sbPayCtl"></div>
         <div class="chart-box sb-pay-chart"><canvas id="sbPayChart"></canvas></div>

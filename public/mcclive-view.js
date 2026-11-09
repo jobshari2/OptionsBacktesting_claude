@@ -178,14 +178,14 @@
       if (st?.error) {
         drawnShape = null;
         const pickTrade = st.trades?.length > 1 ? `<div class="set-row">${pickerHtml()}</div>` : '';
-        el.innerHTML = `<div class="panel cc-doc mcl-head">${pickTrade}<div class="err small">${esc(st.error)}</div><div class="set-row">${enterBtn()}</div></div>`;
+        el.innerHTML = `<div class="panel cc-doc mcl-head">${pickTrade}<div class="err small">${esc(st.error)}</div><div class="small mcl-now" id="mclNow">${nowHtml()}</div><div class="set-row">${enterBtn()}</div></div>`;
         bindPick();
         bindPick();
         bindEnter();
         return;
       }
       if (!st?.pos) {
-        el.innerHTML = `<div class="panel empty">${st?.trades?.length ? `<div class="set-row mcl-head"><h3>Live trade</h3>${pickerHtml()}</div>` : '<h3>No live trade</h3>'}<p>Build the position in the <b>Builder</b> (${cfg.shapeText}) and press <b>Save trade</b>: it is listed in <b>Trades › Saved trades</b> and shown here. The ${cfg.name} paper trade's open series is shown here too. Or start one by the rules:</p><div class="set-row">${enterBtn()}</div></div>`;
+        el.innerHTML = `<div class="panel empty">${st?.trades?.length ? `<div class="set-row mcl-head"><h3>Live trade</h3>${pickerHtml()}</div>` : '<h3>No live trade</h3>'}<div class="small mcl-now" id="mclNow">${nowHtml()}</div><p>Build the position in the <b>Builder</b> (${cfg.shapeText}) and press <b>Save trade</b>: it is listed in <b>Trades › Saved trades</b> and shown here. The ${cfg.name} paper trade's open series is shown here too. Or start one by the rules:</p><div class="set-row">${enterBtn()}</div></div>`;
         bindEnter();
         return;
       }
@@ -226,7 +226,7 @@
       el.innerHTML =
         head +
         `<div class="panel cc-doc"><h3>Legs and payoff <button class="btn-sm ghost" id="mclToSb" title="${P.src === 'builder' ? 'Open this saved trade in the Builder: its open and closed legs, log and P&amp;L, to adjust it there' : "Open the paper series's open legs in the Builder as a live paper position at their entry prices"}">Load in Builder ▸</button></h3><div class="cc-pos-grid">
-        <div class="tbl-wrap"><table class="grid-tbl mcl-legs"><thead><tr><th class="l">Leg</th><th class="l">Status</th><th>Entry</th><th title="Open legs: the last traded price now. Closed legs: the price they were closed at">LTP / exit</th><th title="Implied volatility at this strike now (used for the 'if today' P&amp;L)">IV</th><th>P&amp;L</th></tr></thead><tbody id="mclLegsBody">${legsBodyHtml(n)}</tbody></table><div class="muted small">ATM IV ${(st.market.atmIv * 100).toFixed(1)} % · lot ${lot()}${P.closed.length ? ' · closed legs count with the P&amp;L they were closed at, in every figure on this screen (a fixed amount at any Nifty)' : ''}</div></div>
+        <div class="tbl-wrap"><table class="grid-tbl mcl-legs"><thead><tr><th class="l">Leg</th><th class="l">Status</th><th>Entry</th><th title="Open legs: what they are worth now, the mid of the live bid / ask (moves with every tick), else the last traded price; hover a price for its quote. Closed legs: the price they were closed at">Now / exit</th><th title="Implied volatility at this strike now (used for the 'if today' P&amp;L)">IV</th><th>P&amp;L</th></tr></thead><tbody id="mclLegsBody">${legsBodyHtml(n)}</tbody></table><div class="muted small">ATM IV ${(st.market.atmIv * 100).toFixed(1)} % · lot ${lot()}${P.closed.length ? ' · closed legs count with the P&amp;L they were closed at, in every figure on this screen (a fixed amount at any Nifty)' : ''}</div></div>
         <div class="cc-pay"><div class="cc-pay-chart"><canvas id="mclPay"></canvas></div><div class="muted small">Solid: at expiry. Dotted: if Nifty moved there today.${st.pos.closed.length ? ' Closed legs included at their booked P&amp;L.' : ''} ${pick ? `Red: after “${esc(pick.title)}”.` : 'Pick a suggestion below to see it here.'}</div></div>
       </div></div>` +
         gridHtml() +
@@ -301,7 +301,7 @@
           ? '<b class="neg">No NIFTYBEES quantity makes the upside safe here</b> (the trade is in a loss NIFTYBEES cannot make up).'
           : `<b class="neg">${what} do not cover the upside.</b> Minimum: <b>${num0(c.minUnits)} units</b>${c.toBuy > 0 ? `: buy <b>${num0(c.toBuy)} more</b> than you hold (≈ ${inr(Math.round(c.cost))} at ₹${c.beesNow.toFixed(2)})` : ''}.`;
       const steps = [
-        `Calls: ${lots(sold)} sold (${strikes(sold)}) − ${lots(bought)} bought (${strikes(bought)}) = <b>${c.netShortLots} lot${c.netShortLots === 1 ? '' : 's'} sold net</b> = ${c.netShortLots * c.lot} units of Nifty. Above ${num0(hi)} the options lose <b>₹${num0(c.perPoint)} for every point</b> Nifty rises.`,
+        `Calls: ${lots(sold)} sold (${strikes(sold)})${bought.length ? ` − ${lots(bought)} bought (${strikes(bought)})` : ''} = <b>${c.netShortLots} lot${c.netShortLots === 1 ? '' : 's'} sold net</b> = ${c.netShortLots * c.lot} units of Nifty. Above ${num0(hi)} the options lose <b>₹${num0(c.perPoint)} for every point</b> Nifty rises.`,
         `One NIFTYBEES unit moves in % with Nifty: ₹${c.beesNow.toFixed(2)} ÷ ${num0(S)} = <b>₹${pu.toFixed(5)} per Nifty point</b>.`,
         `To cancel ₹${num0(c.perPoint)} a point: ${num0(c.perPoint)} ÷ ${pu.toFixed(5)} = <b>${num0(c.slopeUnits)} units</b> (worth ${inr(Math.round(c.slopeUnits * c.beesNow))}).`,
         `With <b>${num0(q)}</b> units: they gain ${num0(q)} × ${pu.toFixed(5)} = ₹${(q * pu).toFixed(2)} a point, so far up the trade ${slope >= 0 ? 'gains' : 'loses'} <b class="${cls(slope)}">₹${Math.abs(slope).toFixed(2)} a point</b>: ${rs(coverAt(S * 1.1, q))} at +10 %, ${rs(coverAt(S * 1.2, q))} at +20 %.`,
@@ -356,13 +356,37 @@
       });
     }
 
+    // Nifty and NIFTYBEES now where no open trade is on screen (a closed trade, an error, none picked), read with the
+    // rest every LIVE_MS while the market is open; NIFTYBEES' change since a closed trade sold them.
+    function nowHtml() {
+      const x = st?.now;
+      if (!x) return '';
+      const t = (ms) => (ms ? new Date(ms).toLocaleTimeString('en-IN') : '—');
+      const n2 = (v) => v.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const sold =
+        st.closed && st.bees?.exitPx > 0 && x.bees > 0
+          ? ` (${sgnPct((x.bees / st.bees.exitPx - 1) * 100, 2)} since sold at ₹${st.bees.exitPx.toFixed(2)})`
+          : '';
+      const when = st.marketOpen ? `<span class="mcl-live"></span> <b>Live</b>, every ${LIVE_MS / 1000} s` : 'Market closed: last traded prices';
+      const bees =
+        x.bees > 0
+          ? ` · NIFTYBEES <b>₹${x.bees.toFixed(2)}</b>${sold} <span class="muted">${x.beesHow === 'tick' ? 'streamed' : 'LTP'} ${t(x.beesAt)}</span>`
+          : '';
+      return `${when} · Nifty <b>${n2(x.spot)}</b> <span class="muted">${t(x.at)}</span>${bees}${st.demo ? ' <span class="muted">· demo mode: synthetic prices</span>' : ''}`;
+    }
+    // How the open legs (of one type, or all) are valued now: the bid / ask mid of the streamed quote, the LTP (no tight
+    // quote), or a mix (bt/mcclive.js markOf).
+    function markTxt(type) {
+      const hs = new Set((st.pos?.legs || []).filter((l) => !type || l.type === type).map((l) => l.how || 'ltp'));
+      return hs.size > 1 ? 'mid / LTP' : hs.has('mid') ? 'bid/ask mid' : 'LTP';
+    }
     // The status line: live (and how fresh the prices are) or the market closed.
     function statusHtml() {
       const t = (ms) => (ms ? new Date(ms).toLocaleTimeString('en-IN') : '—');
       const b = st.bees;
       const beesTxt = !b.qty ? '' : b.live ? ` · NIFTYBEES ${b.how === 'tick' ? 'streamed' : 'LTP'} ${t(b.at)}` : ' · NIFTYBEES estimated from Nifty';
       const when = st.marketOpen
-        ? `<span class="mcl-live"></span> <b>Live</b>, every ${LIVE_MS / 1000} s · prices ${t(st.market.at)}${st.market.feed ? ' (ticks)' : ''}`
+        ? `<span class="mcl-live"></span> <b>Live</b>, every ${LIVE_MS / 1000} s · prices ${t(st.market.at)}${st.market.feed ? ' (ticks)' : ''} · legs at ${markTxt()}`
         : `market closed: last traded prices · ${t(st.market.at)}`;
       return `${when}${beesTxt}${st.demo ? ' · demo mode: synthetic prices' : ''} · nothing is sent to a broker`;
     }
@@ -373,16 +397,26 @@
       const moved = E > 0 ? (S / E - 1) * 100 : null;
       return `
         <div class="kpi"><span class="k-l">Nifty now</span><span class="k-v">${num0(S)}</span><span class="muted small">entry ${num0(E)} · <b class="${cls(moved)}">${sgnPct(moved, 2)}</b></span></div>
-        <div class="kpi"><span class="k-l">${N.CE}</span><span class="k-v ${cls(n.call)}">${n.call == null ? '—' : inrS(Math.round(n.call))}</span><span class="muted small">at LTP</span></div>
-        <div class="kpi"><span class="k-l">${N.PE}</span><span class="k-v ${cls(n.put)}">${n.put == null ? '—' : inrS(Math.round(n.put))}</span><span class="muted small">at LTP${P.realised.PE || P.realised.CE ? ', closed legs included' : ''}</span></div>
-        <div class="kpi"><span class="k-l">Options</span><span class="k-v ${cls(n.opt)}">${n.opt == null ? '—' : inrS(Math.round(n.opt))}</span><span class="muted small">${n.ok ? 'every leg priced' : 'a leg has no LTP'}</span></div>
+        <div class="kpi"><span class="k-l">${N.CE}</span><span class="k-v ${cls(n.call)}">${n.call == null ? '—' : inrS(Math.round(n.call))}</span><span class="muted small">at ${markTxt('CE')}</span></div>
+        <div class="kpi"><span class="k-l">${N.PE}</span><span class="k-v ${cls(n.put)}">${n.put == null ? '—' : inrS(Math.round(n.put))}</span><span class="muted small">at ${markTxt('PE')}${P.realised.PE || P.realised.CE ? ', closed legs included' : ''}</span></div>
+        <div class="kpi"><span class="k-l">Options</span><span class="k-v ${cls(n.opt)}">${n.opt == null ? '—' : inrS(Math.round(n.opt))}</span><span class="muted small">${n.ok ? 'every leg priced' : 'a leg has no price'}</span></div>
         <div class="kpi"><span class="k-l">NIFTYBEES</span><span class="k-v ${cls(n.bees)}">${st.bees.qty > 0 ? inrS(Math.round(n.bees)) : '—'}</span><span class="muted small">${st.bees.qty > 0 ? `${num0(st.bees.qty)} × ₹${st.bees.price.toFixed(2)} → ₹${st.bees.now.toFixed(2)}${st.bees.live ? '' : ' (estimated)'}` : 'enter it below'}</span></div>
         <div class="kpi"><span class="k-l">Total</span><span class="k-v ${cls(n.total)}">${n.total == null ? '—' : inrS(Math.round(n.total))}</span><span class="muted small">NIFTYBEES + options now</span></div>`;
     }
+    // The legs by structure, the options' total, the NIFTYBEES held (bought → now, as the NIFTYBEES card counts it) and
+    // the trade's total: NIFTYBEES + options.
     function legsBodyHtml(n) {
       const P = st.pos;
+      const b = st.bees;
+      const how = b.live ? (b.how === 'tick' ? 'streamed' : 'LTP') : 'estimated from Nifty';
+      const beesRow =
+        b.qty > 0
+          ? `<tr class="mcl-grp"><td class="l"><b class="pos">Buy</b> ${num0(b.qty)} NIFTYBEES</td><td class="l"><span class="cat-pill c-bullish">held</span> <span class="muted small">${sgnPct((b.now / b.price - 1) * 100, 2)} · ${how}</span></td><td>${b.price.toFixed(2)}</td><td>${b.now.toFixed(2)}</td><td class="muted">—</td><td class="${cls(n.bees)}"><b>${inrS(Math.round(n.bees))}</b></td></tr>`
+          : '<tr class="mcl-grp"><td class="l" colspan="5"><b>NIFTYBEES</b> <span class="muted small">none entered: enter the units and the price in NIFTYBEES entry below</span></td><td>—</td></tr>';
       return `${['CE', 'PE'].map((t) => legRows(t, t === 'CE' ? n.call : n.put)).join('')}
-        <tr class="mcl-tot"><td class="l" colspan="5"><b>Options: open + closed legs</b>${P.closed.length ? ` <span class="muted small">closed ${inrS(Math.round(P.realised.CE + P.realised.PE))}</span>` : ''}</td><td class="${cls(n.opt)}"><b>${n.opt == null ? '—' : inrS(Math.round(n.opt))}</b></td></tr>`;
+        <tr class="mcl-tot"><td class="l" colspan="5"><b>Options: open + closed legs</b>${P.closed.length ? ` <span class="muted small">closed ${inrS(Math.round(P.realised.CE + P.realised.PE))}</span>` : ''}</td><td class="${cls(n.opt)}"><b>${n.opt == null ? '—' : inrS(Math.round(n.opt))}</b></td></tr>
+        ${beesRow}
+        <tr class="mcl-tot mcl-total"><td class="l" colspan="5"><b>Total: NIFTYBEES + options</b></td><td class="${cls(n.total)}"><b>${n.total == null ? '—' : inrS(Math.round(n.total))}</b></td></tr>`;
     }
 
     // One structure's rows in Legs and payoff: its open legs (entry → LTP now), then its closed legs (entry → exit, the
@@ -395,7 +429,13 @@
       const rows = [
         ...open.map((l) => {
           const pnl = l.ltp != null ? (l.ltp - l.entry) * l.side * l.lots * lot() : null;
-          return `<tr><td class="l">${side(l)}</td><td class="l"><span class="cat-pill c-bullish">open</span></td><td>${l.entry.toFixed(2)}</td><td>${l.ltp != null ? l.ltp.toFixed(2) : '—'}</td><td class="muted">${l.ltp != null && l.iv ? (l.iv * 100).toFixed(1) + ' %' : '—'}</td><td class="${cls(pnl)}">${pnl == null ? '—' : inrS(Math.round(pnl))}</td></tr>`;
+          const q = [
+            l.bid && l.ask ? `bid ${l.bid.toFixed(2)} / ask ${l.ask.toFixed(2)}` : 'no two-sided quote',
+            l.last ? `last traded ${l.last.toFixed(2)}` : 'no trade yet',
+          ]
+            .filter(Boolean)
+            .join(' · ');
+          return `<tr><td class="l">${side(l)}</td><td class="l"><span class="cat-pill c-bullish">open</span></td><td>${l.entry.toFixed(2)}</td><td title="${q}">${l.ltp != null ? l.ltp.toFixed(2) : '—'}${l.how ? ` <span class="muted small">${l.how === 'mid' ? 'mid' : 'LTP'}</span>` : ''}</td><td class="muted">${l.ltp != null && l.iv ? (l.iv * 100).toFixed(1) + ' %' : '—'}</td><td class="${cls(pnl)}">${pnl == null ? '—' : inrS(Math.round(pnl))}</td></tr>`;
         }),
         ...closed.map(
           (l) =>
@@ -1008,9 +1048,9 @@
           ? `<tr class="mcl-closed"><td class="l">${num0(b.qty)} NIFTYBEES <span class="muted small">already sold</span></td><td>${b.price.toFixed(2)}</td><td></td><td>${b.exitPx.toFixed(2)}</td><td class="${cls(t.bees)}">${inrS(Math.round(t.bees))}</td></tr>`
           : `<tr class="mcl-closed"><td class="l muted" colspan="5">No NIFTYBEES entered for this trade: only the options are closed.</td></tr>`;
       return `<div class="mcl-close">
-      <div class="set-row"><b>Close the entire trade</b> <span class="muted small">exit prices prefilled from the live LTP${b && !b.live && beesToSell() ? ' (NIFTYBEES estimated: type its real price)' : ''}; change them to the prices you actually got.</span>
+      <div class="set-row"><b>Close the entire trade</b> <span class="muted small">exit prices prefilled from the live prices (bid / ask mid, else LTP)${b && !b.live && beesToSell() ? ' (NIFTYBEES estimated: type its real price)' : ''}; change them to the prices you actually got.</span>
         <button class="btn-sm ghost" id="mclCloseLive" title="Put the live prices back in every box">↻ Live prices</button></div>
-      <div class="tbl-wrap"><table class="grid-tbl mcl-close-tbl"><thead><tr><th class="l">Exit</th><th>Entry</th><th>LTP</th><th>Exit price</th><th>P&amp;L</th></tr></thead>
+      <div class="tbl-wrap"><table class="grid-tbl mcl-close-tbl"><thead><tr><th class="l">Exit</th><th>Entry</th><th>Now</th><th>Exit price</th><th>P&amp;L</th></tr></thead>
         <tbody>${closeLegs().map(legRow).join('')}${beesRow}</tbody></table></div>
       <div class="set-row mcl-close-tot" id="mclCloseTot">${closeTotHtml(t)}</div>
       <div class="set-row">
@@ -1223,6 +1263,7 @@
         ${enterBtn()}
         ${P.closeBatch ? '<button class="btn-sm ghost" id="mclReopen" title="Undo the close recorded on this tab: the legs it closed open again and the NIFTYBEES sale is removed">Undo close</button>' : ''}</div>
       <div class="muted small">${esc(P.name)} · expiry ${dayLabel(P.expiry)}${when ? ` · closed ${esc(when)}` : ''} · P&amp;L before charges, as the Builder shows it</div>
+      <div class="small mcl-now" id="mclNow">${nowHtml()}</div>
       <div class="kpis cc-kpis-main">
         <div class="kpi"><span class="k-l">${N.CE}</span><span class="k-v ${cls(P.realised.CE)}">${inrS(Math.round(P.realised.CE))}</span></div>
         <div class="kpi"><span class="k-l">${N.PE}</span><span class="k-v ${cls(P.realised.PE)}">${inrS(Math.round(P.realised.PE))}</span></div>
@@ -1282,5 +1323,6 @@
     names: { CE: 'Call ratio spread', PE: 'Put butterfly', ce: 'Call ratio', pe: 'Put butterfly' },
     shapeText: 'call ratio 1 × 2 and put 2-3-1',
     shapeShort: 'call ratio + put butterfly',
+    flag: { kind: 'mcc' },
   });
 })();

@@ -58,6 +58,35 @@ test('a saved Builder trade: open legs, the closed leg realised, entry spot', ()
   assert.ok(!L.looksMcc(pos.legs.filter((l) => l.type === 'CE')));
 });
 
+test('markOf: the bid / ask mid of a tight quote, else the LTP (pulled inside a wide quote it is outside of)', () => {
+  // the user's 25050 CE on 9 Nov: last trade 581.60 above a 572.85 / 577.50 quote → the mid
+  assert.deepEqual(L.markOf({ ltp: 581.6, bid: 572.85, ask: 577.5 }), { px: 575.175, how: 'mid' });
+  // a small option: ₹2 wide is still tight (SPREAD.inr)
+  assert.deepEqual(L.markOf({ ltp: 4, bid: 3, ask: 5 }), { px: 4, how: 'mid' });
+  // wider than 10 % of the mid and ₹2: the LTP, inside the quote
+  assert.deepEqual(L.markOf({ ltp: 130, bid: 100, ask: 120 }), { px: 120, how: 'ltp' });
+  assert.deepEqual(L.markOf({ ltp: 110, bid: 100, ask: 120 }), { px: 110, how: 'ltp' });
+  // no two-sided quote, or a crossed one: the LTP; nothing at all: no price
+  assert.deepEqual(L.markOf({ ltp: 50, bid: 0, ask: 52 }), { px: 50, how: 'ltp' });
+  assert.deepEqual(L.markOf({ ltp: 50, bid: 53, ask: 52 }), { px: 50, how: 'ltp' });
+  assert.deepEqual(L.markOf({ bid: 100, ask: 130 }), { px: null, how: null });
+  assert.deepEqual(L.markOf(null), { px: null, how: null });
+});
+
+test('market(): legs valued at the quote mid, the raw LTP kept in quote()', () => {
+  const T = 30 / 365;
+  const c = chainAt(24000, T);
+  const r = c.rows.find((x) => x.strike === 24100);
+  const fair = r.ce.ltp;
+  r.ce = { ...r.ce, ltp: fair + 20, bid: fair - 1, ask: fair + 1 }; // an old trade 20 above the live quote
+  const M = L.market(c, T);
+  near(M.px('CE', 24100), fair, 1e-9);
+  assert.equal(M.how('CE', 24100), 'mid');
+  near(M.quote('CE', 24100).ltp, fair + 20, 1e-9);
+  near(M.iv('CE', 24100), 0.14, 2e-3); // the volatility of the mid, not of the old trade
+  assert.equal(M.how('PE', 24100), 'ltp'); // no quote in the fixture: its LTP
+});
+
 test('market(): implied volatility round-trips and the forward comes from parity', () => {
   const T = 20 / 365;
   const M = L.market(chainAt(23400, T, 0.15), T);
@@ -536,6 +565,33 @@ test('collar: a saved trade marked Put spread collar is flagged for the collar o
     ).name,
     'Put spread collar paper trade · 2026-11-23',
   );
+});
+
+test('kindOfTrade: the Builder pick wins; unpicked, a collar by its legs (open, else all), anything else the Covered call', () => {
+  const unpicked = { ...collar, snap: { ...collar.snap, mcc: { on: true, qty: 5850, price: 283.5 } } };
+  assert.equal(L.kindOfTrade(unpicked), 'psc');
+  assert.equal(L.fromBuilder(unpicked, 'psc').flag, true);
+  assert.equal(L.fromBuilder(unpicked, 'mcc').flag, false);
+  // picked as the Covered call in the Builder: kept there although the legs are a collar
+  const picked = { ...unpicked, snap: { ...unpicked.snap, mcc: { ...unpicked.snap.mcc, kind: 'mcc' } } };
+  assert.equal(L.kindOfTrade(picked), 'mcc');
+  assert.equal(L.fromBuilder(picked, 'mcc').flag, true);
+  // the call ratio + put 2-3-1, open or closed, unmarked: the Covered call
+  assert.equal(L.kindOfTrade({ ...saved, snap: { ...saved.snap, mcc: { on: true } } }), 'mcc');
+  const shut = { ...saved, snap: { ...saved.snap, legs: saved.snap.legs.map((l) => ({ ...l, open: false, exitPx: 1 })) } };
+  assert.equal(L.kindOfTrade(shut), 'mcc');
+  // a closed collar (no open legs) is still a collar
+  const shutCollar = { ...unpicked, snap: { ...unpicked.snap, legs: unpicked.snap.legs.map((l) => ({ ...l, open: false, exitPx: 1 })) } };
+  assert.equal(L.kindOfTrade(shutCollar), 'psc');
+  // put strikes the wrong way round (sold above bought), or a bought call: not a collar
+  const bad = { ...unpicked, snap: { ...unpicked.snap, legs: unpicked.snap.legs.map((l) => (l.id === 3 ? { ...l, strike: 24000 } : l)) } };
+  assert.equal(L.kindOfTrade(bad), 'mcc');
+  const withCall = {
+    ...unpicked,
+    snap: { ...unpicked.snap, legs: [...unpicked.snap.legs, { id: 4, action: 'B', type: 'CE', strike: 24300, lots: 1, open: true }] },
+  };
+  assert.equal(L.kindOfTrade(withCall), 'mcc');
+  assert.equal(L.kindOfTrade({ snap: { legs: [] } }), 'mcc');
 });
 
 test('collar suggestions: its own names, the sold put kept under the bought put, the bought put rolled on its own', () => {

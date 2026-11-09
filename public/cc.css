@@ -171,6 +171,7 @@
 /* Modified covered call › Live trade (mcclive-view.js) */
 .mcl-head .set-row h3 { margin: 0; }
 .mcl-head select { max-width: 420px; }
+.mcl-now:not(:empty) { margin: 6px 0; }
 .mcl-bees { flex-wrap: wrap; gap: 8px 14px; margin-top: 6px; }
 .mcl-bees label { display: inline-flex; align-items: center; gap: 6px; }
 .mcl-bees input.num { width: 110px; }
@@ -203,6 +204,7 @@
 .mcl-sug tr.sel td { background: color-mix(in srgb, #f0616d 10%, transparent); }
 .mcl-legs tr.mcl-closed td { opacity: 0.75; }
 .mcl-legs tr.mcl-tot td { border-top: 1px solid var(--line); }
+.mcl-legs tr.mcl-total td { border-top: 2px solid var(--line); font-size: 14px; }
 .mcl-k.closed { opacity: 0.45; color: var(--muted); }
 .mcl-k.r1 i { height: 44px; }
 .mcl-k.r2 i { height: 72px; }

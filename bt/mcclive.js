@@ -302,26 +302,47 @@ function looksPsc(legs) {
 // Years to the expiry's close (15:30 IST).
 const yearsTo = (expiry, now = Date.now()) => Math.max(0, (Date.parse(expiry + 'T10:00:00Z') - now) / YEAR_MS);
 
-// The chain's prices and implied volatilities: { spot, F, atmIv, px(type, K), iv(type, K), strikes(type) }.
-// The forward comes from put-call parity at the strike nearest the spot; a strike's volatility is its own, else the
+// What an option is worth now: { px, how }. The mid of its bid / ask when the quote stands on both sides and is no
+// wider than SPREAD (it moves with every tick, while the LTP of a far expiry can be a trade from minutes ago), else the
+// LTP, pulled inside the quote when the market has moved away from it. how: 'mid' | 'ltp' | null (no price).
+function markOf(o) {
+  const ltp = o?.ltp > 0 ? o.ltp : null;
+  const bid = o?.bid > 0 ? o.bid : null;
+  const ask = o?.ask > 0 ? o.ask : null;
+  if (bid && ask && ask >= bid) {
+    const mid = (bid + ask) / 2;
+    if (ask - bid <= Math.max(SPREAD.inr, mid * SPREAD.share)) return { px: mid, how: 'mid' };
+    if (ltp) return { px: Math.min(ask, Math.max(bid, ltp)), how: 'ltp' };
+  }
+  return { px: ltp, how: ltp ? 'ltp' : null };
+}
+
+// The chain's prices and implied volatilities: { spot, F, atmIv, px(type, K), how(type, K), iv(type, K), strikes(type) }.
+// Every option is valued at markOf (px: the bid / ask mid, else the LTP); quote() keeps the raw LTP and quote. The
+// forward comes from put-call parity at the strike nearest the spot; a strike's volatility is its own, else the
 // out-of-the-money side's at that strike, else the nearest strike's.
 function market(chain, T) {
   const rows = (chain?.rows || []).filter((r) => r.strike > 0);
   const S = chain?.spot;
   const df = Math.exp(-RATE * T);
-  const both = rows.filter((r) => r.ce?.ltp > 0 && r.pe?.ltp > 0);
+  const marks = new Map(); // strike + type -> markOf
+  for (const r of rows) {
+    marks.set(r.strike + 'CE', markOf(r.ce));
+    marks.set(r.strike + 'PE', markOf(r.pe));
+  }
+  const pxOf = (t, K) => marks.get(K + t)?.px ?? null;
+  const both = rows.filter((r) => pxOf('CE', r.strike) > 0 && pxOf('PE', r.strike) > 0);
   const near = both.reduce((b, r) => (!b || Math.abs(r.strike - S) < Math.abs(b.strike - S) ? r : b), null);
-  const F = near ? near.strike + (near.ce.ltp - near.pe.ltp) / df : S / df;
+  const F = near ? near.strike + (pxOf('CE', near.strike) - pxOf('PE', near.strike)) / df : S / df;
   const ivs = new Map();
   for (const r of rows)
-    for (const [t, o] of [
-      ['CE', r.ce],
-      ['PE', r.pe],
-    ])
-      if (o?.ltp > 0 && T > 0) {
-        const v = b76iv(o.ltp, F, r.strike, T, t === 'CE', df);
+    for (const t of ['CE', 'PE']) {
+      const p = pxOf(t, r.strike);
+      if (p > 0 && T > 0) {
+        const v = b76iv(p, F, r.strike, T, t === 'CE', df);
         if (v) ivs.set(r.strike + t, v);
       }
+    }
   const own = (t, K) => ivs.get(K + t);
   const otm = (K) => own(K >= F ? 'CE' : 'PE', K) ?? own(K >= F ? 'PE' : 'CE', K);
   const ks = rows.map((r) => r.strike);
@@ -337,10 +358,8 @@ function market(chain, T) {
     const r = rows.find((x) => x.strike === K);
     return (r && (t === 'CE' ? r.ce : r.pe)) || null;
   };
-  const px = (t, K) => {
-    const o = side(t, K);
-    return o?.ltp > 0 ? o.ltp : null;
-  };
+  const px = (t, K) => pxOf(t, K);
+  const how = (t, K) => marks.get(K + t)?.how ?? null;
   // { ltp, bid, ask, vol } of a strike (bid / ask null when not quoted)
   const quote = (t, K) => {
     const o = side(t, K);
@@ -363,7 +382,7 @@ function market(chain, T) {
     return null;
   };
   const strikes = (t) => rows.filter((r) => (t === 'CE' ? r.ce : r.pe)?.ltp > 0).map((r) => r.strike);
-  return { spot: S, F, df, T, atmIv, px, quote, exec, notEnterable, iv, strikes };
+  return { spot: S, F, df, T, atmIv, px, how, quote, exec, notEnterable, iv, strikes };
 }
 
 // ---------- P&L ----------
@@ -995,6 +1014,7 @@ module.exports = {
   kindOf,
   kindOfTrade,
   yearsTo,
+  markOf,
   market,
   optExpiry,
   optToday,
