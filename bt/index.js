@@ -76,7 +76,17 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
       spot: Array.from({ length: MPD }, (_, m) => Math.round(sp[m * 4 + 3] * 100) / 100),
       ce: ks.map((k) => res.get(k + 'CE')),
       pe: ks.map((k) => res.get(k + 'PE')),
+      bees: await beesDay(day),
     };
+  }
+  // NIFTYBEES' closing price per minute of a day (the Builder's "Held against NIFTYBEES" on a replay), or null when
+  // its history for that month cannot be had (not cached and offline): the Builder then moves it with Nifty.
+  async function beesDay(day) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day || '')) return null;
+    await data.loadSeries(data.BEES, day, day);
+    const a = data.seriesDay(data.BEES, day);
+    if (!a) return null;
+    return Array.from({ length: MPD }, (_, m) => (a[m * 4 + 3] > 0 ? Math.round(a[m * 4 + 3] * 100) / 100 : 0));
   }
 
   // Volume and open interest of strikes on a replay day, for the Builder's chain: per strike and side, per minute, the
@@ -517,6 +527,10 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
           // width: strikes beyond the day's Nifty range each way; the Builder's "All strikes" sends more than any list has
           await builderDay(url.searchParams.get('expiry'), url.searchParams.get('day'), Math.min(999, Number(url.searchParams.get('width')) || 15), extra),
         );
+      }
+      if (p === '/api/sb/bees') {
+        const day = url.searchParams.get('day');
+        return sendJson(res, 200, { day, bees: await beesDay(day) });
       }
       if (p === '/api/sb/trades' && req.method !== 'POST') return sendJson(res, 200, { trades: readTrades() });
       if (p === '/api/sb/trades' && req.method === 'POST') return sendJson(res, 200, { trade: saveTrade(await readJson(req, 3_000_000)) });

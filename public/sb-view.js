@@ -210,6 +210,7 @@
         oi: (k, t) => voCache.get(`${exp}|${S.day}`)?.[k]?.[t]?.o[m] ?? null,
         T: Math.max(1e-6, (Date.parse(exp + 'T15:30:00+05:30') - Date.parse(`${S.day}T${hhmm(m)}:00+05:30`)) / (365 * 86400_000)),
         label: `${WD[new Date(S.day + 'T00:00:00Z').getUTCDay()]} ${dayShort(S.day)} ${hhmm(m)}`,
+        bees: d.bees?.[m] > 0 ? d.bees[m] : null, // NIFTYBEES at this minute (recorded), null when its history is missing
       };
     }
     const live = liveMap.get(exp);
@@ -650,6 +651,7 @@
       return;
     }
     setFrom(o.strategy, o.note, o.bt);
+    if (S.from && o.fromLabel) S.from.label = o.fromLabel; // the sender's own timing line (a Trading Ideas backtest month)
     const warn = [];
     for (const l of o.legs) {
       const exp = l.expiry || primary();
@@ -1300,7 +1302,7 @@
     </div>${
       S.from
         ? `<div class="sb-from"><span>Loaded from <b>${esc(S.from.strategy.name)}</b>${S.from.note ? ` · ${esc(S.from.note)}` : ''}</span>
-      <span class="muted">${esc(BT.timingLabel(BT.complete(S.from.strategy)))} · ${S.plan.length ? `the ${S.plan.length} adjustment${S.plan.length > 1 ? 's' : ''} the backtest made (roll, stops, target, exit) are repeated automatically as the replay reaches them; you can still trade by hand in between.` : 'its stop-loss / target / exit-time rules are not automated here: step the replay and manage the legs by hand.'}</span>
+      <span class="muted">${esc(S.from.label || BT.timingLabel(BT.complete(S.from.strategy)))} · ${S.plan.length ? `the ${S.plan.length} adjustment${S.plan.length > 1 ? 's' : ''} the backtest made (roll, stops, target, exit) are repeated automatically as the replay reaches them; you can still trade by hand in between.` : 'its stop-loss / target / exit-time rules are not automated here: step the replay and manage the legs by hand.'}</span>
       <button class="icon" id="sbFromClose" title="Hide this note (the legs stay)">✕</button></div>`
         : ''
     }`;
@@ -1697,8 +1699,9 @@
     return sbBees.px;
   }
   // The NIFTYBEES held against the position (Held against NIFTYBEES ticked, units and price entered), as Trading Ideas'
-  // Live trade counts them: { qty, price, px, how, pnl } — sold: at the sale price; live: at its price now; else
-  // (a replay, or no live price) moved with Nifty since the legs were entered. null when not held.
+  // Live trade counts them: { qty, price, px, how, pnl } — sold: at the sale price; live: at its price now; a replay:
+  // its recorded price at the replay's minute; else (no price) moved with Nifty since the legs were entered. null when
+  // not held.
   function beesHeld(M) {
     const m = S.mcc;
     if (!m?.on || !(m.qty > 0 && m.price > 0)) return null;
@@ -1706,11 +1709,36 @@
     if (m.exitPx > 0) return out(m.exitPx, 'sold');
     const live = sbBeesPx();
     if (live > 0) return out(live, 'live');
+    if (S.src === 'hist' && M?.bees > 0) return out(M.bees, 'replay');
     const spots = S.legs.filter((l) => l.spotIn > 0).map((l) => l.spotIn);
     const s0 = spots.length ? spots.reduce((a, b) => a + b, 0) / spots.length : S.spotEntry;
     return out(M?.spot > 0 && s0 > 0 ? (m.price * M.spot) / s0 : null, 'est');
   }
-  const beesHowTxt = (B) => (B.how === 'sold' ? 'sold' : B.how === 'live' ? 'live' : 'estimated from Nifty');
+  const beesHowTxt = (B) =>
+    B.how === 'sold' ? 'sold' : B.how === 'live' ? 'live' : B.how === 'replay' ? 'its price at the replay time' : 'estimated from Nifty';
+  // ₹ of NIFTYBEES bought when Held against NIFTYBEES is ticked on a historical replay (the user's amount)
+  const REPLAY_BEES_AMOUNT = 1_600_000;
+  // NIFTYBEES' recorded price when the position was entered on a replay (its first leg's day and minute):
+  // { px, day, time } or null (no legs, or no NIFTYBEES history for that day). Days read are kept (beesDays).
+  const beesDays = new Map(); // day -> per-minute prices (null: not available)
+  async function beesAtEntry() {
+    const first = S.legs
+      .filter((l) => l.entryDay)
+      .sort((a, b) => (a.entryDay === b.entryDay ? (a.entryMin ?? 0) - (b.entryMin ?? 0) : a.entryDay < b.entryDay ? -1 : 1))[0];
+    if (!first) return null;
+    const day = first.entryDay;
+    const min = first.entryMin ?? 0;
+    if (!beesDays.has(day)) {
+      const held = [...dayCache.entries()].find(([k, d]) => k.endsWith('|' + day) && d.bees)?.[1].bees;
+      beesDays.set(day, held || (await BT.api('/api/sb/bees?day=' + day).catch(() => null))?.bees || null);
+    }
+    const a = beesDays.get(day);
+    // the minute's close, else the nearest earlier one with a price (a quiet minute), else the day's first
+    let px = null;
+    for (let m = min; a && m >= 0 && !(px > 0); m--) px = a[m];
+    if (!(px > 0)) px = a?.find((v) => v > 0) || null;
+    return px > 0 ? { px, day, time: first.entryClock || hhmm(min) } : null;
+  }
 
   let lastMccP = null;
   function renderMcc(P = lastMccP, force = false) {
@@ -1730,11 +1758,11 @@
     const v = (x) => (x == null ? '' : esc(String(x)));
     // which strategy (snap.mcc.kind, picked here; unpicked: by the legs): its Live trade tab lists it
     const psc = mccKind(m, S.legs) === 'psc';
-    el.innerHTML = `<label class="mini" title="Options held against NIFTYBEES — a Modified covered call (call ratio + put butterfly) or a Put spread collar (sold call + put spread): that strategy's Live trade tab in Trading Ideas follows the saved trade with live NIFTYBEES prices and can close all of it"><input type="checkbox" data-mcc="on" ${m.on ? 'checked' : ''}> <b>Held against NIFTYBEES${m.on ? ':' : ' (Covered call / Put spread collar)'}</b></label>${
+    el.innerHTML = `<label class="mini" title="Options held against NIFTYBEES — a Modified covered call (call ratio + put butterfly) or a Put spread collar (sold call + put spread): that strategy's Live trade tab in Trading Ideas follows the saved trade with live NIFTYBEES prices and can close all of it. On a historical replay, ticking it buys ₹16 L of NIFTYBEES at their recorded price when the position was entered, valued at each replay minute after"><input type="checkbox" data-mcc="on" ${m.on ? 'checked' : ''}> <b>Held against NIFTYBEES${m.on ? ':' : ' (Covered call / Put spread collar)'}</b></label>${
       m.on
         ? `<select data-mcc="kind" title="The Trading Ideas strategy this trade is: its Live trade tab shows it"><option value="mcc"${psc ? '' : ' selected'}>Modified covered call</option><option value="psc"${psc ? ' selected' : ''}>Put spread collar</option></select>
       <span class="lbl">NIFTYBEES</span>
-      <label class="mini" title="₹ to put in NIFTYBEES: the units are worked out at its price now (live, else the Bought-at price, else Nifty ÷ 100)">Amount ₹ <input class="num sm" type="number" min="0" step="1000" data-mcc="amount" value="${v(m.amount)}" placeholder="e.g. 1600000"></label>
+      <label class="mini" title="₹ to put in NIFTYBEES: the units are worked out at its price now (live; on a historical replay its recorded price when the position was entered; else the Bought-at price, else Nifty ÷ 100)">Amount ₹ <input class="num sm" type="number" min="0" step="1000" data-mcc="amount" value="${v(m.amount)}" placeholder="e.g. 1600000"></label>
       <label class="mini">Units <input class="num sm" type="number" min="0" step="1" data-mcc="qty" value="${v(m.qty)}" placeholder="e.g. 6500"></label>
       <label class="mini">Bought at ₹ <input class="num sm" type="number" min="0" step="0.01" data-mcc="price" value="${v(m.price)}" placeholder="e.g. 260.00"></label>
       <label class="mini">on <input type="date" data-mcc="day" value="${v(m.day)}"></label>
@@ -1744,26 +1772,49 @@
           ? ` · NIFTYBEES <b class="${cls(sold)}">${inrS(Math.round(sold))}</b>${P ? ` · with the options <b class="${cls(P.total + sold)}">${inrS(Math.round(P.total + sold))}</b>` : ''}`
           : ''
       }</span>
-      <span class="muted small">${S.tradeId ? '💾 Save changes' : '💾 Save trade'} keeps it with the trade; its live P&amp;L is on Trading Ideas › ${psc ? 'Put spread collar' : 'Covered call › Modified covered call'} › Live trade.</span>`
+      <span class="muted small">${
+        S.src === 'hist'
+          ? 'Replay: the NIFTYBEES are valued at their recorded price at each minute the replay reaches (Positions, the P&amp;L bar and the box over the payoff).'
+          : `${S.tradeId ? '💾 Save changes' : '💾 Save trade'} keeps it with the trade; its live P&amp;L is on Trading Ideas › ${psc ? 'Put spread collar' : 'Covered call › Modified covered call'} › Live trade.`
+      }</span>`
         : ''
     }`;
   }
-  // NIFTYBEES' price now for the Amount box: live (/api/mcc/bees), else the Bought-at price, else Nifty ÷ 100.
+  // NIFTYBEES' price for the Amount box: live (/api/mcc/bees); on a replay its recorded price at the position's entry
+  // (fixed: true, it is also the buy price and day); else the Bought-at price, else Nifty ÷ 100.
   let mccAmtNote = '';
   async function beesPriceNow(m) {
     const live = S.src === 'live' ? await BT.api('/api/mcc/bees').catch(() => null) : null;
-    if (live?.px > 0) return { px: live.px, how: 'its live price' };
+    if (live?.px > 0) return { px: live.px, how: 'its live price', fixed: true };
+    const ent = S.src === 'hist' ? await beesAtEntry() : null;
+    if (ent) return { px: ent.px, how: `its price at the entry, ${dayShort(ent.day)} ${ent.time}`, fixed: true, day: ent.day };
     if (m.price > 0) return { px: m.price, how: 'the Bought-at price' };
     const spot = market()?.spot;
-    return spot > 0 ? { px: spot / 100, how: 'Nifty ÷ 100 (no live price)' } : null;
+    return spot > 0 ? { px: spot / 100, how: `Nifty ÷ 100 (no ${S.src === 'hist' ? 'recorded' : 'live'} NIFTYBEES price)` } : null;
+  }
+  // Units for amount ₹ at price b (beesPriceNow) into m, with the note under the box.
+  function beesForAmount(m, n, b) {
+    m.amount = n;
+    m.qty = Math.floor(n / b.px);
+    if (!(m.price > 0) || b.fixed) m.price = Math.round(b.px * 100) / 100;
+    if (b.day) m.day = b.day;
+    mccAmtNote = `${inr(n)} ÷ ₹${b.px.toFixed(2)} (${b.how}) = ${m.qty.toLocaleString('en-IN')} units`;
   }
   $('sbMcc')?.addEventListener('change', async (e) => {
     const k = e.target.dataset?.mcc;
     if (!k) return;
     const m = { ...(S.mcc || {}) };
     mccAmtNote = '';
-    if (k === 'on') m.on = e.target.checked;
-    else if (k === 'kind') {
+    if (k === 'on') {
+      m.on = e.target.checked;
+      // ticked on a historical replay with no units yet: ₹16 L of NIFTYBEES bought at the position's entry, at its
+      // recorded price then; the replay then values them at each minute it reaches (beesHeld)
+      if (m.on && S.src === 'hist' && !(m.qty > 0 && m.price > 0)) {
+        const b = await beesPriceNow(m);
+        if (b) beesForAmount(m, REPLAY_BEES_AMOUNT, b);
+        else mccAmtNote = 'No NIFTYBEES price for the entry: enter the units and the Bought-at price';
+      }
+    } else if (k === 'kind') {
       m.kind = e.target.value === 'psc' ? 'psc' : 'mcc'; // picked: kept as picked (unpicked, the legs decide)
     } else if (k === 'amount') {
       const n = Number(e.target.value);
@@ -1771,12 +1822,7 @@
       else {
         const b = await beesPriceNow(m);
         if (!b) mccAmtNote = 'No NIFTYBEES price to work the units out: enter the Bought-at price';
-        else {
-          m.amount = n;
-          m.qty = Math.floor(n / b.px);
-          if (!(m.price > 0) || b.how === 'its live price') m.price = Math.round(b.px * 100) / 100;
-          mccAmtNote = `${inr(n)} ÷ ₹${b.px.toFixed(2)} (${b.how}) = ${m.qty.toLocaleString('en-IN')} units`;
-        }
+        else beesForAmount(m, n, b);
       }
     } else if (k === 'day') {
       if (e.target.value) m.day = e.target.value;

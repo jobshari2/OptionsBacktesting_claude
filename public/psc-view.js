@@ -1260,7 +1260,7 @@
             const n = byExp.get(m.expiry);
             if (!m.ok) return `<tr><td class="l">${monthName(m.expiry)}</td><td colspan="11" class="muted l">${esc(m.skip)}</td></tr>`;
             const open = all || openMonth === m.expiry;
-            return `<tr class="cc-click${open ? ' on' : ''}" data-m="${m.expiry}"><td class="l">${monthName(m.expiry)}</td><td>${num0(m.spot0)} → ${num0(m.spotE)}</td><td class="${cls(m.move)}">${pct(m.move)}</td><td>${m.adjustments}</td>
+            return `<tr class="cc-click${open ? ' on' : ''}" data-m="${m.expiry}"><td class="l">${monthName(m.expiry)}<div><button class="btn-sm ghost" style="margin-top:3px;white-space:nowrap" data-pbld="${m.expiry}" title="Replay this month in the Builder (Historical replay): the legs at the backtest's entry, its ${m.adjustments} roll${m.adjustments === 1 ? '' : 's'} made again as the replay reaches them">Open in Builder ▸</button></div></td><td>${num0(m.spot0)} → ${num0(m.spotE)}</td><td class="${cls(m.move)}">${pct(m.move)}</td><td>${m.adjustments}</td>
               <td class="${cls(m.callPnl)}">${inrS(m.callPnl)}</td><td class="${cls(m.putPnl)}">${inrS(m.putPnl)}</td>
               <td class="cc-col-opt ${cls(m.opt)}">${inrS(m.opt)}</td><td class="cc-col-opt ${cls(n?.opt)}">${n?.ok ? inrS(n.opt) : '—'}</td>
               <td class="${cls(m.etfOnce)}">${inrS(m.etfOnce)}</td><td class="${cls(m.etfMonthly)}">${inrS(m.etfMonthly)}</td>
@@ -1274,7 +1274,9 @@
       <div class="panel cc-doc" id="pscStudyPanel"><h3>Adjustment study</h3>${saved.study ? studyTable(saved.study) + `<div class="muted small pad">Run ${new Date(saved.study.at).toLocaleString('en-IN')} with ${sizeLabel(saved.study.rows[0]?.params)}. The rules tab explains what to take from it.</div>` : '<p class="muted">Not run yet: "Run adjustment study" above.</p>'}</div>`;
     drawEquity(A, N);
     el.querySelectorAll('tr[data-m]').forEach((tr) =>
-      tr.addEventListener('click', () => {
+      tr.addEventListener('click', (e) => {
+        const b = e.target.closest('button[data-pbld]');
+        if (b) return monthToBuilder(A.months.find((m) => m.expiry === b.dataset.pbld), A.params);
         openMonth = openMonth === tr.dataset.m ? null : tr.dataset.m;
         renderResults();
       }),
@@ -1311,6 +1313,63 @@
     }
   }
   const SIDE = { rollPut: 'PE', rollPutDn: 'PE', rollCall: 'CE', upRoll: 'CE', buyBack: 'CE', upHedge: 'CE' };
+  // One month of the backtest replayed in the Builder (Historical replay, multi-day): the legs at the backtest's entry
+  // fills, and every roll it made as the Builder's plan, made again at the backtest's fills when the replay reaches
+  // that minute. Both are rebuilt from the month's legs (m.closed: when each was opened and, unless held to expiry,
+  // closed). The NIFTYBEES are left to the Builder's "Held against NIFTYBEES" box (ticked on a replay: the recorded
+  // NIFTYBEES price at the entry, ₹16 L by default); only the strategy is marked, so the box names the collar.
+  function monthToBuilder(m, p) {
+    if (!m?.ok) return;
+    const sb = BT.store.get('sb', {});
+    if (sb.legs?.some((l) => l.open) && !sb.tradeId && !confirm('The Builder holds a position that is not saved. Replace it with this month of the backtest?'))
+      return;
+    const lot = p.lotSize;
+    const act = (side) => (side > 0 ? 'B' : 'S');
+    const key = (x) => `${x.day} ${x.time}`;
+    const at0 = m.entry || m.events.find((e) => e.kind === 'entry');
+    const atExp = (c) => c.exitAt.day === m.expiry && c.exitAt.time === '15:30';
+    // a leg partly closed is listed once per part (same id): its lots add up again
+    const add = (map, id, op) => map.set(id, map.has(id) ? { ...op, qty: map.get(id).qty + op.qty } : op);
+    const entry = new Map();
+    const steps = new Map(); // 'day time' -> { day, time, close: [ops], open: Map(id -> op) }
+    const stepAt = (x) => {
+      if (!steps.has(key(x))) steps.set(key(x), { day: x.day, time: x.time, close: [], open: new Map() });
+      return steps.get(key(x));
+    };
+    for (const c of m.closed) {
+      const op = { action: act(c.side), type: c.type, strike: c.strike, expiry: m.expiry, lot };
+      if (!c.at || key(c.at) === key(at0)) add(entry, c.id, { ...op, qty: c.lots * lot, px: c.entry });
+      else add(stepAt(c.at).open, c.id, { ...op, op: 'open', qty: c.lots * lot, px: c.entry });
+      if (!atExp(c)) stepAt(c.exitAt).close.push({ ...op, op: 'close', qty: c.lots * lot, px: c.exit });
+    }
+    const plan = [...steps.values()]
+      .sort((a, b) => (key(a) < key(b) ? -1 : 1))
+      .map((s) => {
+        const ev = m.events.filter((e) => e.day === s.day && e.time === s.time && SIDE[e.kind]);
+        return {
+          day: s.day,
+          time: s.time,
+          title: ev.map((e) => KIND[e.kind] || e.kind).join(' + ') || 'Roll',
+          why: ev.map((e) => e.text).join(' · '),
+          ops: [...s.close, ...s.open.values()],
+        };
+      });
+    BT.emit('open-builder', {
+      src: 'hist',
+      expiry: m.expiry,
+      day: at0.day,
+      time: at0.time,
+      session: 'multi',
+      lot,
+      strategy: { name: NAME, mode: 'positional', expiry: 'monthly', entry: { time: at0.time, after: 1 }, exit: { time: '15:30', dteDays: 0 }, legs: [] },
+      fromLabel: `backtest month: entered ${at0.time} on ${dayLabel(at0.day)}, held to the ${dayLabel(m.expiry)} expiry`,
+      note: `${monthName(m.expiry)} series${viewing ? ` (study rule: ${viewing.label})` : ''} · Nifty ${num0(m.spot0)} → ${num0(m.spotE)} · options ${inrS(m.opt)} after costs in the backtest`,
+      bt: { costs: m.costs, net: m.opt },
+      plan,
+      legs: [...entry.values()].map((l) => ({ action: l.action, type: l.type, strike: l.strike, expiry: l.expiry, lots: Math.round(l.qty / lot), px: l.px })),
+      mcc: { on: false, kind: 'psc' },
+    });
+  }
   function adjustmentList(A) {
     const rows = A.months.filter((m) => m.ok).flatMap((m) => m.events.filter((e) => SIDE[e.kind] || e.kind === 'skip').map((e) => ({ m, e })));
     if (!rows.length) return '<p class="muted">No adjustments in this run.</p>';
