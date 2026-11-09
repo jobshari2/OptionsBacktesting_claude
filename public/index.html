@@ -12,6 +12,7 @@
   <link rel="stylesheet" href="kite.css" />
   <link rel="stylesheet" href="cc.css" />
   <link rel="stylesheet" href="lab.css" />
+  <link rel="stylesheet" href="adj.css" />
   <link rel="stylesheet" href="themes.css" />
   <script>try { document.documentElement.dataset.theme = localStorage.getItem("nifty-theme") || "night"; } catch (e) {}</script>
 </head>
@@ -91,6 +92,7 @@
     <span class="sub-group" data-group="tideas">
       <button data-view="cc" title="Modified covered call against NIFTYBEES (call ratio 1×2, put 2-3-1 butterfly): rules, backtest, study and live paper trade">Covered call</button>
       <button data-view="lab" title="Strategy lab: try a new options structure (legs from ATM) — payoff, a backtest on every monthly or weekly series, and every preset compared; starts with ways to profit from a fall">Strategy lab</button>
+      <button data-view="tadj" title="Option adjustments (Catolico, Trade adjustment basics): the PDF explained with Nifty examples, an animated simulation of the adjustment rules on the current expiry, and a backtest on the option history">Adjustments</button>
     </span>
     <span class="sub-group" data-group="port">
       <button data-view="hedge" title="Hedge your portfolio with Nifty options: planner and backtest">Hedge</button>
@@ -603,6 +605,12 @@
     <div id="labBody" class="sr-body"></div>
   </main>
 
+  <!-- ===== Trading Ideas: adjustments (adj-view.js) ===== -->
+  <main id="tadj" class="surge-screen adj-screen hidden">
+    <div class="panel cc-tabs-panel sr-tabs-panel"><div class="seg" id="adjTabs"></div><span class="muted small" id="adjStatus"></span></div>
+    <div id="adjBody" class="sr-body"></div>
+  </main>
+
   <!-- ===== Data ===== -->
   <main id="data" class="data-screen hidden">
     <div id="dataBody" class="data-grid"></div>
@@ -618,6 +626,7 @@
   <script src="/lib/pricing.js"></script>
   <script src="/lib/costs.js"></script>
   <script src="/lib/backspread.js"></script>
+  <script src="/lib/adjladder.js"></script>
   <script src="bt-common.js"></script>
   <script src="kite-order.js"></script>
   <script src="arb.js"></script>
@@ -631,6 +640,7 @@
   <script src="mcclive-view.js"></script>
   <script src="mcc-view.js"></script>
   <script src="lab-view.js"></script>
+  <script src="adj-view.js"></script>
   <script src="theme.js"></script>
 </body>
 </html>

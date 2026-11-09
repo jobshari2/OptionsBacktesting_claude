@@ -38,3 +38,5 @@ test-results/
 bt-data/mcc-live-demo.json
 bt-data/lab-backtest.json
 bt-data/lab-compare.json
+bt-data/adj-backtest.json
+bt-data/adj-backtest-demo.json

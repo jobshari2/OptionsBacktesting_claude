@@ -112,7 +112,12 @@
       "PowerShell(ls bt-cache/opt | Select-Object -First 5; \\(ls bt-cache/opt\\).Count; ls bt-cache/opt | Select-Object -Last 5; $d = \\(ls bt-cache/opt | Select-Object -Last 3 | Select-Object -First 1\\).FullName; ls $d | Select-Object -First 10; \\(ls $d\\).Count; ls bt-cache/index; Get-Content bt-cache/expiries.json -TotalCount 5)",
       "Bash(node -e \"const j=require\\('./bt-data/paper-trades.json'\\);const l=Array.isArray\\(j\\)?j:\\(j.trades||Object.values\\(j\\)\\);console.log\\(Object.keys\\(j\\).slice\\(0,5\\)\\);for\\(const t of \\(Array.isArray\\(l\\)?l:[]\\)\\){console.log\\(t.id,t.name,t.summary&&t.summary.src,t.summary&&t.summary.legs,t.savedAt&&new Date\\(t.savedAt\\).toISOString\\(\\)\\)}\")",
       "Bash(node -e \"const j=require\\('./bt-data/paper-trades.json'\\);console.log\\(JSON.stringify\\(j,null,1\\).slice\\(0,6000\\)\\)\")",
-      "Bash(grep -n \"^function\\\\|^const\\\\|^module.exports\\\\|^  [a-zA-Z]*,$\" bt/mcclive.js)"
+      "Bash(grep -n \"^function\\\\|^const\\\\|^module.exports\\\\|^  [a-zA-Z]*,$\" bt/mcclive.js)",
+      "Bash(mkdir -p \"C:/Users/Admin/AppData/Local/Temp/claude/1c7530f48bee359b/baac36e8-6e5b-4333-aa38-4ff815b88e11/scratchpad/pdf\")",
+      "Bash(cp \"C:/Users/Admin/Downloads/OptionAdjustments.pdf\" \"C:/Users/Admin/AppData/Local/Temp/claude/1c7530f48bee359b/baac36e8-6e5b-4333-aa38-4ff815b88e11/scratchpad/pdf/\")",
+      "Bash(python -c \"import pypdf; print\\(pypdf.__version__\\)\")",
+      "Bash(python -c \"import fitz; print\\('fitz ok'\\)\")",
+      "Bash(python -I -c \"import pypdf; print\\(pypdf.__version__\\)\")"
     ]
   }
 }

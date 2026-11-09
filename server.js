@@ -35,6 +35,7 @@ const {
 const { createMccPaper, weekdaysLeft, monthlyFor } = require('./mccpaper');
 const mccLive = require('./bt/mcclive');
 const lab = require('./bt/lab');
+const adjust = require('./bt/adjust');
 const { createTickStore } = require('./lib/ticks');
 
 loadEnv(path.join(__dirname, '.env'));
@@ -1101,7 +1102,7 @@ function writeJson(file, obj) {
 // bt-data/lab-backtest.json / lab-compare.json. History only: nothing is traded.
 const LAB_FILES = { backtest: path.join(__dirname, 'bt-data', 'lab-backtest.json'), compare: path.join(__dirname, 'bt-data', 'lab-compare.json') };
 const labJobs = new Map();
-function labJob(kind, run) {
+function labJob(kind, run, file = LAB_FILES[kind]) {
   const id = Math.random().toString(36).slice(2, 10);
   const job = { id, kind, status: 'running', progress: { phase: 'Starting', done: 0, total: 0 }, startedAt: Date.now() };
   labJobs.set(id, job);
@@ -1110,7 +1111,7 @@ function labJob(kind, run) {
     .then((r) => {
       job.result = r;
       job.status = 'done';
-      writeJson(LAB_FILES[kind], r);
+      if (file) writeJson(file, r);
     })
     .catch((e) => {
       job.status = 'error';
@@ -1158,6 +1159,62 @@ async function handleLab(req, res, url, p) {
     return sendJson(res, 404, { error: 'Not found' });
   } catch (e) {
     logError('lab', e);
+    return sendJson(res, 500, { error: e.message });
+  }
+}
+
+// ---------- Trading Ideas › Adjustments (bt/adjust.js, lib/adjladder.js) ----------
+// The trade-adjustment rules of Catolico's "Trade adjustment basics" backtested on the option history (a job the page
+// polls, the last run kept in bt-data/adj-backtest.json; adj-backtest-demo.json in demo mode), and one series run on
+// its own for the animated replay (not saved). History only: nothing is traded.
+const ADJ_FILE = path.join(__dirname, 'bt-data', DEMO ? 'adj-backtest-demo.json' : 'adj-backtest.json');
+async function handleAdj(req, res, url, p) {
+  lastClientAt = Date.now();
+  try {
+    const body = async () => (req.method === 'POST' ? JSON.parse((await readBody(req, 50_000)).toString('utf8') || '{}') : {});
+    if (p === '/api/adj/meta') {
+      const cal = await backtester.data.expiryCalendar().catch(() => null);
+      return sendJson(res, 200, {
+        defaults: adjust.DEFAULTS,
+        lot: contracts.lot || adjust.DEFAULTS.lotSize,
+        expired: cal ? [...cal.expired].sort() : [],
+        monthly: cal ? [...cal.monthly].filter((e) => cal.expiredSet.has(e)).sort() : [],
+        live: cal ? [...cal.live] : [],
+        demo: DEMO,
+      });
+    }
+    if (p === '/api/adj/backtest' && req.method !== 'POST') return sendJson(res, 200, { saved: readJson(ADJ_FILE) });
+    if (p === '/api/adj/backtest' && req.method === 'POST') {
+      const b = await body();
+      const job = labJob('adj', (o) => adjust.runAdjust(backtester.data, b.params || {}, { from: b.from, to: b.to }, o), ADJ_FILE);
+      return sendJson(res, 200, { id: job.id, status: job.status });
+    }
+    if (p === '/api/adj/series' && req.method === 'POST') {
+      const b = await body();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(b.expiry || '')) return sendJson(res, 400, { error: 'Pick an expiry' });
+      const r = await adjust.runAdjust(backtester.data, b.params || {}, { only: b.expiry });
+      if (!r.months.length) return sendJson(res, 400, { error: `${b.expiry} is not an expired ${r.params.cycle} expiry with a previous one in the history` });
+      return sendJson(res, 200, { params: r.params, month: r.months[0] });
+    }
+    if (p === '/api/adj/job') {
+      const job = labJobs.get(url.searchParams.get('id'));
+      if (!job) return sendJson(res, 404, { error: 'Job not found (the server may have restarted): run it again' });
+      return sendJson(res, 200, {
+        id: job.id,
+        status: job.status,
+        progress: job.progress,
+        error: job.error,
+        result: job.status === 'done' ? job.result : undefined,
+      });
+    }
+    if (p === '/api/adj/job/stop' && req.method === 'POST') {
+      const job = labJobs.get((await body()).id);
+      if (job) job.stop = true;
+      return sendJson(res, 200, { ok: Boolean(job) });
+    }
+    return sendJson(res, 404, { error: 'Not found' });
+  } catch (e) {
+    logError('adj', e);
     return sendJson(res, 500, { error: e.message });
   }
 }
@@ -1435,6 +1492,8 @@ const server = http.createServer(async (req, res) => {
 
   if (p.startsWith('/api/lab/')) return handleLab(req, res, url, p);
 
+  if (p.startsWith('/api/adj/')) return handleAdj(req, res, url, p);
+
   if (p === '/kite/login' || p === '/kite/callback' || p.startsWith('/api/kite/')) return handleKite(req, res, url, p);
 
   // Order flow per minute (rows [t, callBuy, callSell, putBuy, putSell, bookLean, niftyClose]) from `since` on, and
@@ -1553,7 +1612,7 @@ const server = http.createServer(async (req, res) => {
 
   // Option pricing (public/bt-common.js), trading charges (Live Ideas, Covered call, the Kite order dialog) and the
   // back spread picker (public/ideas-view.js) shared with the page: the files the server itself uses.
-  if (p === '/lib/pricing.js' || p === '/lib/costs.js' || p === '/lib/backspread.js') {
+  if (p === '/lib/pricing.js' || p === '/lib/costs.js' || p === '/lib/backspread.js' || p === '/lib/adjladder.js') {
     return fs.readFile(path.join(__dirname, p.slice(1)), (err, buf) => {
       if (err) return sendJson(res, 404, { error: 'Not found' });
       res.writeHead(200, { 'Content-Type': 'text/javascript' });
