@@ -154,7 +154,7 @@
 .mcc-grp-box { border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; display: flex; flex-direction: column; gap: 4px; }
 .mcc-leg { display: flex; align-items: center; gap: 6px; font-size: 12px; flex-wrap: wrap; }
 .mcc-leg > .lbl:first-child { min-width: 110px; }
-.mcc-done, .psc-done { margin-top: 6px; color: var(--up); }
+.mcc-done, .psc-done, .bpc-done { margin-top: 6px; color: var(--up); }
 .mcc-anim-ctl { flex-wrap: wrap; }
 @media (max-width: 1100px) {
   .mcc-ex-legs { grid-template-columns: minmax(0, 1fr); }

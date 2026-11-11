@@ -29,6 +29,11 @@ bt-data/psc-study.json
 bt-data/psc-paper.json
 bt-data/psc-paper-demo.json
 bt-data/psc-live-demo.json
+bt-data/bpc-backtest.json
+bt-data/bpc-study.json
+bt-data/bpc-paper.json
+bt-data/bpc-paper-demo.json
+bt-data/bpc-live-demo.json
 bt-data/live-source.json
 bt-data/kite-prev-oi.json
 bt-data/surge-scan.json

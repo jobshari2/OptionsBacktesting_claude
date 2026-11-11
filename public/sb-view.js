@@ -953,27 +953,82 @@
     const el = $('sbTrades');
     const list = trades.slice().sort((a, b) => b.savedAt - a.savedAt);
     const cur = trades.find((t) => t.id === S.tradeId);
-    el.innerHTML = `<div class="panel-head"><h3>Saved trades <span class="muted small">${list.length ? `${list.filter((t) => t.summary.src === 'live').length} live (paper) · ${list.filter((t) => t.summary.src !== 'live').length} replay` : 'none yet'}</span></h3>
+    // Active: a leg still open (the summary is kept in step by the Builder's save and by Live trade's close / undo).
+    const active = list.filter((t) => t.summary.open > 0);
+    const closed = list.filter((t) => !(t.summary.open > 0));
+    const xs = new Map(list.map((t) => [t.id, splitOf(t)]));
+    // Overall P&L (options + NIFTYBEES) of a group of trades: { sum, n priced, n at save prices, n without a figure }
+    const totalOf = (ts) => {
+      const r = { sum: 0, n: 0, atSave: 0, none: 0 };
+      for (const t of ts) {
+        const x = xs.get(t.id);
+        if (x.overall == null) r.none++;
+        else {
+          r.sum += x.overall;
+          r.n++;
+          if (t.summary.open > 0 && !x.optNow) r.atSave++;
+        }
+      }
+      r.sum = Math.round(r.sum);
+      return r;
+    };
+    const kpi = (label, ts, note) => {
+      const r = totalOf(ts);
+      const sub = [
+        `${ts.length} trade${ts.length === 1 ? '' : 's'}`,
+        note,
+        r.atSave ? `${r.atSave} at save prices` : '',
+        r.none ? `${r.none} without a figure` : '',
+      ].filter(Boolean);
+      return `<div class="kpi"><span class="k-l">${label}</span><span class="k-v ${ts.length ? cls(r.sum) : 'muted'}">${ts.length ? inrS(r.sum) : '—'}</span><span class="k-s" title="${esc(sub.join(' · '))}">${sub.join(' · ')}</span></div>`;
+    };
+    const live = list.filter((t) => t.summary.src === 'live');
+    const replay = list.filter((t) => t.summary.src !== 'live');
+    const head = (cols) =>
+      `<thead><tr><th class="l">Trade</th><th class="l">Mode</th><th class="l">Expiry</th>${cols}<th title="The options' P&amp;L: now for live trades with open legs, else as saved">Options P&amp;L</th><th title="Modified covered call / Put spread collar: the NIFTYBEES held against the options, bought → sold (or → now while held)">NIFTYBEES P&amp;L</th><th title="Options + NIFTYBEES">Overall</th><th></th><th>Saved</th><th></th></tr></thead>`;
+    const table = (ts, isOpen) =>
+      `<div class="tbl-wrap sb-trades-wrap"><table class="grid-tbl sb-trades-tbl">${
+        isOpen
+          ? head(
+              '<th class="l">Open legs</th><th>Entered</th><th>Realised</th><th>Open P&amp;L</th><th>Total at save</th><th title="Live paper trades at the current chain prices">Total now</th>',
+            )
+          : head('<th class="l">Legs</th><th>Entered</th><th title="When the last leg was closed (else when the trade was last saved)">Closed</th>')
+      }<tbody>${ts.map((t) => row(t, isOpen)).join('')}</tbody></table></div>`;
+    const section = (title, ts, isOpen, empty) =>
+      `<div class="sb-trades-sec"><h4>${title} <span class="muted small">${ts.length}</span></h4>${ts.length ? table(ts, isOpen) : `<div class="muted small pad">${empty}</div>`}</div>`;
+    el.innerHTML = `<div class="panel-head"><h3>Saved trades <span class="muted small">${list.length ? `${live.length} live (paper) · ${replay.length} replay` : 'none yet'}</span></h3>
         <span class="spacer"></span>
         ${cur ? `<span class="muted small">in the Builder: <b>${esc(cur.name)}</b></span>` : ''}
         ${list.some((t) => t.summary.src === 'live') ? '<button class="btn-sm ghost" data-t="refresh" title="Price the live paper trades at the current chain">↻ Live P&amp;L</button>' : ''}</div>
       ${
         !list.length
           ? '<div class="muted small pad">In the <b>Builder</b>, build a position (B / S in the chain, or Apply a strategy) and press <b>Save trade</b>. Live (paper) trades and replays are listed here; <b>Load</b> puts one back in the Builder with its payoff, to adjust it and save it again.</div>'
-          : `<div class="tbl-wrap sb-trades-wrap"><table class="grid-tbl sb-trades-tbl">
-        <thead><tr><th class="l">Trade</th><th class="l">Mode</th><th class="l">Expiry</th><th class="l">Open legs</th><th>Entered</th><th>Realised</th><th>Open P&amp;L</th><th>Total at save</th><th title="Live paper trades at the current chain prices">Total now</th><th title="The options' P&amp;L: now for live trades with open legs, else as saved">Options P&amp;L</th><th title="Modified covered call / Put spread collar: the NIFTYBEES held against the options, bought → sold (or → now while held)">NIFTYBEES P&amp;L</th><th title="Options + NIFTYBEES">Overall</th><th></th><th>Saved</th><th></th></tr></thead>
-        <tbody>${list
-          .map((t) => {
-            const u = t.summary;
-            const now = tradesNow[t.id];
-            const x = splitOf(t);
-            return `<tr class="${t.id === S.tradeId ? 'sel' : ''}"><td class="l"><b>${esc(t.name)}</b> ${x.mcc ? (mccKind(x.m, t.snap.legs) === 'psc' ? '<span class="cat-pill c-bullish" title="Put spread collar (a sold call + put spread against NIFTYBEES)">Collar</span> ' : '<span class="cat-pill c-bullish" title="Modified covered call (call ratio + put butterfly against NIFTYBEES)">MCC</span> ') : ''}${u.open ? '' : '<span class="cat-pill">closed</span>'}</td>
+          : `<div class="kpis sb-trades-kpis" title="Overall P&amp;L = options + NIFTYBEES of each trade, as in the Overall column (before costs and slippage)">
+              ${kpi('Overall P&amp;L · all trades', list, '')}
+              ${kpi('Active trades', active, '')}
+              ${kpi('Closed trades', closed, '')}
+              ${live.length && replay.length ? kpi('Live (paper)', live, '') + kpi('Replays', replay, '') : ''}
+            </div>
+            ${section('Active trades', active, true, 'No trade has an open leg.')}
+            ${section('Closed trades', closed, false, 'No closed trades yet: a trade moves here once all its legs are closed.')}`
+      }`;
+    function row(t, isOpen) {
+      const u = t.summary;
+      const now = tradesNow[t.id];
+      const x = xs.get(t.id);
+      return `<tr class="${t.id === S.tradeId ? 'sel' : ''}"><td class="l"><b>${esc(t.name)}</b> ${x.mcc ? MCC_PILL[mccKind(x.m, t.snap.legs)] : ''}</td>
             <td class="l"><span class="cat-pill ${u.src === 'live' ? 'c-bullish' : 'c-neutral'}">${u.src === 'live' ? 'Live (paper)' : 'Replay'}</span></td>
             <td class="l">${(u.expiries || []).map(dayShort).join(', ')}</td>
-            <td class="l legs-cell">${esc(u.legs || '—')}${u.closed ? ` <span class="muted small">+${u.closed} closed</span>` : ''}</td>
+            ${
+              isOpen
+                ? `<td class="l legs-cell">${esc(u.legs || '—')}${u.closed ? ` <span class="muted small">+${u.closed} closed</span>` : ''}</td>
             <td class="muted">${esc(u.entered || '')}</td>
             <td class="${cls(u.realised)}">${inrS(u.realised)}</td><td class="${cls(u.openPnl)}">${inrS(u.openPnl)}</td><td class="${cls(u.total)} b">${inrS(u.total)}</td>
-            <td class="${now ? cls(now.total) + ' b' : 'muted'}" title="${now && !now.ok ? 'Some legs have no live price (expired?): they are left out' : ''}">${now ? inrS(now.total) + (now.ok ? '' : ' *') : u.src === 'live' && u.open ? '…' : '—'}</td>
+            <td class="${now ? cls(now.total) + ' b' : 'muted'}" title="${now && !now.ok ? 'Some legs have no live price (expired?): they are left out' : ''}">${now ? inrS(now.total) + (now.ok ? '' : ' *') : u.src === 'live' ? '…' : '—'}</td>`
+                : `<td class="l legs-cell muted">${u.closed || 0} leg${u.closed === 1 ? '' : 's'} closed</td>
+            <td class="muted">${esc(u.entered || '')}</td>
+            <td class="muted small">${whenTxt(t.closedAt || t.savedAt)}</td>`
+            }
             <td class="${cls(x.opt)}" title="${x.optNow ? 'At the current chain prices' : 'As saved'}">${x.opt == null ? '—' : inrS(x.opt)}${x.optNow || !u.open ? '' : '<div class="muted small">at save</div>'}</td>
             <td class="${cls(x.bees)}" title="${x.m?.qty > 0 ? `${x.m.qty} units bought at ₹${x.m.price}${x.m.exitPx > 0 ? `, sold at ₹${x.m.exitPx}` : ''}` : ''}">${
               !x.mcc
@@ -991,9 +1046,7 @@
                 ? `<div class="sb-del-ask"><span class="neg small">Delete this trade?</span><button class="btn-sm sb-del-yes" data-del-yes="${t.id}" title="Delete “${esc(t.name)}” for good">Yes, delete</button><button class="btn-sm ghost" data-del-no="1">Keep</button></div>`
                 : `<button class="btn-sm ghost sb-del" data-del="${t.id}" title="Delete this saved trade (asks you to confirm)">🗑</button>`
             }</td></tr>`;
-          })
-          .join('')}</tbody></table></div>`
-      }`;
+    }
   }
 
   // ---------- replay ----------
@@ -1663,20 +1716,28 @@
   // Modified covered call › Live trade follows it at live prices and can close the whole trade (options + NIFTYBEES).
   // Which strategy a position held against NIFTYBEES is (bt/mcclive.js kindOfTrade, the same rule): snap.mcc.kind when
   // picked below, else a Put spread collar when its legs are one (a sold call, no bought call, puts bought above as many
-  // sold; the open legs, else all), else the Modified covered call.
+  // sold; the open legs, else all), a Bull put collar (the same with the puts sold above the bought ones), else the
+  // Modified covered call.
   function mccKind(m, legs) {
-    if (m?.kind === 'psc' || m?.kind === 'mcc') return m.kind;
+    if (MCC_NAME[m?.kind]) return m.kind;
     const all = (legs || []).filter((l) => l.lots > 0);
     const open = all.filter((l) => l.open);
     const ls = open.length ? open : all;
     const of = (t, a) => ls.filter((l) => l.type === t && l.action === a);
     const lots = (a) => a.reduce((n, l) => n + l.lots, 0);
     const [cs, cb, pb, ps] = [of('CE', 'S'), of('CE', 'B'), of('PE', 'B'), of('PE', 'S')];
-    const collar =
-      lots(cs) > 0 && !cb.length && lots(pb) > 0 && lots(pb) === lots(ps) && Math.min(...pb.map((l) => l.strike)) > Math.max(...ps.map((l) => l.strike));
-    return collar ? 'psc' : 'mcc';
+    const callAndPuts = lots(cs) > 0 && !cb.length && lots(pb) > 0 && lots(pb) === lots(ps);
+    if (callAndPuts && Math.min(...pb.map((l) => l.strike)) > Math.max(...ps.map((l) => l.strike))) return 'psc';
+    if (callAndPuts && Math.min(...ps.map((l) => l.strike)) > Math.max(...pb.map((l) => l.strike))) return 'bpc';
+    return 'mcc';
   }
-  const MCC_NAME = { psc: 'Put spread collar', mcc: 'Modified covered call' };
+  const MCC_NAME = { psc: 'Put spread collar', bpc: 'Bull put collar', mcc: 'Modified covered call' };
+  // the Trades list's badge of each strategy
+  const MCC_PILL = {
+    psc: '<span class="cat-pill c-bullish" title="Put spread collar (a sold call + bought put spread against NIFTYBEES)">Collar</span> ',
+    bpc: '<span class="cat-pill c-bullish" title="Bull put collar (a sold call + sold put spread against NIFTYBEES)">Bull put</span> ',
+    mcc: '<span class="cat-pill c-bullish" title="Modified covered call (call ratio + put butterfly against NIFTYBEES)">MCC</span> ',
+  };
   // NIFTYBEES' price while the Builder is live and a position is held against it: /api/mcc/bees, read at most every
   // 10 s (drawn again when it changes); null on a replay or when not known.
   const sbBees = { at: 0, px: null, busy: false };
@@ -1757,10 +1818,12 @@
     const sold = has && m.exitPx > 0 ? m.qty * (m.exitPx - m.price) : null;
     const v = (x) => (x == null ? '' : esc(String(x)));
     // which strategy (snap.mcc.kind, picked here; unpicked: by the legs): its Live trade tab lists it
-    const psc = mccKind(m, S.legs) === 'psc';
-    el.innerHTML = `<label class="mini" title="Options held against NIFTYBEES — a Modified covered call (call ratio + put butterfly) or a Put spread collar (sold call + put spread): that strategy's Live trade tab in Trading Ideas follows the saved trade with live NIFTYBEES prices and can close all of it. On a historical replay, ticking it buys ₹16 L of NIFTYBEES at their recorded price when the position was entered, valued at each replay minute after"><input type="checkbox" data-mcc="on" ${m.on ? 'checked' : ''}> <b>Held against NIFTYBEES${m.on ? ':' : ' (Covered call / Put spread collar)'}</b></label>${
+    const kind = mccKind(m, S.legs);
+    el.innerHTML = `<label class="mini" title="Options held against NIFTYBEES — a Modified covered call (call ratio + put butterfly), a Put spread collar (sold call + bought put spread) or a Bull put collar (sold call + sold put spread): that strategy's Live trade tab in Trading Ideas follows the saved trade with live NIFTYBEES prices and can close all of it. On a historical replay, ticking it buys ₹16 L of NIFTYBEES at their recorded price when the position was entered, valued at each replay minute after"><input type="checkbox" data-mcc="on" ${m.on ? 'checked' : ''}> <b>Held against NIFTYBEES${m.on ? ':' : ' (Covered call / Put spread collar / Bull put collar)'}</b></label>${
       m.on
-        ? `<select data-mcc="kind" title="The Trading Ideas strategy this trade is: its Live trade tab shows it"><option value="mcc"${psc ? '' : ' selected'}>Modified covered call</option><option value="psc"${psc ? ' selected' : ''}>Put spread collar</option></select>
+        ? `<select data-mcc="kind" title="The Trading Ideas strategy this trade is: its Live trade tab shows it">${Object.entries(MCC_NAME)
+            .map(([k, n]) => `<option value="${k}"${k === kind ? ' selected' : ''}>${n}</option>`)
+            .join('')}</select>
       <span class="lbl">NIFTYBEES</span>
       <label class="mini" title="₹ to put in NIFTYBEES: the units are worked out at its price now (live; on a historical replay its recorded price when the position was entered; else the Bought-at price, else Nifty ÷ 100)">Amount ₹ <input class="num sm" type="number" min="0" step="1000" data-mcc="amount" value="${v(m.amount)}" placeholder="e.g. 1600000"></label>
       <label class="mini">Units <input class="num sm" type="number" min="0" step="1" data-mcc="qty" value="${v(m.qty)}" placeholder="e.g. 6500"></label>
@@ -1775,7 +1838,7 @@
       <span class="muted small">${
         S.src === 'hist'
           ? 'Replay: the NIFTYBEES are valued at their recorded price at each minute the replay reaches (Positions, the P&amp;L bar and the box over the payoff).'
-          : `${S.tradeId ? '💾 Save changes' : '💾 Save trade'} keeps it with the trade; its live P&amp;L is on Trading Ideas › ${psc ? 'Put spread collar' : 'Covered call › Modified covered call'} › Live trade.`
+          : `${S.tradeId ? '💾 Save changes' : '💾 Save trade'} keeps it with the trade; its live P&amp;L is on Trading Ideas › ${kind === 'mcc' ? 'Covered call › Modified covered call' : MCC_NAME[kind]} › Live trade.`
       }</span>`
         : ''
     }`;
@@ -1815,7 +1878,7 @@
         else mccAmtNote = 'No NIFTYBEES price for the entry: enter the units and the Bought-at price';
       }
     } else if (k === 'kind') {
-      m.kind = e.target.value === 'psc' ? 'psc' : 'mcc'; // picked: kept as picked (unpicked, the legs decide)
+      m.kind = MCC_NAME[e.target.value] ? e.target.value : 'mcc'; // picked: kept as picked (unpicked, the legs decide)
     } else if (k === 'amount') {
       const n = Number(e.target.value);
       if (!(n > 0)) delete m.amount;

@@ -35,6 +35,7 @@ const {
 const { createMccPaper, weekdaysLeft, monthlyFor } = require('./mccpaper');
 const mccLive = require('./bt/mcclive');
 const psc = require('./bt/psc');
+const bpc = require('./bt/bpc');
 const lab = require('./bt/lab');
 const adjust = require('./bt/adjust');
 const { createTickStore } = require('./lib/ticks');
@@ -1152,156 +1153,178 @@ async function handleMcc(req, res, url, p) {
   }
 }
 
-// ---------- Trading Ideas › Put spread collar (bt/psc.js on bt/mcc.js's runner, mccpaper.js with engine) ----------
-// NIFTYBEES + a sold call (ATM + 100) + a put spread (ATM − 100 / − 200). Same jobs, files and paper trade as the
-// Covered call, kept apart: bt-data/psc-backtest.json, psc-study.json, psc-paper(-demo).json. No orders.
-const PSC_FILES = { backtest: path.join(__dirname, 'bt-data', 'psc-backtest.json'), study: path.join(__dirname, 'bt-data', 'psc-study.json') };
-const pscPaper = createMccPaper({
-  file: path.join(__dirname, 'bt-data', DEMO ? 'psc-paper-demo.json' : 'psc-paper.json'),
-  demo: DEMO,
-  isMarketOpen: () => DEMO || isMarketOpen(),
-  getExpiries,
-  getChain: (expiry) => restChain(expiry, 30_000),
-  closeOf: async (day) => {
-    await backtester.data.loadIndex(day, day);
-    const a = backtester.data.spotDay(day);
-    return a ? a[a.length - 1] : null;
-  },
-  beesPrice: ccBeesPrice,
-  getLot: () => contracts.lot,
-  logError,
-  engine: psc,
-  tag: 'psc-paper',
-});
-setInterval(() => {
-  if (liveLoggedIn()) pscPaper.tick();
-}, 30_000);
-// Its Live trade tab (handleLive): a saved Builder trade (marked Put spread collar, or one shaped like it) or the paper
-// trade's series; its own settings in bt-data/psc-live.json.
-LIVE.psc = {
-  kind: 'psc',
-  name: 'Put spread collar',
-  file: path.join(__dirname, 'bt-data', DEMO ? 'psc-live-demo.json' : 'psc-live.json'),
-  paper: () => pscPaper,
-  looks: mccLive.looksPsc,
-  strict: true,
-  studyFile: () => PSC_FILES.study,
-  defaults: psc.DEFAULTS,
-  // the strikes at the page's settings (b.params: the Backtest tab's distances and lots), else the defaults
-  plan(S, strikes, ltp, lot, b) {
-    const prm = psc.merge({ ...(b.params || {}), lotSize: lot });
-    const pick = psc.pickLegs(S, prm, strikes);
-    return { prm, pick, shapeText: `call ATM+${prm.ce.sellOff}, put spread ATM−${prm.pe.buyOff}/−${prm.pe.buyOff + prm.pe.sellGap}` };
-  },
-};
-const pscJobs = new Map();
-function pscJob(kind, run) {
-  const id = Math.random().toString(36).slice(2, 10);
-  const job = { id, kind, status: 'running', progress: { phase: 'Starting', done: 0, total: 0 }, startedAt: Date.now() };
-  pscJobs.set(id, job);
-  while (pscJobs.size > 6) pscJobs.delete(pscJobs.keys().next().value);
-  run({ onProgress: (x) => (job.progress = { ...x, api: backtester.data.apiStats() }), stopped: () => Boolean(job.stop) })
-    .then((r) => {
-      job.result = r;
-      job.status = 'done';
-      if (!PSC_FILES[kind]) return; // 'run': a study rule opened on the Backtest tab, not kept
-      fs.mkdirSync(path.dirname(PSC_FILES[kind]), { recursive: true });
-      fs.writeFileSync(PSC_FILES[kind] + '.tmp', JSON.stringify(r));
-      fs.renameSync(PSC_FILES[kind] + '.tmp', PSC_FILES[kind]);
-    })
-    .catch((e) => {
-      job.status = 'error';
-      job.error = e.message;
-      logError('psc-' + kind, e);
-    });
-  return job;
-}
-async function handlePsc(req, res, url, p) {
-  lastClientAt = Date.now();
-  const body = async () => JSON.parse((await readBody(req, 50_000)).toString('utf8') || '{}');
-  try {
-    if (p === '/api/psc/meta') {
-      const cal = await backtester.data.expiryCalendar().catch(() => null);
-      const monthly = cal ? [...cal.monthly].filter((e) => cal.expiredSet.has(e)).sort() : [];
-      return sendJson(res, 200, {
-        defaults: psc.DEFAULTS,
-        study: psc.STUDY.map(([id, label]) => ({ id, label })),
-        lot: contracts.lot || psc.DEFAULTS.lotSize,
-        monthly,
-        demo: DEMO,
+// ---------- Trading Ideas › Put spread collar and Bull put collar (bt/psc.js, bt/bpc.js on bt/mcc.js's runner) ----------
+// NIFTYBEES + a sold call (ATM + 100) + a put spread: bought (Put spread collar: buy ATM − 100 / sell − 200) or sold
+// (Bull put collar: sell ATM − 100 / buy − 200). Same jobs, files and paper trade as the Covered call, each kept apart:
+// bt-data/<id>-backtest.json, <id>-study.json, <id>-paper(-demo).json, <id>-live(-demo).json. No orders.
+// cfg: { id, name, engine (bt/psc.js-like: DEFAULTS, STUDY, merge, pickLegs, run / runStudy / runModel), looks (a
+// saved trade's legs are this shape: bt/mcclive.js), shapeText(prm) }. Returns the /api/<id>/* handler.
+function collarIdea(cfg) {
+  const { id, engine: E } = cfg;
+  const FILES = { backtest: path.join(__dirname, 'bt-data', `${id}-backtest.json`), study: path.join(__dirname, 'bt-data', `${id}-study.json`) };
+  const paper = createMccPaper({
+    file: path.join(__dirname, 'bt-data', DEMO ? `${id}-paper-demo.json` : `${id}-paper.json`),
+    demo: DEMO,
+    isMarketOpen: () => DEMO || isMarketOpen(),
+    getExpiries,
+    getChain: (expiry) => restChain(expiry, 30_000),
+    closeOf: async (day) => {
+      await backtester.data.loadIndex(day, day);
+      const a = backtester.data.spotDay(day);
+      return a ? a[a.length - 1] : null;
+    },
+    beesPrice: ccBeesPrice,
+    getLot: () => contracts.lot,
+    logError,
+    engine: E,
+    tag: `${id}-paper`,
+  });
+  setInterval(() => {
+    if (liveLoggedIn()) paper.tick();
+  }, 30_000);
+  // Its Live trade tab (handleLive): a saved Builder trade (marked as this strategy, or one shaped like it) or the
+  // paper trade's series; its own settings in bt-data/<id>-live.json.
+  LIVE[id] = {
+    kind: id,
+    name: cfg.name,
+    file: path.join(__dirname, 'bt-data', DEMO ? `${id}-live-demo.json` : `${id}-live.json`),
+    paper: () => paper,
+    looks: cfg.looks,
+    strict: true,
+    studyFile: () => FILES.study,
+    defaults: E.DEFAULTS,
+    // the strikes at the page's settings (b.params: the Backtest tab's distances and lots), else the defaults
+    plan(S, strikes, ltp, lot, b) {
+      const prm = E.merge({ ...(b.params || {}), lotSize: lot });
+      const pick = E.pickLegs(S, prm, strikes);
+      return { prm, pick, shapeText: cfg.shapeText(prm) };
+    },
+  };
+  const jobs = new Map();
+  function startJob(kind, run) {
+    const jid = Math.random().toString(36).slice(2, 10);
+    const job = { id: jid, kind, status: 'running', progress: { phase: 'Starting', done: 0, total: 0 }, startedAt: Date.now() };
+    jobs.set(jid, job);
+    while (jobs.size > 6) jobs.delete(jobs.keys().next().value);
+    run({ onProgress: (x) => (job.progress = { ...x, api: backtester.data.apiStats() }), stopped: () => Boolean(job.stop) })
+      .then((r) => {
+        job.result = r;
+        job.status = 'done';
+        if (!FILES[kind]) return; // 'run': a study rule opened on the Backtest tab, not kept
+        fs.mkdirSync(path.dirname(FILES[kind]), { recursive: true });
+        fs.writeFileSync(FILES[kind] + '.tmp', JSON.stringify(r));
+        fs.renameSync(FILES[kind] + '.tmp', FILES[kind]);
+      })
+      .catch((e) => {
+        job.status = 'error';
+        job.error = e.message;
+        logError(`${id}-${kind}`, e);
       });
-    }
-    if ((p === '/api/psc/backtest' || p === '/api/psc/study') && req.method !== 'POST') return sendJson(res, 200, { saved: readJson(PSC_FILES[p.slice(9)]) });
-    // backtest: the settings and the same without adjustments, saved; run: the same for one study rule, not saved
-    if ((p === '/api/psc/backtest' || p === '/api/psc/run') && req.method === 'POST') {
-      const b = await body();
-      const range = { from: b.from, to: b.to };
-      const params = b.params || {};
-      const job = pscJob(p.slice(9), async ({ onProgress, stopped }) => {
-        const withAdj = await psc.runPsc(backtester.data, params, range, { onProgress: (x) => onProgress({ ...x, phase: 'With adjustments' }), stopped });
-        const off = { ...params, adj: { ...(params.adj || {}), on: false }, up: { ...(params.up || {}), mode: 'none' } };
-        const without = await psc.runPsc(backtester.data, off, range, { onProgress: (x) => onProgress({ ...x, phase: 'Without adjustments' }), stopped });
-        return { at: Date.now(), range, withAdj, without };
-      });
-      return sendJson(res, 200, { id: job.id, status: job.status });
-    }
-    if (p === '/api/psc/study' && req.method === 'POST') {
-      const b = await body();
-      const job = pscJob('study', (o) => psc.runPscStudy(backtester.data, b.params || {}, { from: b.from, to: b.to }, o));
-      return sendJson(res, 200, { id: job.id, status: job.status });
-    }
-    if (p === '/api/psc/job') {
-      const job = pscJobs.get(url.searchParams.get('id'));
-      if (!job) return sendJson(res, 404, { error: 'Job not found (the server may have restarted): run it again' });
-      return sendJson(res, 200, {
-        id: job.id,
-        status: job.status,
-        progress: job.progress,
-        error: job.error,
-        result: job.status === 'done' ? job.result : undefined,
-      });
-    }
-    if (p === '/api/psc/job/stop' && req.method === 'POST') {
-      const job = pscJobs.get((await body()).id);
-      if (job) job.stop = true;
-      return sendJson(res, 200, { ok: Boolean(job) });
-    }
-    if (p === '/api/psc/model' && req.method === 'POST') {
-      // Strategy & rules › Month by month: the model path, every month priced by Black-Scholes (nothing saved)
-      const b = await body();
-      const o = b.opts || {};
-      const clamp = (v, lo, hi, d) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d);
-      const opts = {
-        S0: clamp(o.S0, 5000, 100000, 24000),
-        pct: clamp(o.pct, -60, 100, 10),
-        months: Math.round(clamp(o.months, 1, 36, 12)),
-        iv: clamp(o.iv, 5, 60, 13),
-        swings: o.swings !== false,
-      };
-      return sendJson(res, 200, psc.runPscModel(b.params || {}, opts));
-    }
-    if (p.startsWith('/api/psc/live')) return await handleLive(req, res, url, p.slice(8), LIVE.psc);
-    if (p === '/api/psc/paper') return sendJson(res, 200, { ...pscPaper.state(), demo: DEMO });
-    if (p.startsWith('/api/psc/paper/') && req.method === 'POST') {
-      const b = await body();
-      if (p === '/api/psc/paper/start') {
-        if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the paper trade follows the live chain`);
-        await pscPaper.start(b.params || {});
-      } else if (p === '/api/psc/paper/pause') pscPaper.pause();
-      else if (p === '/api/psc/paper/resume') await pscPaper.resume();
-      else if (p === '/api/psc/paper/budget') await pscPaper.setBudget(b.budget);
-      else if (p === '/api/psc/paper/reset') {
-        if (b.confirm !== true) throw new Error('Resetting deletes the paper trade: it needs confirmation');
-        pscPaper.reset();
-      } else return sendJson(res, 404, { error: 'Not found' });
-      return sendJson(res, 200, { ...pscPaper.state(), demo: DEMO });
-    }
-    return sendJson(res, 404, { error: 'Not found' });
-  } catch (e) {
-    logError('psc', e);
-    return sendJson(res, 400, { error: e.message });
+    return job;
   }
+  const base = `/api/${id}`;
+  return async function handle(req, res, url, p0) {
+    lastClientAt = Date.now();
+    const p = p0.slice(base.length); // '/meta', '/backtest', …
+    const body = async () => JSON.parse((await readBody(req, 50_000)).toString('utf8') || '{}');
+    try {
+      if (p === '/meta') {
+        const cal = await backtester.data.expiryCalendar().catch(() => null);
+        const monthly = cal ? [...cal.monthly].filter((e) => cal.expiredSet.has(e)).sort() : [];
+        return sendJson(res, 200, {
+          defaults: E.DEFAULTS,
+          study: E.STUDY.map(([sid, label]) => ({ id: sid, label })),
+          lot: contracts.lot || E.DEFAULTS.lotSize,
+          monthly,
+          demo: DEMO,
+        });
+      }
+      if ((p === '/backtest' || p === '/study') && req.method !== 'POST') return sendJson(res, 200, { saved: readJson(FILES[p.slice(1)]) });
+      // backtest: the settings and the same without adjustments, saved; run: the same for one study rule, not saved
+      if ((p === '/backtest' || p === '/run') && req.method === 'POST') {
+        const b = await body();
+        const range = { from: b.from, to: b.to };
+        const params = b.params || {};
+        const job = startJob(p.slice(1), async ({ onProgress, stopped }) => {
+          const withAdj = await E.run(backtester.data, params, range, { onProgress: (x) => onProgress({ ...x, phase: 'With adjustments' }), stopped });
+          const off = { ...params, adj: { ...(params.adj || {}), on: false }, up: { ...(params.up || {}), mode: 'none' } };
+          const without = await E.run(backtester.data, off, range, { onProgress: (x) => onProgress({ ...x, phase: 'Without adjustments' }), stopped });
+          return { at: Date.now(), range, withAdj, without };
+        });
+        return sendJson(res, 200, { id: job.id, status: job.status });
+      }
+      if (p === '/study' && req.method === 'POST') {
+        const b = await body();
+        const job = startJob('study', (o) => E.runStudy(backtester.data, b.params || {}, { from: b.from, to: b.to }, o));
+        return sendJson(res, 200, { id: job.id, status: job.status });
+      }
+      if (p === '/job') {
+        const job = jobs.get(url.searchParams.get('id'));
+        if (!job) return sendJson(res, 404, { error: 'Job not found (the server may have restarted): run it again' });
+        return sendJson(res, 200, {
+          id: job.id,
+          status: job.status,
+          progress: job.progress,
+          error: job.error,
+          result: job.status === 'done' ? job.result : undefined,
+        });
+      }
+      if (p === '/job/stop' && req.method === 'POST') {
+        const job = jobs.get((await body()).id);
+        if (job) job.stop = true;
+        return sendJson(res, 200, { ok: Boolean(job) });
+      }
+      if (p === '/model' && req.method === 'POST') {
+        // Strategy & rules › Month by month: the model path, every month priced by Black-Scholes (nothing saved)
+        const b = await body();
+        const o = b.opts || {};
+        const clamp = (v, lo, hi, d) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d);
+        const opts = {
+          S0: clamp(o.S0, 5000, 100000, 24000),
+          pct: clamp(o.pct, -60, 100, 10),
+          months: Math.round(clamp(o.months, 1, 36, 12)),
+          iv: clamp(o.iv, 5, 60, 13),
+          swings: o.swings !== false,
+        };
+        return sendJson(res, 200, E.runModel(b.params || {}, opts));
+      }
+      if (p.startsWith('/live')) return await handleLive(req, res, url, p, LIVE[id]);
+      if (p === '/paper') return sendJson(res, 200, { ...paper.state(), demo: DEMO });
+      if (p.startsWith('/paper/') && req.method === 'POST') {
+        const b = await body();
+        if (p === '/paper/start') {
+          if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the paper trade follows the live chain`);
+          await paper.start(b.params || {});
+        } else if (p === '/paper/pause') paper.pause();
+        else if (p === '/paper/resume') await paper.resume();
+        else if (p === '/paper/budget') await paper.setBudget(b.budget);
+        else if (p === '/paper/reset') {
+          if (b.confirm !== true) throw new Error('Resetting deletes the paper trade: it needs confirmation');
+          paper.reset();
+        } else return sendJson(res, 404, { error: 'Not found' });
+        return sendJson(res, 200, { ...paper.state(), demo: DEMO });
+      }
+      return sendJson(res, 404, { error: 'Not found' });
+    } catch (e) {
+      logError(id, e);
+      return sendJson(res, 400, { error: e.message });
+    }
+  };
 }
+const handlePsc = collarIdea({
+  id: 'psc',
+  name: 'Put spread collar',
+  engine: { ...psc, run: psc.runPsc, runStudy: psc.runPscStudy, runModel: psc.runPscModel },
+  looks: mccLive.looksPsc,
+  shapeText: (prm) => `call ATM+${prm.ce.sellOff}, put spread ATM−${prm.pe.buyOff}/−${prm.pe.buyOff + prm.pe.sellGap}`,
+});
+const handleBpc = collarIdea({
+  id: 'bpc',
+  name: 'Bull put collar',
+  engine: { ...bpc, run: bpc.runBpc, runStudy: bpc.runBpcStudy, runModel: bpc.runBpcModel },
+  looks: mccLive.looksBpc,
+  shapeText: (prm) => `call ATM+${prm.ce.sellOff}, sold put spread ATM−${prm.pe.sellOff}/−${prm.pe.sellOff + prm.pe.buyGap}`,
+});
 
 // JSON files under bt-data/ (Covered call, Put spread collar, Strategy lab, saved trades)
 const readJson = (file) => {
@@ -1711,6 +1734,8 @@ const server = http.createServer(async (req, res) => {
   if (p.startsWith('/api/mcc/')) return handleMcc(req, res, url, p);
 
   if (p.startsWith('/api/psc/')) return handlePsc(req, res, url, p);
+
+  if (p.startsWith('/api/bpc/')) return handleBpc(req, res, url, p);
 
   if (p.startsWith('/api/lab/')) return handleLab(req, res, url, p);
 

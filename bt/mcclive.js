@@ -9,8 +9,8 @@
 //     which each one does better is shown, and the ones better in at least 90 % of them are marked.
 //   - the backtest study's rules (bt-data/mcc-study.json): which are due on this trade now.
 // Nothing here places orders. Shared by server.js (/api/mcc/live*, /api/psc/live*) and test/mcclive.test.js.
-// shape: 'mcc' (Modified covered call: call ratio + put 2-3-1, the default) or 'psc' (Put spread collar: a sold call
-// + a put spread): the names in the suggestions, how far the sold put may roll, and when a study rule is due.
+// shape: 'mcc' (Modified covered call: call ratio + put 2-3-1, the default), 'psc' (Put spread collar: a sold call
+// + a bought put spread) or 'bpc' (Bull put collar: a sold call + a sold put spread): the names in the suggestions, how far the sold put may roll, and when a study rule is due.
 const Costs = require('../lib/costs');
 const { RATE, b76, b76iv } = require('../lib/pricing');
 
@@ -33,7 +33,8 @@ const atmOf = (S) => Math.round(S / STEP) * STEP;
 const sum = (a, f) => a.reduce((s, x) => s + f(x), 0);
 const legText = (l) => `${l.side > 0 ? 'B' : 'S'} ${l.lots}× ${l.strike} ${l.type}`;
 // What each strategy's structures are called, and where its sold put may go when rolled ('wing': above the lowest
-// bought put, the 2-3-1's far wing; 'under': below the bought put, so the put spread stays a debit spread).
+// bought put, the 2-3-1's far wing; 'under': below the bought put, so the put spread stays a debit spread; 'over':
+// above the bought put, so it stays a credit spread).
 const SHAPES = {
   mcc: {
     name: 'Modified covered call',
@@ -44,19 +45,22 @@ const SHAPES = {
     soldPutRoll: 'wing',
   },
   psc: { name: 'Put spread collar', calls: 'sold call', callStruct: 'sold call', soldCalls: 'sold call', puts: 'put spread', soldPutRoll: 'under' },
+  bpc: { name: 'Bull put collar', calls: 'sold call', callStruct: 'sold call', soldCalls: 'sold call', puts: 'put spread', soldPutRoll: 'over' },
 };
-// The strategy a saved trade's NIFTYBEES (snap.mcc) were entered for: kind 'psc', else the Modified covered call.
-const kindOf = (m) => (m?.kind === 'psc' ? 'psc' : 'mcc');
-// The strategy of a saved Builder trade: snap.mcc.kind when picked in the Builder ('mcc' / 'psc'); unmarked (saved
-// before the collar existed, or the Builder's selector left alone) a Put spread collar when its legs are one — open
-// legs, else all of them — and the Modified covered call otherwise. The Builder's selector shows the same (sb-view.js).
+const KINDS = ['mcc', 'psc', 'bpc'];
+// The strategy a saved trade's NIFTYBEES (snap.mcc) were entered for: kind 'psc' / 'bpc', else the Modified covered call.
+const kindOf = (m) => (m?.kind === 'psc' || m?.kind === 'bpc' ? m.kind : 'mcc');
+// The strategy of a saved Builder trade: snap.mcc.kind when picked in the Builder ('mcc' / 'psc' / 'bpc'); unmarked
+// (saved before the collars existed, or the Builder's selector left alone) a Put spread collar or a Bull put collar when
+// its legs are one — open legs, else all of them — and the Modified covered call otherwise. The Builder's selector shows the same (sb-view.js).
 function kindOfTrade(t) {
   const m = t?.snap?.mcc;
-  if (m?.kind === 'psc' || m?.kind === 'mcc') return m.kind;
+  if (KINDS.includes(m?.kind)) return m.kind;
   const all = (t?.snap?.legs || []).filter((l) => l.lots > 0);
   const open = all.filter((l) => l.open);
   const legs = (open.length ? open : all).map((l) => ({ type: l.type, strike: l.strike, lots: l.lots, side: l.action === 'B' ? 1 : -1 }));
-  return legs.length && looksPsc(legs) && !looksMcc(legs) ? 'psc' : 'mcc';
+  if (!legs.length || looksMcc(legs)) return 'mcc';
+  return looksPsc(legs) ? 'psc' : looksBpc(legs) ? 'bpc' : 'mcc';
 }
 
 // ---------- the position ----------
@@ -295,6 +299,20 @@ function looksPsc(legs) {
     lots(ps) > 0 &&
     lots(pb) === lots(ps) &&
     Math.min(...pb.map((l) => l.strike)) > Math.max(...ps.map((l) => l.strike))
+  );
+}
+// A sold call with no bought call, and a bull put spread: puts sold above the puts bought, as many bought as sold.
+function looksBpc(legs) {
+  const of = (t, s) => legs.filter((l) => l.type === t && l.side === s);
+  const lots = (a) => sum(a, (l) => l.lots);
+  const [cs, cb, pb, ps] = [of('CE', -1), of('CE', 1), of('PE', 1), of('PE', -1)];
+  return (
+    lots(cs) > 0 &&
+    !cb.length &&
+    lots(pb) > 0 &&
+    lots(ps) > 0 &&
+    lots(pb) === lots(ps) &&
+    Math.min(...ps.map((l) => l.strike)) > Math.max(...pb.map((l) => l.strike))
   );
 }
 
@@ -601,7 +619,7 @@ function keepsRisk(before, after) {
 }
 
 // The changes worth testing on this position, with Nifty at S.
-// skipped (a Map, optional): the strikes left out, "22500 PE" -> why (notEnterable). shape: 'mcc' / 'psc' (SHAPES).
+// skipped (a Map, optional): the strikes left out, "22500 PE" -> why (notEnterable). shape: 'mcc' / 'psc' / 'bpc' (SHAPES).
 function candidates(pos, M, bees, skipped = new Map(), shape = 'mcc') {
   const N = SHAPES[shape] || SHAPES.mcc;
   const S = M.spot;
@@ -681,10 +699,11 @@ function candidates(pos, M, bees, skipped = new Map(), shape = 'mcc') {
     out.push({ id: 'ceClose', group: 'call', kind: 'close', title: `Close the ${N.callStruct}`, close: closeAll(calls), open: [] });
   }
   if (peS) {
-    // the sold puts stay above the 2-3-1's wing (the lowest bought put), or under the collar's bought put
+    // the sold puts stay above the 2-3-1's wing (the lowest bought put), under the collar's bought put, or over the
+    // bull put collar's bought put
     const wing = Math.min(...peL.map((l) => l.strike), Infinity);
     const top = Math.max(...peL.map((l) => l.strike), -Infinity);
-    const okPut = (K) => (N.soldPutRoll === 'under' ? K < top : K > wing);
+    const okPut = (K) => (N.soldPutRoll === 'under' ? K < top : N.soldPutRoll === 'over' ? K > top : K > wing);
     for (const K of range(Math.min(peS.strike, A) - 800, Math.max(peS.strike, A) + 600))
       if (K !== peS.strike && okPut(K) && has('PE', K))
         out.push({
@@ -706,11 +725,13 @@ function candidates(pos, M, bees, skipped = new Map(), shape = 'mcc') {
           close: closeAll(puts),
           open: reopen(puts, d),
         });
-    // the collar's bought put on its own: nearer protection, or a cheaper one (always above the sold put)
+    // the collar's bought put on its own: nearer protection, or a cheaper one (always above the sold put; the bull put
+    // collar's always under it)
     const [pb] = peL;
-    if (N.soldPutRoll === 'under' && pb)
+    const okBought = (K) => (N.soldPutRoll === 'under' ? K > peS.strike : K < peS.strike);
+    if (N.soldPutRoll !== 'wing' && pb)
       for (const K of range(Math.min(pb.strike, A) - 600, Math.max(pb.strike, A) + 400))
-        if (K !== pb.strike && K > peS.strike && has('PE', K))
+        if (K !== pb.strike && okBought(K) && has('PE', K))
           out.push({
             id: `peLRoll:${K}`,
             group: 'put',
@@ -955,7 +976,7 @@ function studyRules(study, pos, M, entrySpot, shape = 'mcc') {
       );
       const a = r.params?.adj || {};
       let due = null;
-      if (shape === 'psc') due = pscDue(r.params || {}, move, entrySpot, pos, M);
+      if (shape === 'psc' || shape === 'bpc') due = pscDue(r.params || {}, move, entrySpot, pos, M, shape === 'bpc');
       else if (a.on && a.trigger === 'move' && Math.abs(move) >= a.movePct)
         due = `Nifty is ${move > 0 ? 'up' : 'down'} ${Math.abs(move).toFixed(1)} % since the entry (${Math.round(entrySpot)}): the rule moves the ${move > 0 ? 'sold puts up' : 'sold calls down'}${a.legs === 'all' ? ' (the whole structure)' : ''}`;
       else if (a.on && a.trigger === 'decay' && decay(a.decayPct).length)
@@ -966,10 +987,11 @@ function studyRules(study, pos, M, entrySpot, shape = 'mcc') {
     })
     .sort((a, b) => b.total - a.total);
 }
-// A Put spread collar rule (bt/psc.js decide) on this trade now: market down → the sold call rolled down (and the put
-// spread down with putDown); market up → the put spread moved up. Decay: the sold call, or the put spread's value
-// against what it cost. Up-market extras: Nifty at the sold call's strike. null when nothing is due.
-function pscDue(prm, move, entrySpot, pos, M) {
+// A Put spread collar rule (bt/psc.js decide; bt/bpc.js for the Bull put collar, credit: true) on this trade now:
+// market down → the sold call rolled down (and the put spread down with putDown); market up → the put spread moved up.
+// Decay: the sold call, or the put spread's value against what it cost (the credit taken, for a sold spread). Up-market
+// extras: Nifty at the sold call's strike. null when nothing is due.
+function pscDue(prm, move, entrySpot, pos, M, credit = false) {
   const a = prm.adj || {};
   const S = M.spot;
   const [ceS] = pos.legs.filter((l) => l.type === 'CE' && l.side < 0);
@@ -978,18 +1000,21 @@ function pscDue(prm, move, entrySpot, pos, M) {
   const out = [];
   const since = `Nifty is ${move > 0 ? 'up' : 'down'} ${Math.abs(move).toFixed(1)} % since the entry (${Math.round(entrySpot)})`;
   if (a.on && a.trigger === 'move' && Math.abs(move) >= a.movePct) {
-    if (move > 0 && a.put !== false && peL) out.push('the rule moves the put spread up to the new ATM');
+    const puts = peL || peS;
+    if (move > 0 && a.put !== false && puts) out.push('the rule moves the put spread up to the new ATM');
     if (move < 0 && a.call !== false && ceS) out.push('the rule rolls the sold call down');
-    if (move < 0 && a.putDown && peL) out.push('and moves the put spread down');
+    if (move < 0 && a.putDown && puts) out.push('and moves the put spread down');
     if (out.length) return `${since}: ${out.join(', ')}`;
   } else if (a.on && a.trigger === 'decay') {
     const px = (l) => (l ? M.px(l.type, l.strike) : 0);
     if (a.call !== false && ceS && px(ceS) != null && px(ceS) <= (ceS.entry * a.decayPct) / 100)
       out.push(`the ${ceS.strike} CE is at or under ${a.decayPct} % of its premium: the rule rolls it toward Nifty`);
-    const cost = peL ? peL.entry - (peS ? peS.entry : 0) : 0;
-    const now = peL && px(peL) != null && (!peS || px(peS) != null) ? px(peL) - px(peS) : null;
+    // the spread's value as held: bought less sold (a debit spread), sold less bought (a credit spread)
+    const [hi, lo] = credit ? [peS, peL] : [peL, peS];
+    const cost = hi ? hi.entry - (lo ? lo.entry : 0) : 0;
+    const now = hi && px(hi) != null && (!lo || px(lo) != null) ? px(hi) - px(lo) : null;
     if (a.put !== false && cost > 0 && now != null && now <= (cost * a.decayPct) / 100)
-      out.push(`the put spread is worth ${a.decayPct} % or less of its cost: the rule moves it up to the new ATM`);
+      out.push(`the put spread is worth ${a.decayPct} % or less of its ${credit ? 'credit' : 'cost'}: the rule moves it up to the new ATM`);
     if (out.length) return out.join('; ');
   }
   const upOn = prm.up?.mode && prm.up.mode !== 'none';
@@ -1010,6 +1035,7 @@ module.exports = {
   fromPaper,
   looksMcc,
   looksPsc,
+  looksBpc,
   SHAPES,
   kindOf,
   kindOfTrade,

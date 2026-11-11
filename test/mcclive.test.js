@@ -583,9 +583,9 @@ test('kindOfTrade: the Builder pick wins; unpicked, a collar by its legs (open, 
   // a closed collar (no open legs) is still a collar
   const shutCollar = { ...unpicked, snap: { ...unpicked.snap, legs: unpicked.snap.legs.map((l) => ({ ...l, open: false, exitPx: 1 })) } };
   assert.equal(L.kindOfTrade(shutCollar), 'psc');
-  // put strikes the wrong way round (sold above bought), or a bought call: not a collar
-  const bad = { ...unpicked, snap: { ...unpicked.snap, legs: unpicked.snap.legs.map((l) => (l.id === 3 ? { ...l, strike: 24000 } : l)) } };
-  assert.equal(L.kindOfTrade(bad), 'mcc');
+  // put strikes the other way round (sold above bought): the Bull put collar; a bought call: not a collar
+  const bull = { ...unpicked, snap: { ...unpicked.snap, legs: unpicked.snap.legs.map((l) => (l.id === 3 ? { ...l, strike: 24000 } : l)) } };
+  assert.equal(L.kindOfTrade(bull), 'bpc');
   const withCall = {
     ...unpicked,
     snap: { ...unpicked.snap, legs: [...unpicked.snap.legs, { id: 4, action: 'B', type: 'CE', strike: 24300, lots: 1, open: true }] },
