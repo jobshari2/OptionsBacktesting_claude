@@ -320,23 +320,15 @@ function looksBpc(legs) {
 // Years to the expiry's close (15:30 IST).
 const yearsTo = (expiry, now = Date.now()) => Math.max(0, (Date.parse(expiry + 'T10:00:00Z') - now) / YEAR_MS);
 
-// What an option is worth now: { px, how }. The mid of its bid / ask when the quote stands on both sides and is no
-// wider than SPREAD (it moves with every tick, while the LTP of a far expiry can be a trade from minutes ago), else the
-// LTP, pulled inside the quote when the market has moved away from it. how: 'mid' | 'ltp' | null (no price).
+// What an option is worth now: { px, how }: its LTP, as it is (never the bid / ask mid, never moved inside the quote).
+// how: 'ltp' | null (no price).
 function markOf(o) {
   const ltp = o?.ltp > 0 ? o.ltp : null;
-  const bid = o?.bid > 0 ? o.bid : null;
-  const ask = o?.ask > 0 ? o.ask : null;
-  if (bid && ask && ask >= bid) {
-    const mid = (bid + ask) / 2;
-    if (ask - bid <= Math.max(SPREAD.inr, mid * SPREAD.share)) return { px: mid, how: 'mid' };
-    if (ltp) return { px: Math.min(ask, Math.max(bid, ltp)), how: 'ltp' };
-  }
   return { px: ltp, how: ltp ? 'ltp' : null };
 }
 
 // The chain's prices and implied volatilities: { spot, F, atmIv, px(type, K), how(type, K), iv(type, K), strikes(type) }.
-// Every option is valued at markOf (px: the bid / ask mid, else the LTP); quote() keeps the raw LTP and quote. The
+// Every option is valued at its LTP (markOf); quote() keeps the LTP with the bid / ask. The
 // forward comes from put-call parity at the strike nearest the spot; a strike's volatility is its own, else the
 // out-of-the-money side's at that strike, else the nearest strike's.
 function market(chain, T) {
@@ -383,14 +375,8 @@ function market(chain, T) {
     const o = side(t, K);
     return { ltp: o?.ltp > 0 ? o.ltp : null, bid: o?.bid > 0 ? o.bid : null, ask: o?.ask > 0 ? o.ask : null, vol: o?.vol > 0 ? o.vol : 0 };
   };
-  // The price to trade at: the LTP, unless a quote stands on both sides and the LTP is outside it (an old trade the
-  // market has moved away from): then the quote's mid.
-  const exec = (t, K) => {
-    const q = quote(t, K);
-    if (!q.ltp) return null;
-    if (q.bid && q.ask && q.ask >= q.bid && (q.ltp < q.bid || q.ltp > q.ask)) return (q.bid + q.ask) / 2;
-    return q.ltp;
-  };
+  // The price to trade at: the LTP (slippage is added on top by the caller).
+  const exec = (t, K) => quote(t, K).ltp;
   // Why a strike may not be entered, or null: 'price' (none), 'volume' (no trades today), 'spread' (too wide).
   const notEnterable = (t, K) => {
     const q = quote(t, K);
@@ -443,35 +429,40 @@ function optToday(pos, x, M) {
 }
 // NIFTYBEES moves in % with Nifty: P&L of the units held at Nifty x.
 const beesAt = (bees, spot, x) => (bees?.qty > 0 ? bees.qty * (bees.now * (x / spot) - bees.price) : 0);
+// NIFTYBEES ₹ per Nifty point, pinned at the trade's start: its buy price ÷ Nifty at the entry. The grid and the payoff
+// price NIFTYBEES at a Nifty level with it, so their rows stay put while the market moves (NIFTYBEES' live price ÷
+// Nifty now drifts by its tracking error and the two quotes' timing). Null without a buy price or an entry level.
+const beesPerNifty = (bees, entrySpot) => (bees?.price > 0 && entrySpot > 0 ? bees.price / entrySpot : null);
 
 // Rows for Nifty at the trade's start (entrySpot; Nifty now without one) and MOVES % up and down from it, plus Nifty
 // now. Every row: m = % from the start, fromNow = % from Nifty now. The P&L is the trade's since its start whatever the
-// row: options from their entry premiums (closed legs as booked), NIFTYBEES from its buy price. NIFTYBEES at a row
-// moves with Nifty from its price now (beesAt): what has happened since the start is already in that price.
+// row: options from their entry premiums (closed legs as booked), NIFTYBEES from its buy price. At a fixed Nifty level
+// NIFTYBEES is its buy price moved in % with Nifty from the entry (beesPerNifty), so the at-expiry columns stay the
+// same until the legs change; the Now row takes NIFTYBEES at its price now, so it is the P&L at the top.
 function grid(pos, M, bees, entrySpot) {
   const S = M.spot;
   const E = entrySpot > 0 ? entrySpot : S;
+  const k = beesPerNifty(bees, entrySpot) ?? (bees?.now > 0 ? bees.now / S : 0);
+  const beesPxAt = (x, isNow) => (isNow ? bees.now : k * x);
   const marks = [...MOVES.map((m) => -m).reverse(), 0, ...MOVES].map((m) => ({ m, mark: m === 0 ? (E === S ? 'now' : 'entry') : null }));
   const mNow = (S / E - 1) * 100;
-  if (E !== S) {
-    // Nifty now has its own row, unless a row is already within 0.05 % of it
-    const same = marks.find((r) => Math.abs(r.m - mNow) < 0.05);
-    if (same && same.m !== 0) same.mark = 'now';
-    else marks.push({ m: mNow, mark: 'now' });
-  }
+  // Nifty now always has its own row: the fixed rows are never taken over by it (with Nifty ticking about one of them,
+  // that row would flip between its fixed level and Nifty now, and the table shift under the eye).
+  if (E !== S) marks.push({ m: mNow, mark: 'now' });
   return marks
     .sort((x, y) => y.m - x.m)
     .map(({ m, mark }) => {
       const x = mark === 'now' ? S : E * (1 + m / 100);
       const e = optExpiry(pos, x);
       const d = optToday(pos, x, M);
-      const etf = beesAt(bees, S, x);
+      const px = bees?.qty > 0 ? beesPxAt(x, mark === 'now') : null;
+      const etf = px == null ? 0 : bees.qty * (px - bees.price);
       return {
         m: mark === 'now' ? mNow : m,
         mark,
         x,
         fromNow: (x / S - 1) * 100,
-        beesPx: bees?.qty > 0 ? bees.now * (x / S) : null,
+        beesPx: px,
         bees: etf,
         call: e.CE,
         put: e.PE,
@@ -1030,6 +1021,7 @@ module.exports = {
   SPREAD,
   fromBuilder,
   beesOfSnap,
+  beesPerNifty,
   closeSaved,
   reopenSaved,
   fromPaper,

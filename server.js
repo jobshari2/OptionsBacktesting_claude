@@ -857,7 +857,9 @@ async function liveState(L, key, fresh = false) {
     fromBuilder: pos.src === 'builder' && Boolean(pos.bees), // kept in the saved trade (the Builder shows them too)
     exitPx: beesIn?.exitPx || null, // already sold (recorded in the Builder)
   };
-  // ltp: what the leg is worth now (bt/mcclive.js markOf: the bid / ask mid, else the LTP; how says which), last: its
+  // NIFTYBEES ₹ per Nifty point pinned at the entry: the grid and the payoff price NIFTYBEES at a Nifty level with it
+  bees.perNifty = qty > 0 ? mccLive.beesPerNifty(bees, entrySpot) : null;
+  // ltp: what the leg is worth now (bt/mcclive.js markOf: its LTP), last: its
   // last traded price; cal: what the page adds to the model so each leg is worth that at Nifty now (valueToday)
   const legs = pos.legs.map((l) => {
     const q = M.quote(l.type, l.strike);

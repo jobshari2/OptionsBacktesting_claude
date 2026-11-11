@@ -58,33 +58,29 @@ test('a saved Builder trade: open legs, the closed leg realised, entry spot', ()
   assert.ok(!L.looksMcc(pos.legs.filter((l) => l.type === 'CE')));
 });
 
-test('markOf: the bid / ask mid of a tight quote, else the LTP (pulled inside a wide quote it is outside of)', () => {
-  // the user's 25050 CE on 9 Nov: last trade 581.60 above a 572.85 / 577.50 quote → the mid
-  assert.deepEqual(L.markOf({ ltp: 581.6, bid: 572.85, ask: 577.5 }), { px: 575.175, how: 'mid' });
-  // a small option: ₹2 wide is still tight (SPREAD.inr)
-  assert.deepEqual(L.markOf({ ltp: 4, bid: 3, ask: 5 }), { px: 4, how: 'mid' });
-  // wider than 10 % of the mid and ₹2: the LTP, inside the quote
-  assert.deepEqual(L.markOf({ ltp: 130, bid: 100, ask: 120 }), { px: 120, how: 'ltp' });
-  assert.deepEqual(L.markOf({ ltp: 110, bid: 100, ask: 120 }), { px: 110, how: 'ltp' });
-  // no two-sided quote, or a crossed one: the LTP; nothing at all: no price
+test('markOf: always the LTP as it is, whatever the bid / ask', () => {
+  // the user's 25050 CE on 9 Nov: last trade 581.60 above a 572.85 / 577.50 quote → still 581.60
+  assert.deepEqual(L.markOf({ ltp: 581.6, bid: 572.85, ask: 577.5 }), { px: 581.6, how: 'ltp' });
+  assert.deepEqual(L.markOf({ ltp: 4, bid: 3, ask: 5 }), { px: 4, how: 'ltp' });
+  assert.deepEqual(L.markOf({ ltp: 130, bid: 100, ask: 120 }), { px: 130, how: 'ltp' });
   assert.deepEqual(L.markOf({ ltp: 50, bid: 0, ask: 52 }), { px: 50, how: 'ltp' });
-  assert.deepEqual(L.markOf({ ltp: 50, bid: 53, ask: 52 }), { px: 50, how: 'ltp' });
+  // no LTP: no price (never the mid)
   assert.deepEqual(L.markOf({ bid: 100, ask: 130 }), { px: null, how: null });
   assert.deepEqual(L.markOf(null), { px: null, how: null });
 });
 
-test('market(): legs valued at the quote mid, the raw LTP kept in quote()', () => {
+test('market(): legs valued at their LTP, also when it is outside the bid / ask', () => {
   const T = 30 / 365;
   const c = chainAt(24000, T);
   const r = c.rows.find((x) => x.strike === 24100);
   const fair = r.ce.ltp;
-  r.ce = { ...r.ce, ltp: fair + 20, bid: fair - 1, ask: fair + 1 }; // an old trade 20 above the live quote
+  r.ce = { ...r.ce, ltp: fair + 20, bid: fair - 1, ask: fair + 1 }; // the last trade 20 above the live quote
   const M = L.market(c, T);
-  near(M.px('CE', 24100), fair, 1e-9);
-  assert.equal(M.how('CE', 24100), 'mid');
+  near(M.px('CE', 24100), fair + 20, 1e-9);
+  assert.equal(M.how('CE', 24100), 'ltp');
   near(M.quote('CE', 24100).ltp, fair + 20, 1e-9);
-  near(M.iv('CE', 24100), 0.14, 2e-3); // the volatility of the mid, not of the old trade
-  assert.equal(M.how('PE', 24100), 'ltp'); // no quote in the fixture: its LTP
+  near(M.exec('CE', 24100), fair + 20, 1e-9);
+  assert.equal(M.how('PE', 24100), 'ltp');
 });
 
 test('market(): implied volatility round-trips and the forward comes from parity', () => {
@@ -116,9 +112,13 @@ test('grid: every row a % move from the start, Nifty now its own row, P&L since 
   const up5 = g.find((r) => r.m === 5);
   near(up5.x, E * 1.05, 1e-9);
   near(up5.fromNow, ((E * 1.05) / 23400 - 1) * 100, 1e-9);
-  // NIFTYBEES moves with Nifty from its price now; its P&L from its buy price
-  near(up5.beesPx, (234 * up5.x) / 23400, 1e-9);
-  near(up5.bees, 6500 * ((234 * up5.x) / 23400 - 229), 1e-6);
+  // NIFTYBEES at a Nifty level: its buy price moved in % with Nifty from the start; its P&L from its buy price
+  near(up5.beesPx, 229 * 1.05, 1e-9);
+  near(up5.bees, 6500 * (229 * 1.05 - 229), 1e-6);
+  near(start.bees, 0, 1e-6);
+  // ... but Nifty now: NIFTYBEES at its price now (the P&L at the top)
+  near(now.beesPx, 234, 1e-9);
+  near(now.bees, 6500 * (234 - 229), 1e-6);
   // at expiry with Nifty at 24,108: puts worthless, calls: +1 × (x − 22700) − 2 × (x − 22800), from their entry
   const x = up5.x;
   const call = (x - 22700 - 360 - 2 * (x - 22800 - 309)) * 65 - require('../lib/costs').exercise((x - 22700) * 65);
@@ -131,10 +131,11 @@ test('grid: every row a % move from the start, Nifty now its own row, P&L since 
   // NIFTYBEES priced from the start (bought at the entry level, no LTP): nothing made or lost at the start
   const est = L.grid(pos, M, { qty: 6500, price: 229, now: (229 * 23400) / E }, E);
   near(est.find((r) => r.mark === 'entry').bees, 0, 1e-6);
-  // Nifty now within 0.05 % of a row: that row is Nifty now
+  // Nifty now within 0.05 % of a row: still its own row, the fixed row kept at its level
   const close = L.grid(pos, L.market(chainAt(E * 1.02 + 1, T), T), bees, E);
-  assert.equal(close.length, L.MOVES.length * 2 + 1);
+  assert.equal(close.length, L.MOVES.length * 2 + 2);
   near(close.find((r) => r.mark === 'now').x, E * 1.02 + 1, 1e-9);
+  near(close.find((r) => r.m === 2 && !r.mark).x, E * 1.02, 1e-9);
   // the "if today" P&L at Nifty now is the trade at its prices now
   const live = pos.realised.CE + pos.realised.PE + pos.legs.reduce((s2, l) => s2 + l.side * (M.px(l.type, l.strike) - l.entry) * l.lots * 65, 0);
   near(now.optToday, live, 0.01);
@@ -142,6 +143,28 @@ test('grid: every row a % move from the start, Nifty now its own row, P&L since 
   const none = L.grid(pos, M, bees, null);
   assert.equal(none.length, L.MOVES.length * 2 + 1);
   assert.equal(none.find((r) => r.m === 0).mark, 'now');
+});
+
+test('grid: the at-expiry columns stay the same as Nifty, NIFTYBEES and the options move (legs unchanged)', () => {
+  const pos = L.fromBuilder(saved);
+  const E = 22960;
+  const a = L.grid(pos, L.market(chainAt(23400, 20 / 365, 0.14), 20 / 365), { qty: 6500, price: 229, now: 234 }, E);
+  // later: Nifty, its volatility, the time left and NIFTYBEES' price all different (NIFTYBEES off its usual ratio)
+  const b = L.grid(pos, L.market(chainAt(23150, 12 / 365, 0.17), 12 / 365), { qty: 6500, price: 229, now: 230.4 }, E);
+  // every row at a fixed % from the start: the same rows, the same figures (Nifty at 23,150 is within 0.05 % of a row)
+  const fixed = (g) => new Map(g.filter((r) => r.mark !== 'now').map((r) => [r.m, r]));
+  const [fa, fb] = [fixed(a), fixed(b)];
+  assert.deepEqual([...fa.keys()], [...fb.keys()]);
+  assert.equal(fa.size, L.MOVES.length * 2 + 1);
+  for (const m of fa.keys()) {
+    const [r, s] = [fa.get(m), fb.get(m)];
+    near(s.x, r.x, 1e-9);
+    for (const k of ['beesPx', 'bees', 'call', 'put', 'opt', 'total']) near(s[k], r[k], 1e-6);
+  }
+  // the "if today" columns do move: time value changes
+  assert.ok(Math.abs(fa.get(0).optToday - fb.get(0).optToday) > 1);
+  assert.equal(L.beesPerNifty({ price: 229 }, E), 229 / E);
+  assert.equal(L.beesPerNifty({ price: 229 }, null), null);
 });
 
 test('a change closing a leg at its price (no slippage) books exactly its P&L', () => {
@@ -337,7 +360,7 @@ test('closed legs: listed with their exit, and their P&L in every figure (grid, 
   near(s.hold.worst - L.holdStats(open, 23400, moves, bees).worst, booked, 1);
 });
 
-test('suggestions enter only strikes traded today with a sound quote; a stale LTP fills at the mid', () => {
+test('suggestions enter only strikes traded today with a sound quote; fills at the LTP', () => {
   const pos = L.fromBuilder(saved);
   const T = 14 / 365;
   const bees = { qty: 6500, price: 229, now: 234 };
@@ -370,10 +393,10 @@ test('suggestions enter only strikes traded today with a sound quote; a stale LT
   assert.deepEqual(s.skipped.spread, ['23700 CE']);
   // priceChange refuses to enter a strike with no volume, even when asked directly
   assert.equal(L.priceChange(pos, { close: [], open: [{ type: 'CE', strike: 23500, side: 1, lots: 1 }] }, M, 0, null), null);
-  // an LTP outside the bid–ask is old: fills at the quote's mid; inside it, at the LTP
+  // fills at the LTP, inside the bid–ask or not
   const q = ch.rows.find((r) => r.strike === 23800).ce;
   Object.assign(q, { bid: q.ltp + 10, ask: q.ltp + 11 });
-  near(L.market(ch, T).exec('CE', 23800), q.ltp + 10.5, 1e-9);
+  near(L.market(ch, T).exec('CE', 23800), q.ltp, 1e-9);
   Object.assign(q, { bid: q.ltp - 0.5, ask: q.ltp + 0.5 });
   near(L.market(ch, T).exec('CE', 23800), q.ltp, 1e-9);
 });

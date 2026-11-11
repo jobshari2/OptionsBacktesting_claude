@@ -576,11 +576,23 @@
   </main>
 
   <!-- ===== Saved trades (from the Builder) ===== -->
-  <main id="tr" class="sb-screen hidden">
-    <section class="panel sb-trades cc-trades" id="mccTrades"></section>
-    <section class="panel sb-trades cc-trades hidden" id="pscTrades"></section>
-    <section class="panel sb-trades cc-trades hidden" id="bpcTrades"></section>
-    <section class="panel sb-trades" id="sbTrades"></section>
+  <main id="tr" class="sb-screen tr-screen hidden">
+    <!-- left menu: Live (real-money trades, the total P&L) / Paper (paper trades and the strategies' paper trades) -->
+    <nav class="tr-nav" id="trNav">
+      <button data-trtab="live" title="Live (real-money) trades saved in the Builder, with the total P&amp;L"><span class="tr-dot live"></span>Live <span class="tr-n" id="trNLive"></span></button>
+      <button data-trtab="paper" title="Paper trades and replays saved in the Builder, and the strategies' paper trades (not in the total P&amp;L)"><span class="tr-dot paper"></span>Paper <span class="tr-n" id="trNPaper"></span></button>
+    </nav>
+    <div class="tr-body">
+      <div class="tr-pane" data-trpane="live">
+        <section class="panel sb-trades sb-acct-live" id="sbTrades"></section>
+      </div>
+      <div class="tr-pane hidden" data-trpane="paper">
+        <section class="panel sb-trades sb-acct-paper" id="sbTradesPaper"></section>
+        <section class="panel sb-trades cc-trades" id="mccTrades"></section>
+        <section class="panel sb-trades cc-trades hidden" id="pscTrades"></section>
+        <section class="panel sb-trades cc-trades hidden" id="bpcTrades"></section>
+      </div>
+    </div>
   </main>
 
   <!-- ===== Strategies (library + live deploy) ===== -->

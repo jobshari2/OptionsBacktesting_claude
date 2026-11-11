@@ -226,7 +226,7 @@
       el.innerHTML =
         head +
         `<div class="panel cc-doc"><h3>Legs and payoff <button class="btn-sm ghost" id="mclToSb" title="${P.src === 'builder' ? 'Open this saved trade in the Builder: its open and closed legs, log and P&amp;L, to adjust it there' : "Open the paper series's open legs in the Builder as a live paper position at their entry prices"}">Load in Builder ▸</button></h3><div class="cc-pos-grid">
-        <div class="tbl-wrap"><table class="grid-tbl mcl-legs"><thead><tr><th class="l">Leg</th><th class="l">Status</th><th>Entry</th><th title="Open legs: what they are worth now, the mid of the live bid / ask (moves with every tick), else the last traded price; hover a price for its quote. Closed legs: the price they were closed at">Now / exit</th><th title="Implied volatility at this strike now (used for the 'if today' P&amp;L)">IV</th><th>P&amp;L</th></tr></thead><tbody id="mclLegsBody">${legsBodyHtml(n)}</tbody></table><div class="muted small">ATM IV ${(st.market.atmIv * 100).toFixed(1)} % · lot ${lot()}${P.closed.length ? ' · closed legs count with the P&amp;L they were closed at, in every figure on this screen (a fixed amount at any Nifty)' : ''}</div></div>
+        <div class="tbl-wrap"><table class="grid-tbl mcl-legs"><thead><tr><th class="l">Leg</th><th class="l">Status</th><th>Entry</th><th title="Open legs: their last traded price (LTP) now; hover a price for its bid / ask. Closed legs: the price they were closed at">Now / exit</th><th title="Implied volatility at this strike now (used for the 'if today' P&amp;L)">IV</th><th>P&amp;L</th></tr></thead><tbody id="mclLegsBody">${legsBodyHtml(n)}</tbody></table><div class="muted small">ATM IV ${(st.market.atmIv * 100).toFixed(1)} % · lot ${lot()}${P.closed.length ? ' · closed legs count with the P&amp;L they were closed at, in every figure on this screen (a fixed amount at any Nifty)' : ''}</div></div>
         <div class="cc-pay"><div class="cc-pay-chart"><canvas id="mclPay"></canvas></div><div class="muted small">Solid: at expiry. Dotted: if Nifty moved there today.${st.pos.closed.length ? ' Closed legs included at their booked P&amp;L.' : ''} ${pick ? `Red: after “${esc(pick.title)}”.` : 'Pick a suggestion below to see it here.'}</div></div>
       </div></div>` +
         gridHtml() +
@@ -374,11 +374,9 @@
           : '';
       return `${when} · Nifty <b>${n2(x.spot)}</b> <span class="muted">${t(x.at)}</span>${bees}${st.demo ? ' <span class="muted">· demo mode: synthetic prices</span>' : ''}`;
     }
-    // How the open legs (of one type, or all) are valued now: the bid / ask mid of the streamed quote, the LTP (no tight
-    // quote), or a mix (bt/mcclive.js markOf).
-    function markTxt(type) {
-      const hs = new Set((st.pos?.legs || []).filter((l) => !type || l.type === type).map((l) => l.how || 'ltp'));
-      return hs.size > 1 ? 'mid / LTP' : hs.has('mid') ? 'bid/ask mid' : 'LTP';
+    // How the open legs are valued now: always at their LTP (bt/mcclive.js markOf).
+    function markTxt() {
+      return 'LTP';
     }
     // The status line: live (and how fresh the prices are) or the market closed.
     function statusHtml() {
@@ -435,7 +433,7 @@
           ]
             .filter(Boolean)
             .join(' · ');
-          return `<tr><td class="l">${side(l)}</td><td class="l"><span class="cat-pill c-bullish">open</span></td><td>${l.entry.toFixed(2)}</td><td title="${q}">${l.ltp != null ? l.ltp.toFixed(2) : '—'}${l.how ? ` <span class="muted small">${l.how === 'mid' ? 'mid' : 'LTP'}</span>` : ''}</td><td class="muted">${l.ltp != null && l.iv ? (l.iv * 100).toFixed(1) + ' %' : '—'}</td><td class="${cls(pnl)}">${pnl == null ? '—' : inrS(Math.round(pnl))}</td></tr>`;
+          return `<tr><td class="l">${side(l)}</td><td class="l"><span class="cat-pill c-bullish">open</span></td><td>${l.entry.toFixed(2)}</td><td title="${q}">${l.ltp != null ? l.ltp.toFixed(2) : '—'}${l.how ? ' <span class="muted small">LTP</span>' : ''}</td><td class="muted">${l.ltp != null && l.iv ? (l.iv * 100).toFixed(1) + ' %' : '—'}</td><td class="${cls(pnl)}">${pnl == null ? '—' : inrS(Math.round(pnl))}</td></tr>`;
         }),
         ...closed.map(
           (l) =>
@@ -525,7 +523,8 @@
       const td = (v, b) => `<td class="${cls(v)}">${b ? '<b>' : ''}${inrS(Math.round(v))}${b ? '</b>' : ''}</td>`;
       return st.grid
         .map((r) => {
-          const a = pick ? { total: afterAt(r.x) } : null;
+          // after the suggestion, with the row's own NIFTYBEES (its price now in the Now row), so Change is the options' alone
+          const a = pick ? { total: afterAt(r.x) - (st.bees.qty > 0 ? st.bees.qty * (beesPxAt(r.x) - st.bees.price) : 0) + (r.bees || 0) } : null;
           const label =
             r.mark === 'now'
               ? `<b>Now</b> <b class="${cls(r.m)}">${sgnPct(r.m, 2)}</b>`
@@ -543,7 +542,7 @@
     }
     function gridHtml() {
       return `<div class="panel cc-doc"><h3>P&amp;L for Nifty moves from where the trade started <span class="muted small" id="mclGridNow">${gridNowHtml()}</span></h3>
-      <div class="muted small">Every % is Nifty's move from the start; every P&amp;L is the trade's since the start: options from their entry premiums (closed legs as booked, costs so far included), NIFTYBEES from its buy price (moving with Nifty from its price now). <b>If Nifty is there today</b>: the options keep their time value (Black-76 on the chain's forward at each strike's IV now, each leg calibrated to its LTP), so the <b>Now</b> row is exactly the P&amp;L at the top. <b>At expiry</b>: the options at intrinsic value (STT on bought legs in the money included). Shaded: the way Nifty has come from the start to now.</div>
+      <div class="muted small">Every % is Nifty's move from the start; every P&amp;L is the trade's since the start: options from their entry premiums (closed legs as booked, costs so far included), NIFTYBEES from its buy price, moving in % with Nifty from the start (its price now only in the <b>Now</b> row). <b>At expiry</b>: the options at intrinsic value (STT on bought legs in the money included): these columns stay the same until the legs change (an adjustment, a close). <b>If Nifty is there today</b>: the options keep their time value (Black-76 on the chain's forward at each strike's IV now, each leg calibrated to its LTP), so these move with time decay and volatility, and the <b>Now</b> row is exactly the P&amp;L at the top. Shaded: the way Nifty has come from the start to now.</div>
       <div class="tbl-wrap mcc-scen mcl-grid"><table class="grid-tbl"><thead>
         <tr class="mcl-ghead"><th colspan="5"></th><th colspan="4" class="mcl-g1">If Nifty is there today</th><th colspan="4" class="mcl-g2">At expiry (${dayLabel(st.pos.expiry)})</th>${pick ? '<th colspan="2" class="mcl-after">After the suggestion</th>' : ''}</tr>
         <tr><th class="l" title="Nifty's move from where the trade started">From start</th><th>Nifty</th><th title="How far that level is from Nifty now">From now</th><th>NIFTYBEES</th><th>NIFTYBEES P&amp;L</th>
@@ -562,7 +561,7 @@
       const s = sug.sample;
       const h = sug.hold;
       const pctOf = (x) => Math.round(x * 100) + ' %';
-      const intro = `<p class="small">Every change is priced at the live chain (buys at LTP + ${s.slipPct} %, sells at LTP − ${s.slipPct} %, charges on every order) and tested at expiry on <b>${num0(s.n)}</b> past ${s.days}-trading-day Nifty moves (${dayLabel(s.from)} – ${dayLabel(s.to)}, each scaled to today's ATM IV ${(s.ivNow * 100).toFixed(1)} % over India VIX that day). Only strikes <b>traded today (volume above 0)</b>, with a price and a bid–ask spread no wider than ₹2 or 10 % are entered; a price outside its bid–ask is taken at the quote's mid. Kept only when it <b>raises the average result</b> and does not make the worst past outcome worse by more than ₹5,000 / 5 % or the average it gains; defined risk always (no extra sold calls, never more puts sold than bought).</p>
+      const intro = `<p class="small">Every change is priced at the live chain (buys at LTP + ${s.slipPct} %, sells at LTP − ${s.slipPct} %, charges on every order) and tested at expiry on <b>${num0(s.n)}</b> past ${s.days}-trading-day Nifty moves (${dayLabel(s.from)} – ${dayLabel(s.to)}, each scaled to today's ATM IV ${(s.ivNow * 100).toFixed(1)} % over India VIX that day). Only strikes <b>traded today (volume above 0)</b>, with a price and a bid–ask spread no wider than ₹2 or 10 % are entered; every order at the LTP. Kept only when it <b>raises the average result</b> and does not make the worst past outcome worse by more than ₹5,000 / 5 % or the average it gains; defined risk always (no extra sold calls, never more puts sold than bought).</p>
       <div class="kpis"><div class="kpi"><span class="k-l">Held as it is</span><span class="k-v">${pctOf(h.profitable)}</span><span class="muted small">of the past moves end in profit (NIFTYBEES + options)</span></div>
         <div class="kpi"><span class="k-l">Average at expiry</span><span class="k-v ${cls(h.avg)}">${inrS(h.avg)}</span><span class="muted small">best ${inrS(h.best)}</span></div>
         <div class="kpi"><span class="k-l">Worst 5 %</span><span class="k-v ${cls(h.p5)}">${inrS(h.p5)}</span><span class="muted small">worst ${inrS(h.worst)}</span></div>
@@ -754,7 +753,12 @@
         const stt = window.Costs ? Costs.exercise(ls.filter((l) => l.side > 0).reduce((s2, l) => s2 + intr(l) * l.lots * L, 0)) : 0;
         v += realised[t] + ls.reduce((s2, l) => s2 + l.side * (intr(l) - l.entry) * l.lots * L, 0) - (st.pos.costs?.[t] || 0) - stt;
       }
-      return v + (st.bees.qty > 0 ? st.bees.qty * (st.bees.now * (x / st.market.spot) - st.bees.price) : 0);
+      return v + (st.bees.qty > 0 ? st.bees.qty * (beesPxAt(x) - st.bees.price) : 0);
+    }
+    // NIFTYBEES at Nifty x, as the grid prices it (bt/mcclive.js grid): its buy price moved in % with Nifty from the
+    // entry (perNifty, fixed, so the at-expiry figures stay put), else its price now moved with Nifty from now.
+    function beesPxAt(x) {
+      return st.bees.perNifty > 0 ? st.bees.perNifty * x : st.bees.now * (x / st.market.spot);
     }
 
     // ---------- the Builder ----------
@@ -849,7 +853,7 @@
       const optAt = (legs, realised, x, today, types = ['CE', 'PE']) =>
         types.reduce((s, t) => s + (realised[t] || 0) - (P.costs?.[t] || 0), 0) +
         legs.filter((l) => types.includes(l.type)).reduce((s, l) => s + l.side * ((today ? valueToday(l, x) : intr(l, x)) - l.entry) * l.lots * L, 0);
-      const bees = (x) => (st.bees.qty > 0 ? st.bees.qty * (st.bees.now * (x / S) - st.bees.price) : 0);
+      const bees = (x) => (st.bees.qty > 0 ? st.bees.qty * (beesPxAt(x) - st.bees.price) : 0);
       const home = [Math.floor((S * 0.9) / 50) * 50, Math.ceil((S * 1.1) / 50) * 50];
       const xs = [];
       for (let x = Math.floor((S * 0.8) / 25) * 25; x <= S * 1.2; x += 25) xs.push(x);
@@ -1048,7 +1052,7 @@
           ? `<tr class="mcl-closed"><td class="l">${num0(b.qty)} NIFTYBEES <span class="muted small">already sold</span></td><td>${b.price.toFixed(2)}</td><td></td><td>${b.exitPx.toFixed(2)}</td><td class="${cls(t.bees)}">${inrS(Math.round(t.bees))}</td></tr>`
           : `<tr class="mcl-closed"><td class="l muted" colspan="5">No NIFTYBEES entered for this trade: only the options are closed.</td></tr>`;
       return `<div class="mcl-close">
-      <div class="set-row"><b>Close the entire trade</b> <span class="muted small">exit prices prefilled from the live prices (bid / ask mid, else LTP)${b && !b.live && beesToSell() ? ' (NIFTYBEES estimated: type its real price)' : ''}; change them to the prices you actually got.</span>
+      <div class="set-row"><b>Close the entire trade</b> <span class="muted small">exit prices prefilled from the LTPs${b && !b.live && beesToSell() ? ' (NIFTYBEES estimated: type its real price)' : ''}; change them to the prices you actually got.</span>
         <button class="btn-sm ghost" id="mclCloseLive" title="Put the live prices back in every box">↻ Live prices</button></div>
       <div class="tbl-wrap"><table class="grid-tbl mcl-close-tbl"><thead><tr><th class="l">Exit</th><th>Entry</th><th>Now</th><th>Exit price</th><th>P&amp;L</th></tr></thead>
         <tbody>${closeLegs().map(legRow).join('')}${beesRow}</tbody></table></div>

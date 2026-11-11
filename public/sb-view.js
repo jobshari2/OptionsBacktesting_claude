@@ -1000,33 +1000,38 @@
       }<tbody>${ts.map((t) => row(t, isOpen)).join('')}</tbody></table></div>`;
     const section = (title, ts, isOpen, empty) =>
       `<div class="sb-trades-sec"><h4>${title} <span class="muted small">${ts.length}</span></h4>${ts.length ? table(ts, isOpen) : `<div class="muted small pad">${empty}</div>`}</div>`;
-    // One account's block: its P&L cards, then its active and closed trades.
+    // One account's panel (the Live / Paper tab of the Trades screen): its P&L cards, then its active and closed trades.
     const group = (acct, ts) => {
       const isLive = acct === 'live';
       const act = ts.filter(isActive);
       const cl = ts.filter((t) => !isActive(t));
-      return `<div class="sb-acct sb-acct-${acct}">
-        <div class="sb-acct-head"><h3>${isLive ? '🟢 Live trades' : '📝 Paper trades'}</h3><span class="muted small">${
-          isLive ? 'Real-money positions. Only these make the total P&amp;L.' : 'Practice trades and replays. Not counted in the total P&amp;L.'
-        }</span></div>
-        <div class="kpis sb-trades-kpis" title="Overall P&amp;L = options + NIFTYBEES of each trade, as in the Overall column (before costs and slippage)">
+      const priced = ts.some((t) => t.summary.src === 'live' && isActive(t));
+      return `<div class="panel-head sb-acct-head"><h3>${isLive ? 'Live trades' : 'Paper trades (saved in the Builder)'} <span class="muted small">${ts.length} · ${
+        isLive ? 'real-money positions: only these make the total P&amp;L' : 'practice trades and replays: not counted in the total P&amp;L'
+      }</span></h3>
+        <span class="spacer"></span>
+        ${cur && ts.includes(cur) ? `<span class="muted small">in the Builder: <b>${esc(cur.name)}</b></span>` : ''}
+        ${priced ? '<button class="btn-sm ghost" data-t="refresh" title="Price the trades with open legs at the current chain">↻ Live P&amp;L</button>' : ''}</div>
+      ${
+        !ts.length
+          ? `<div class="muted small pad">${
+              isLive
+                ? 'No live trades. In the <b>Builder</b>, build a position and press <b>Save trade</b>: it is listed here (a name with “paper” in it goes to <b>Paper</b>). <b>→ Live</b> on a paper trade moves it here.'
+                : 'No paper trades saved in the Builder. <b>→ Paper</b> on a live trade moves it here; replays saved in the Builder are listed here too.'
+            }</div>`
+          : `<div class="kpis sb-trades-kpis" title="Overall P&amp;L = options + NIFTYBEES of each trade, as in the Overall column (before costs and slippage)">
           ${kpi(isLive ? 'Total P&amp;L · live trades' : 'Paper P&amp;L · not in the total', ts, '')}
           ${kpi('Active', act, '')}
           ${kpi('Closed', cl, '')}
         </div>
         ${section('Active', act, true, isLive ? 'No live trade has an open leg.' : 'No paper trade has an open leg.')}
-        ${section('Closed', cl, false, 'None yet: a trade moves here once all its legs are closed.')}
-      </div>`;
-    };
-    el.innerHTML = `<div class="panel-head"><h3>Saved trades <span class="muted small">${list.length ? `${live.length} live · ${paper.length} paper` : 'none yet'}</span></h3>
-        <span class="spacer"></span>
-        ${cur ? `<span class="muted small">in the Builder: <b>${esc(cur.name)}</b></span>` : ''}
-        ${list.some((t) => t.summary.src === 'live') ? '<button class="btn-sm ghost" data-t="refresh" title="Price the trades with open legs at the current chain">↻ Live P&amp;L</button>' : ''}</div>
-      ${
-        !list.length
-          ? '<div class="muted small pad">In the <b>Builder</b>, build a position (B / S in the chain, or Apply a strategy) and press <b>Save trade</b>. Live and paper trades and replays are listed here; <b>Load</b> puts one back in the Builder with its payoff, to adjust it and save it again.</div>'
-          : group('live', live) + group('paper', paper)
+        ${section('Closed', cl, false, 'None yet: a trade moves here once all its legs are closed.')}`
       }`;
+    };
+    el.innerHTML = group('live', live);
+    $('sbTradesPaper').innerHTML = group('paper', paper);
+    $('trNLive').textContent = live.length;
+    $('trNPaper').textContent = paper.length;
     function row(t, isOpen) {
       const u = t.summary;
       const now = tradesNow[t.id];
@@ -1995,7 +2000,7 @@
     S.mcc = null;
     renderTrades();
   }
-  $('sbTrades').addEventListener('click', (e) => {
+  const onTradesClick = (e) => {
     const b = e.target.closest('button');
     if (!b) return;
     if (b.dataset.load) openTrade(b.dataset.load);
@@ -2006,7 +2011,22 @@
       renderTrades();
     } else if (b.dataset.t === 'refresh') refreshTrades();
     else if (b.dataset.acct) setAccount(b.dataset.id, b.dataset.acct, b);
+  };
+  $('sbTrades').addEventListener('click', onTradesClick);
+  $('sbTradesPaper').addEventListener('click', onTradesClick);
+  // The Trades screen's left menu: Live (the live saved trades) / Paper (the paper ones and the strategies' paper
+  // trades). The tab picked is remembered.
+  function showTradesTab(tab) {
+    const t = tab === 'paper' ? 'paper' : 'live';
+    for (const b of document.querySelectorAll('#trNav [data-trtab]')) b.classList.toggle('on', b.dataset.trtab === t);
+    for (const p of document.querySelectorAll('#tr [data-trpane]')) p.classList.toggle('hidden', p.dataset.trpane !== t);
+    BT.store.set('trTab', t);
+  }
+  $('trNav').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-trtab]');
+    if (b) showTradesTab(b.dataset.trtab);
   });
+  showTradesTab(BT.store.get('trTab', 'live'));
   // Mark a saved trade live (real money) or paper (bt-data/paper-trades.json keeps it as trade.account).
   async function setAccount(id, account, btn) {
     btn.disabled = true;
