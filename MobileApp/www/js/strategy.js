@@ -1,5 +1,6 @@
 // Positions made of option legs (and optionally NIFTYBEES): payoff, Greeks, charges, and the collar shapes.
-// A leg is { type: 'CE'|'PE', strike, side: 1 (bought) | -1 (sold), lots, entry (₹ premium), iv (fraction|null), key }.
+// A leg is { type: 'CE'|'PE', strike, side: 1 (bought) | -1 (sold), lots, entry (₹ premium), iv (fraction|null), key,
+// exit (₹, only once the leg is closed), exitAt (ms) }. A closed leg counts with its booked P&L at any Nifty.
 import { price, greeks, intrinsic, impliedVol } from './bs.js';
 import { yearsTo, ist } from './time.js';
 import { orders } from './costs.js';
@@ -7,7 +8,14 @@ import { atmStrike, snap, rowAt, mark } from './analytics.js';
 
 export const NIFTY_STEP = 50;
 
-export const optionsAtExpiry = (legs, S, lot) => legs.reduce((a, l) => a + l.side * l.lots * lot * (intrinsic(l.type, S, l.strike) - l.entry), 0);
+export const isClosed = (l) => l.exit != null && Number.isFinite(+l.exit);
+export const openLegs = (legs) => legs.filter((l) => !isClosed(l));
+// P&L of a closed leg (fixed), or of an open one with its price at px.
+export const legPnl = (l, lot, px) => l.side * l.lots * lot * ((isClosed(l) ? l.exit : px) - l.entry);
+// An option's price as the app reads it: its last traded price (LTP); the bid/ask mid only when it has not traded.
+export const ltpOf = (o) => (o?.ltp > 0 ? o.ltp : mark(o));
+
+export const optionsAtExpiry = (legs, S, lot) => legs.reduce((a, l) => a + legPnl(l, lot, intrinsic(l.type, S, l.strike)), 0);
 
 // NIFTYBEES held: { units, entry (₹ per unit), spot0 (Nifty when bought) }, modelled as moving with Nifty.
 export const beesPnl = (bees, S) => (bees && bees.units > 0 ? bees.units * bees.entry * (S / bees.spot0 - 1) : 0);
@@ -20,13 +28,13 @@ function volOf(l, S, T) {
 
 export function optionsNow(legs, S, expiry, lot, now = Date.now(), spotRef = S) {
   const T = yearsTo(expiry, now);
-  return legs.reduce((a, l) => a + l.side * l.lots * lot * (price(l.type, S, l.strike, T, volOf(l, spotRef, T)) - l.entry), 0);
+  return legs.reduce((a, l) => a + legPnl(l, lot, isClosed(l) ? 0 : price(l.type, S, l.strike, T, volOf(l, spotRef, T))), 0);
 }
 
 export function netGreeks(legs, S, expiry, lot, now = Date.now(), bees = null) {
   const T = yearsTo(expiry, now);
   const g = { delta: 0, gamma: 0, theta: 0, vega: 0 };
-  for (const l of legs) {
+  for (const l of openLegs(legs)) {
     const x = greeks(l.type, S, l.strike, T, volOf(l, S, T));
     const q = l.side * l.lots * lot;
     g.delta += x.delta * q;
@@ -116,7 +124,7 @@ export const COLLARS = {
   },
 };
 
-// The collar's legs on a chain, priced at each side's mark. opts: { ceOff, peOff, gap, lots }.
+// The collar's legs on a chain, priced at each option's LTP. opts: { ceOff, peOff, gap, lots }.
 export function collarLegs(kind, chain, { ceOff = 100, peOff = 100, gap = 100, lots = 1 } = {}) {
   const shape = COLLARS[kind];
   const rows = chain.rows;
@@ -140,20 +148,21 @@ export function legFromChain(chain, type, strike, side, lots = 1) {
     strike,
     side,
     lots,
-    entry: mark(o) ?? 0,
+    entry: ltpOf(o) ?? 0,
+    ltp: ltpOf(o),
     iv: o?.iv > 0 ? o.iv / 100 : null,
     key: o?.key || null,
-    bid: o?.bid ?? null,
-    ask: o?.ask ?? null,
   };
 }
 
-// The current mark of each leg on a chain of its expiry (or intrinsic at spot once expired / missing).
+// Each leg's price now: its exit once closed, else its LTP on a chain of its expiry (intrinsic at spot once expired
+// or without a price).
 export function legMarks(legs, chain, spot, expired) {
   return legs.map((l) => {
+    if (isClosed(l)) return +l.exit;
     if (expired || !chain) return intrinsic(l.type, spot, l.strike);
     const r = rowAt(chain.rows, l.strike);
-    const m = mark(l.type === 'CE' ? r?.ce : r?.pe);
+    const m = ltpOf(l.type === 'CE' ? r?.ce : r?.pe);
     return m ?? intrinsic(l.type, spot, l.strike);
   });
 }
@@ -164,8 +173,19 @@ export function valuePosition(pos, { chain, spot, beesPx, now = Date.now(), slip
   const marks = legMarks(pos.legs, chain, spot, expired);
   const options = pos.legs.reduce((a, l, i) => a + l.side * l.lots * pos.lotSize * (marks[i] - l.entry), 0);
   let bees = 0;
-  if (pos.bees?.units > 0) bees = beesPx > 0 ? pos.bees.units * (beesPx - pos.bees.entry) : beesPnl(pos.bees, spot);
-  const costsOut = expired ? 0 : tradeCosts(pos.legs, pos.lotSize, { slipPct, brokerage }, now, marks).total;
+  const b = pos.bees;
+  if (b?.units > 0) bees = b.exit > 0 ? b.units * (b.exit - b.entry) : beesPx > 0 ? b.units * (beesPx - b.entry) : beesPnl(b, spot);
+  // closing costs: every closed leg at its exit, and the open ones at their price now (none once expired)
+  const out = pos.legs.map((l, i) => (isClosed(l) || !expired ? i : -1)).filter((i) => i >= 0);
+  const costsOut = out.length
+    ? tradeCosts(
+        out.map((i) => pos.legs[i]),
+        pos.lotSize,
+        { slipPct, brokerage },
+        now,
+        out.map((i) => marks[i]),
+      ).total
+    : 0;
   const gross = options + bees;
   return { marks, expired, options, bees, gross, costsIn: pos.costsIn || 0, costsOut, net: gross - (pos.costsIn || 0) - costsOut };
 }

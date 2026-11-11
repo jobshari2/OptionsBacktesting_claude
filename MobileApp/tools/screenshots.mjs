@@ -37,10 +37,12 @@ try {
   await page.locator('#colChart svg').waitFor();
   await page.locator('#colKind').evaluate((e) => e.scrollIntoView());
   await shot('4-collar');
-  await page.locator('#colChart').evaluate((e) => e.scrollIntoView({ block: 'center' }));
-  await shot('5-collar-payoff');
   await page.locator('#colSave').tap();
   await page.locator('#svOk').tap();
+  await page.locator('#lvPick').waitFor();
+  await page.waitForTimeout(3000); // the toast goes
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await shot('5-live-trade');
   await page.goto(`http://localhost:${PORT}/#positions`);
   await page.locator('article.pos .pos-head').first().tap();
   await page.locator('article.pos svg').first().waitFor();

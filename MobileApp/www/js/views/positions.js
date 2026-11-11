@@ -50,10 +50,11 @@ function detail(p, info, v) {
   const spotNow = p.status === 'closed' ? p.exit.spot : info?.spot;
   return `<div class="pos-detail">
     <p class="muted small">Entered ${new Date(p.createdAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })} · Nifty ${num(p.spot0, 0)} → ${num(spotNow, 0)}</p>
-    <table class="legs"><thead><tr><th>Leg</th><th>Entry</th><th>${p.status === 'closed' ? 'Exit' : 'Now'}</th><th>P&amp;L</th></tr></thead><tbody>${rows}${bees}</tbody></table>
+    <table class="legs"><thead><tr><th>Leg</th><th>Entry</th><th>${p.status === 'closed' ? 'Exit' : 'Now / exit'}</th><th>P&amp;L</th></tr></thead><tbody>${rows}${bees}</tbody></table>
     <div class="chart-box" data-chart="${p.id}"></div>
     <div class="row gap wrap">
       ${p.status === 'open' ? `<button class="btn primary" data-act="close">Close at market</button>` : ''}
+      ${p.kind === 'psc' || p.kind === 'bpc' ? `<button class="btn" data-act="live">Live trade</button>` : ''}
       <button class="btn" data-act="rename">Rename</button>
       <button class="btn" data-act="builder">Open in Builder</button>
       <button class="btn danger" data-act="delete">Delete</button>
@@ -131,11 +132,21 @@ async function act(e) {
     const info = lastVals.get(id);
     if (!info?.v) return toast('No market price yet — try again after the next refresh');
     if (!(await confirmSheet(`Close “${p.name}” at the current prices (${inr(info.v.net, { sign: true })} after costs)?`, 'Close position'))) return;
-    positions.update(id, { status: 'closed', exit: { ...info.v, at: Date.now(), spot: info.spot, beesPx: info.beesPx } });
+    const at = Date.now();
+    // every open leg is booked at its price now, and NIFTYBEES at its LTP, so the Live trade shows the same exits
+    const legs = p.legs.map((l, i) => (l.exit != null ? l : { ...l, exit: info.v.marks[i], exitAt: at }));
+    const bees = p.bees?.units > 0 && !(p.bees.exit > 0) && info.beesPx > 0 ? { ...p.bees, exit: info.beesPx, exitAt: at } : p.bees;
+    positions.update(id, { legs, bees, status: 'closed', exit: { ...info.v, at, spot: info.spot, beesPx: info.beesPx } });
     toast('Position closed');
     draw();
+  } else if (a === 'live') {
+    store.set('collar', { ...(store.get('collar') || {}), kind: p.kind });
+    store.set('liveId.' + p.kind, p.id);
+    store.set('collarSub', 'live');
+    store.set('strategiesTab', 'collars');
+    ctxRef.nav('strategies');
   } else if (a === 'builder') {
-    store.set('builder', { expiry: p.expiry, legs: p.legs.map((l) => ({ ...l })), bees: Boolean(p.bees) });
+    store.set('builder', { expiry: p.expiry, legs: p.legs.filter((l) => l.exit == null).map(({ exit, exitAt, ...l }) => (void exit, void exitAt, { ...l })), bees: Boolean(p.bees) });
     store.set('strategiesTab', 'builder');
     ctxRef.nav('strategies');
   }

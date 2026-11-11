@@ -12,9 +12,9 @@ npm install
 npm test
 ```
 
-16 tests over the code that runs on the phone: Black-Scholes and implied volatility, IST market hours and token expiry,
+21 tests over the code that runs on the phone: Black-Scholes and implied volatility, IST market hours and token expiry,
 charges, chain analytics (ATM, PCR, max pain, support/resistance), the bid/ask mark, monthly expiry choice for the
-collars, payoff/breakevens/extremes, collar legs, NIFTYBEES sizing, position valuation (live and expired), Upstox reply
+collars, payoff/breakevens/extremes, collar legs, NIFTYBEES sizing, position valuation (live and expired), the collar's Live trade (P&L by structure at LTP, the move grid, NIFTYBEES cover, closed legs), Upstox reply
 parsing and errors (401, offline, bad request), the login URL and token exchange, the demo market, and the store with
 backup/restore.
 
@@ -37,6 +37,9 @@ What they check:
 - Chain: tapping a price opens the sheet; Buy/Sell puts the leg in the Builder, which draws the payoff.
 - Collars: both shapes have the right legs; saving one makes a paper position, which is valued, opened, closed, and
   survives a restart.
+- Put spread collar: a strike and a price edited on New trade, Nifty and NIFTYBEES at the entry typed, saved; the
+  Live trade shows the KPIs, legs, NIFTYBEES cover, line, 42-row grid and payoff; a leg is closed at a typed price;
+  the whole trade is closed at typed prices and reopened.
 - Settings persist across reloads.
 - Upstox source with **mocked** Upstox replies (`e2e/upstox-fixture.js`): asks to log in; a bad token is rejected
   and forgotten; a good one shows live numbers; the lot size comes from Upstox.

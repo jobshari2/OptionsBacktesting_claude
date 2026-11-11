@@ -95,6 +95,72 @@ test('Collars: both shapes, saved as a paper position, valued, then closed', asy
   await expect(page.locator('article.pos.closed', { hasText: 'BPC test' })).toBeVisible();
 });
 
+test('Put spread collar: edit strikes and prices, then the Live trade: KPIs, legs, NIFTYBEES, grid, close, reopen', async ({ page }) => {
+  await page.goto('./#strategies');
+  await page.locator('#stTabs button', { hasText: 'Collars' }).tap();
+  await expect(page.locator('#colSub button.on')).toHaveText('New trade');
+  await expect(page.locator('table.legs.edit thead')).toContainText('LTP');
+  await expect(page.locator('table.legs.edit thead')).not.toContainText('Bid');
+  // a new strike takes its own LTP; a typed price stays
+  const ce = page.locator('[data-strike="0"]');
+  const ceK = +(await ce.inputValue()) + 100;
+  await ce.fill(String(ceK));
+  await ce.press('Enter');
+  await expect(page.locator('[data-strike="0"]')).toHaveValue(String(ceK));
+  const ltp = await page.locator('table.legs.edit tbody tr').first().locator('td').nth(2).innerText();
+  expect(+(await page.locator('[data-price="0"]').inputValue())).toBeCloseTo(+ltp.replace(/,/g, ''), 2);
+  await page.locator('[data-price="1"]').fill('123.45');
+  await page.locator('[data-price="1"]').press('Enter');
+  await expect(page.locator('[data-price="1"]')).toHaveValue('123.45');
+  await page.locator('#colSpot').fill('25000');
+  await page.locator('#colSpot').press('Enter');
+  await page.locator('#colBu').fill('5000');
+  await page.locator('#colBu').press('Enter');
+  await page.locator('#colBp').fill('280');
+  await page.locator('#colBp').press('Enter');
+  await expect(page.locator('.stat', { hasText: 'NIFTYBEES' }).first()).toContainText('5,000 × 280.00');
+  await noHorizontalScroll(page);
+  await page.locator('#colSave').tap();
+  await page.locator('#svName').fill('PSC live');
+  await page.locator('#svOk').tap();
+
+  // Live trade
+  await expect(page.locator('#colSub button.on')).toHaveText('Live trade');
+  await expect(page.locator('#lvPick')).toContainText('PSC live');
+  for (const k of ['Nifty now', 'Sold call', 'Put spread', 'Options', 'NIFTYBEES', 'Total']) await expect(page.locator('.kpis .stat', { hasText: k }).first()).toBeVisible();
+  await expect(page.locator('.kpis .stat', { hasText: 'Nifty now' })).toContainText('entry 25,000');
+  await expect(page.locator('table.live')).toContainText(`${ceK} CE`);
+  await expect(page.locator('table.live')).toContainText('123.45');
+  await expect(page.locator('table.live')).toContainText('5,000 NIFTYBEES');
+  await expect(page.locator('#lvCover')).toContainText('NIFTYBEES needed');
+  await expect(page.locator('.track .mk.entry')).toContainText('25,000');
+  await expect(page.locator('table.grid tbody tr')).toHaveCount(42);
+  await expect(page.locator('table.grid tr.now')).toHaveCount(1);
+  await expect(page.locator('#lvChart svg path.line.s-exp')).toHaveCount(1);
+  await noHorizontalScroll(page);
+
+  // edit a leg: close the sold call at a typed price
+  await page.locator('tr[data-leg="0"]').tap();
+  await page.locator('#lgExit').fill('10');
+  await page.locator('#lgOk').tap();
+  await expect(page.locator('tr[data-leg="0"]')).toContainText('closed');
+  // NIFTYBEES entry saved from the form
+  await page.locator('#lvQty').fill('6000');
+  await page.locator('#lvSaveBees').tap();
+  await expect(page.locator('table.live')).toContainText('6,000 NIFTYBEES');
+
+  // close the whole trade at typed prices
+  await page.locator('#lvCloseBtn').tap();
+  await page.locator('[data-cpx="bees"]').fill('290');
+  await expect(page.locator('#lvCloseTot')).toContainText('NIFTYBEES +₹60,000');
+  await page.locator('#lvCloseGo').tap();
+  await expect(page.locator('#colBody')).toContainText('Closed');
+  await expect(page.locator('#colBody table.legs')).toContainText('290.00');
+  await page.locator('#lvReopen').tap();
+  await expect(page.locator('tr[data-leg="0"]')).toContainText('closed'); // closed before the trade's close: stays closed
+  await expect(page.locator('tr[data-leg="1"]')).not.toContainText('closed');
+});
+
 test('Settings persist: theme, refresh, strikes', async ({ page }) => {
   await page.goto('./#settings');
   await page.locator('#seTheme button', { hasText: 'Light' }).tap();

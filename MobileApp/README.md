@@ -6,9 +6,9 @@ The Nifty options portal for an **Android phone**, as an installable web app (PW
 - **Not a native app.** HTML, CSS and JavaScript with no framework, no build step and no runtime dependencies.
 - **Self-contained.** Nothing in this folder uses the rest of the repository. It can be copied out and live on its own.
 
-| Market | Chain | Collar | Positions |
+| Market | Chain | Live trade | Positions |
 | --- | --- | --- | --- |
-| ![Market](docs/screenshots/1-market.png) | ![Chain](docs/screenshots/2-chain.png) | ![Collar](docs/screenshots/4-collar.png) | ![Positions](docs/screenshots/6-positions.png) |
+| ![Market](docs/screenshots/1-market.png) | ![Chain](docs/screenshots/2-chain.png) | ![Live trade](docs/screenshots/5-live-trade.png) | ![Positions](docs/screenshots/6-positions.png) |
 
 ## What it does
 
@@ -16,7 +16,7 @@ The Nifty options portal for an **Android phone**, as an installable web app (PW
 | --- | --- |
 | **Market** | Nifty 50, India VIX, NIFTYBEES; today's Nifty chart; the nearest expiry's ATM straddle, implied move, PCR, max pain, support and resistance |
 | **Chain** | Any expiry, ±5–20 strikes: LTP, change, OI with bars, change in OI, IV. Tap a price to Buy/Sell it into the Builder |
-| **Strategies** | **Put spread collar** and **Bull put collar** (the desktop portal's legs) live from the chain, with NIFTYBEES sizing, charges, payoff (expiry and today), max P/L, breakevens and Greeks. **Builder** for any legs |
+| **Strategies** | **Put spread collar** and **Bull put collar**, as on the portal. **New trade**: the legs by the rules with every strike and price editable (prices are LTPs), Nifty and NIFTYBEES (units, price) at the entry editable, payoff, max P/L, Greeks; **Save trade**. **Live trade**: the portal's Live trade tab: Nifty now vs the entry, P&L of the sold call, put spread, options, NIFTYBEES and total; NIFTYBEES needed for the upside; the strikes on a line; NIFTYBEES entry; legs (tap to change strike, lots, entry or exit; add legs); payoff; P&L for Nifty moves from the start (today and at expiry); close the whole trade at prices you type, and reopen. **Builder** for any legs |
 | **Positions** | Paper positions saved on the phone, marked to market at bid/ask mid after charges; close, rename, delete, open in Builder |
 | **Settings** | Upstox login (on the phone) or pasted token; Demo data; refresh; lot size, slippage, brokerage; theme; backup export/import |
 
@@ -48,6 +48,7 @@ www/                 the app; exactly what is published
   js/upstox.js       Upstox REST client + OAuth (browser-side)
   js/demo.js         simulated market (same interface)
   js/market.js       data layer: picks the source, shares requests, keeps last-good copies
+  js/live.js         the collar's Live trade figures (P&L by structure, move grid, NIFTYBEES cover)
   js/bs.js  strategy.js  analytics.js  costs.js  time.js  charts.js  store.js  positions.js  ui.js
 tools/serve.js       static file server for local and Wi-Fi testing
 tools/stamp.mjs      writes the service worker's build number and file list (run before publishing)
@@ -83,4 +84,5 @@ docs/                DESIGN.md · INSTALL-ANDROID.md · TESTING.md
 - **Exchange holidays** are not known; on a holiday the app just shows the last prices.
 - **Expired positions** are valued at intrinsic against the latest Nifty, not the official expiry settlement price.
 - **Margin** is not computed.
+- **Live trade suggestions** (the portal's changes tested on past Nifty moves) are not on the phone: it has no price history store.
 - The collar's NIFTYBEES payoff curve assumes the ETF moves with Nifty; the live P&L uses NIFTYBEES's real price.
