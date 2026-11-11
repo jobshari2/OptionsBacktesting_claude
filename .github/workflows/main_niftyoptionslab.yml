@@ -3,10 +3,9 @@
 
 name: Build and deploy Node.js app to Azure Web App - niftyoptionslab
 
+# Manual only: pushes to main no longer deploy. To deploy, use
+# Actions › "Build and deploy Node.js app to Azure Web App - niftyoptionslab" › Run workflow.
 on:
-  push:
-    branches:
-      - 'main'
   workflow_dispatch:
 
 jobs:

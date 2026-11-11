@@ -34,9 +34,14 @@ The repository `jobshari2/OptionsBacktesting_claude` is public, so Pages is free
    cp MobileApp/deploy/github-pages-from-this-repo.yml .github/workflows/mobile-pages.yml
    ```
 
-2. Commit and push to `main`.
-3. On github.com: **Settings › Pages › Build and deployment › Source: GitHub Actions**.
-4. **Actions › Mobile app to GitHub Pages › Run workflow** (or push any change under `MobileApp/`).
+2. Commit and push to `main`. This alone does not start a run: the workflow starts by itself only when a push
+   changes something under `MobileApp/`.
+3. **Before the first run**, on github.com: **Settings › Pages › Build and deployment › Source: GitHub Actions**
+   (<https://github.com/jobshari2/OptionsBacktesting_claude/settings/pages>). Without it the publish step fails.
+4. Open **Actions**, click **Mobile app to GitHub Pages** in the left-hand list (it may be under *Show more
+   workflows*), then the grey **Run workflow ▾** button above the list of runs, and the green **Run workflow**.
+   Direct link: <https://github.com/jobshari2/OptionsBacktesting_claude/actions/workflows/mobile-pages.yml>. The
+   button shows only to accounts that can write to the repository.
 5. When it finishes, the app is at **`https://jobshari2.github.io/OptionsBacktesting_claude/`**.
 
 Every later push that changes `MobileApp/` republishes it. The workflow runs the unit tests and stamps the service
