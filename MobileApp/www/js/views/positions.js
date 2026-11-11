@@ -96,8 +96,8 @@ function draw() {
       xFmt: (x) => num(x, 0),
       yFmt: (y) => inr(y, { lakh: Math.abs(y) >= 1e5 }),
       marks: [
-        { x: p.spot0, label: 'entry', cls: 'entry' },
-        { x: spot, label: 'now', cls: 'spot' },
+        { x: p.spot0, label: 'entry', cls: 'entry', row: 1 },
+        { x: spot, label: 'now', cls: 'spot', row: 0 },
       ],
     });
   }

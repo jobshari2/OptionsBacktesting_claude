@@ -181,26 +181,15 @@ function renderNew() {
         <div class="stat"><span>Lot size</span><b>${lot}</b></div>
       </div>
     </section>
-    <section class="card"><div class="card-head"><h2>Payoff</h2><span class="legend"><i class="s-exp"></i>expiry <i class="s-now"></i>today${bees ? ' <i class="s-opt"></i>options only' : ''}</span></div>
-      <div id="colChart" class="chart-box"></div><div id="colStats"></div></section>
+    <section class="card"><div class="card-head"><h2>Payoff</h2><span class="muted small">tap a name to hide or show its line</span></div>
+      <div id="colChart"></div><div id="colStats"></div></section>
     <button class="btn primary block" id="colSave" ${missing ? 'disabled' : ''}>${missing ? 'Type a price for every leg' : 'Save trade'}</button>`;
 
   if (!missing) {
     const priced = priceLegs(legs, chain, spot, chain.expiry);
-    const pts = payoffPts(priced, lot, chain.expiry, spot, bees ? { ...bees, now: bees.entry } : null, spot, [spot], 0.1);
-    lineChart(el.querySelector('#colChart'), {
-      series: [
-        { pts: pts.exp, cls: 's-exp', label: 'Expiry' },
-        { pts: pts.today, cls: 's-now', label: 'Today' },
-        ...(bees ? [{ pts: pts.opt, cls: 's-opt', label: 'Options' }] : []),
-      ],
-      height: 210,
-      zero: true,
-      area: true,
-      xFmt: (x) => num(x, 0),
-      yFmt: (y) => inr(y, { lakh: Math.abs(y) >= 1e5 }),
-      marks: [{ x: spot, label: 'entry ' + num(spot, 0), cls: 'spot' }],
-    });
+    const bz = bees ? { ...bees, now: bees.entry } : null;
+    drawPayoff(el.querySelector('#colChart'), { legs: priced, lot, expiry: chain.expiry, S: spot, E: spot, bees: bz, key: 'pay-new', nowLabel: 'Entry' });
+    const pts = payoffPts(priced, lot, chain.expiry, spot, bz, spot - spot * 0.1, spot + spot * 0.1);
     const a = analyse(pts.exp);
     const g = netGreeks(priced.map((l) => ({ ...l, iv: l.vol })), spot, chain.expiry, lot, Date.now(), bees);
     el.querySelector('#colStats').innerHTML =
@@ -297,25 +286,74 @@ function renderNew() {
   };
 }
 
-// Payoff points over the range that shows the strikes, the entry and Nifty now: at expiry, today, options alone.
-function payoffPts(legs, lot, expiry, E, bees, S, xsMust, pad = 0.06) {
-  const ks = [...legs.map((l) => l.strike), ...xsMust];
-  const lo = Math.min(...ks) * (1 - pad);
-  const hi = Math.max(...ks) * (1 + pad);
+// Payoff lines from Nifty lo to hi: the trade (NIFTYBEES + options) at expiry and today, the options at expiry, the
+// sold call and the put spread at expiry, and NIFTYBEES alone. NIFTYBEES moves in % with Nifty from its buy price.
+function payoffPts(legs, lot, expiry, E, bees, lo, hi) {
   const k = bees?.units > 0 && bees.entry > 0 ? bees.entry / (bees.spot0 || E) : 0;
   const etf = (x) => (bees?.units > 0 ? bees.units * (k * x - bees.entry) : 0);
-  const exp = [];
-  const today = [];
-  const opt = [];
-  for (let i = 0; i <= 160; i++) {
-    const x = lo + ((hi - lo) * i) / 160;
+  const out = { exp: [], today: [], opt: [], optToday: [], ce: [], pe: [], bees: [] };
+  for (let i = 0; i <= 200; i++) {
+    const x = lo + ((hi - lo) * i) / 200;
     const e = expiryAt(legs, lot, x);
     const d = todayAt(legs, lot, x, expiry);
-    exp.push([x, e.CE + e.PE + etf(x)]);
-    today.push([x, d.CE + d.PE + etf(x)]);
-    opt.push([x, e.CE + e.PE]);
+    out.exp.push([x, e.CE + e.PE + etf(x)]);
+    out.today.push([x, d.CE + d.PE + etf(x)]);
+    out.opt.push([x, e.CE + e.PE]);
+    out.optToday.push([x, d.CE + d.PE]);
+    out.ce.push([x, e.CE]);
+    out.pe.push([x, e.PE]);
+    out.bees.push([x, etf(x)]);
   }
-  return { exp, today, opt };
+  return out;
+}
+
+const RANGES = [5, 10, 20];
+// The payoff chart with its range buttons (± % around Nifty now; the start always in view) and a legend that hides or
+// shows each line. The dot on "Now" is the trade's P&L today at Nifty now.
+function drawPayoff(box, { legs, lot, expiry, S, E, bees, key, nowLabel = 'Now', pnl = null }) {
+  const r = RANGES.includes(store.get('payRange')) ? store.get('payRange') : 10;
+  const lo = Math.min(S * (1 - r / 100), E * 0.995);
+  const hi = Math.max(S * (1 + r / 100), E * 1.005);
+  const pts = payoffPts(legs, lot, expiry, E, bees, lo, hi);
+  const has = bees?.units > 0;
+  const series = has
+    ? [
+        { pts: pts.exp, cls: 's-tot', label: 'Total at expiry', area: true },
+        { pts: pts.today, cls: 's-tot-now', label: 'Total today' },
+        { pts: pts.opt, cls: 's-opt', label: 'Options at expiry' },
+        { pts: pts.ce, cls: 's-ce', label: N.CE, hidden: true },
+        { pts: pts.pe, cls: 's-pe', label: N.PE, hidden: true },
+        { pts: pts.bees, cls: 's-bees', label: 'NIFTYBEES' },
+      ]
+    : [
+        { pts: pts.opt, cls: 's-tot', label: 'Options at expiry', area: true },
+        { pts: pts.optToday, cls: 's-tot-now', label: 'Options today' },
+        { pts: pts.ce, cls: 's-ce', label: N.CE },
+        { pts: pts.pe, cls: 's-pe', label: N.PE },
+      ];
+  const today = series[1];
+  // the P&L now as the boxes at the top show it (NIFTYBEES at its LTP); else today's line at Nifty now
+  const nowPnl = pnl ?? today.pts.reduce((b, p) => (Math.abs(p[0] - S) < Math.abs(b[0] - S) ? p : b))[1];
+  box.innerHTML = `<div class="seg mini pay-range">${RANGES.map((x) => `<button data-r="${x}" class="${x === r ? 'on' : ''}">±${x} %</button>`).join('')}</div><div class="chart-box"></div>
+    <p class="muted small">${has ? 'Total = NIFTYBEES + options. ' : ''}Solid: at expiry. Dashed: if Nifty moved there today (Black-Scholes, each leg fitted to its LTP). Touch the chart to read every line.</p>`;
+  const marks = [{ x: S, label: `${nowLabel} ${num(S, 0)} · ${rs(nowPnl)}`, cls: 'spot', row: 0 }];
+  if (Math.abs(E - S) >= 1) marks.push({ x: E, label: `Started ${num(E, 0)}`, cls: 'entry', row: 1 });
+  lineChart(box.querySelector('.chart-box'), {
+    series,
+    height: 260,
+    zero: true,
+    area: true,
+    legend: key + (has ? '-b' : ''),
+    xFmt: (x) => num(x, 0),
+    yFmt: (y) => inr(y, { lakh: Math.abs(y) >= 1e5 }),
+    marks: marks.map((m) => ({ ...m, dot: m.cls === 'spot' ? today.label : null })),
+  });
+  box.querySelector('.pay-range').onclick = (e) => {
+    const b = e.target.closest('[data-r]');
+    if (!b) return;
+    store.set('payRange', +b.dataset.r);
+    drawPayoff(box, { legs, lot, expiry, S, E, bees, key, nowLabel, pnl });
+  };
 }
 
 // ---------- Live trade ----------
@@ -404,8 +442,7 @@ function renderLive() {
       <div class="card-head"><h2>Legs and payoff</h2><button class="btn small" id="lvAdd">+ Add leg</button></div>
       <div class="tbl-scroll"><table class="legs live"><thead><tr><th>Leg</th><th>Entry</th><th>Now / exit</th><th>IV</th><th>P&amp;L</th></tr></thead><tbody>${legsBody(m)}</tbody></table></div>
       <p class="muted small">Tap a leg to change its strike, lots, entry or exit price, or to close it. Lot ${lot}.</p>
-      <div class="card-head"><span class="legend"><i class="s-exp"></i>expiry <i class="s-now"></i>if Nifty moved there today</span></div>
-      <div id="lvChart" class="chart-box"></div>
+      <div id="lvChart"></div>
     </section>
     <section class="card">
       <h2>P&amp;L for Nifty moves from where the trade started</h2>
@@ -537,23 +574,7 @@ function coverBody(m, c, q) {
 
 function drawLiveChart(m) {
   const box = root.querySelector('#lvChart');
-  if (!box) return;
-  const pts = payoffPts(m.legs, m.lot, m.p.expiry, m.E, m.bees, m.S, [m.S, m.E]);
-  lineChart(box, {
-    series: [
-      { pts: pts.exp, cls: 's-exp', label: 'Expiry' },
-      { pts: pts.today, cls: 's-now', label: 'Today' },
-    ],
-    height: 210,
-    zero: true,
-    area: true,
-    xFmt: (x) => num(x, 0),
-    yFmt: (y) => inr(y, { lakh: Math.abs(y) >= 1e5 }),
-    marks: [
-      { x: m.E, label: 'start', cls: 'entry' },
-      { x: m.S, label: 'now', cls: 'spot' },
-    ],
-  });
+  if (box) drawPayoff(box, { legs: m.legs, lot: m.lot, expiry: m.p.expiry, S: m.S, E: m.E, bees: m.bees, key: 'pay-live', pnl: m.n.total });
 }
 
 // ---------- close the whole trade ----------

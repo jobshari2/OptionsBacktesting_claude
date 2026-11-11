@@ -1,7 +1,7 @@
 // Service worker: keeps the app's own files on the phone so it starts with no connection to the host.
 // Market data (api.upstox.com) is never cached here; the app keeps its own last-good copy.
 // BUILD and FILES are written by `npm run stamp` (tools/stamp.mjs): a new BUILD makes phones fetch the new files.
-const BUILD = 'bdfa9facbb';
+const BUILD = '449eb3b0d5';
 const FILES = [
   './',
   'css/app.css',

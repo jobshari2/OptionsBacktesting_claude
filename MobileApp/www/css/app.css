@@ -126,10 +126,9 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .chart .mark-label { fill: var(--accent); font-size: 10.5px; font-weight: 600; }
 .chart .mark-label.entry { fill: var(--muted); }
 .chart .cursor { stroke: var(--muted); stroke-width: 1; }
-.chart-tip { position: absolute; top: 0; width: 150px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font-size: 11.5px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12); pointer-events: none; font-variant-numeric: tabular-nums; }
+.chart-tip { position: absolute; top: 0; min-width: 150px; max-width: 230px; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font-size: 11.5px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12); pointer-events: none; font-variant-numeric: tabular-nums; }
 .chart-tip span { display: block; }
-.chart-tip .s-now { color: var(--s-now); }
-.chart-tip .s-opt { color: var(--muted); }
+.chart-tip span { color: var(--text); }
 .chart-empty { display: grid; place-items: center; color: var(--muted); font-size: 13px; min-height: 120px; }
 .legend { font-size: 11.5px; color: var(--muted); display: inline-flex; gap: 4px; align-items: center; }
 .legend i { display: inline-block; width: 14px; height: 0; border-top: 2px solid var(--text); margin-left: 6px; }
@@ -241,6 +240,39 @@ table.legs th:not(:first-child), table.legs td:not(:first-child) { text-align: r
 .sheet .row .btn { flex: 1; }
 .toast { position: fixed; left: 16px; right: 16px; bottom: calc(var(--tabbar-h) + var(--safe-b) + 12px); z-index: 60; margin: 0 auto; max-width: 480px; background: var(--text); color: var(--bg); padding: 12px 14px; border-radius: 12px; font-size: 14px; opacity: 0; transform: translateY(8px); transition: all 0.2s; }
 .toast.show { opacity: 1; transform: none; }
+
+/* payoff lines: total (NIFTYBEES + options), options, the two structures, NIFTYBEES */
+:root { --s-tot: #2563eb; --s-optc: #8b5cf6; --s-ce: #b7791f; --s-pe: #0f8a4a; --s-bees: #ea580c; }
+:root[data-theme="dark"] { --s-tot: #60a5fa; --s-optc: #c4b5fd; --s-ce: #e3b341; --s-pe: #34d399; --s-bees: #fb923c; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --s-tot: #60a5fa; --s-optc: #c4b5fd; --s-ce: #e3b341; --s-pe: #34d399; --s-bees: #fb923c; } }
+.chart .grid.x { opacity: 0.5; }
+.chart .line.s-tot { stroke: var(--s-tot); stroke-width: 2.6; }
+.chart .line.s-tot-now { stroke: var(--s-tot); stroke-width: 1.8; stroke-dasharray: 3 3; }
+.chart .line.s-opt { stroke: var(--s-optc); stroke-width: 2; }
+.chart .line.s-ce { stroke: var(--s-ce); stroke-width: 1.6; stroke-dasharray: 6 3; }
+.chart .line.s-pe { stroke: var(--s-pe); stroke-width: 1.6; stroke-dasharray: 6 3; }
+.chart .line.s-bees { stroke: var(--s-bees); stroke-width: 1.8; }
+.chart .dot { fill: var(--accent); stroke: var(--surface); stroke-width: 2; }
+.chart .mark.spot { stroke: var(--accent); }
+.chart .mark.entry { stroke: var(--warn); }
+.chart .mark-label.entry { fill: var(--warn); }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.chart-legend button { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--surface-2); border-radius: 999px; padding: 4px 10px; min-height: 32px; font-size: 12px; cursor: pointer; }
+.chart-legend button.off { opacity: 0.45; text-decoration: line-through; }
+.chart-legend i, .chart-tip i { display: inline-block; width: 16px; height: 0; border-top: 2px solid var(--text); }
+.chart-tip i { width: 10px; margin-right: 4px; vertical-align: middle; }
+i.s-tot { border-top: 3px solid var(--s-tot) !important; }
+i.s-tot-now { border-top: 2px dashed var(--s-tot) !important; }
+i.s-opt { border-top: 2px solid var(--s-optc) !important; }
+i.s-ce { border-top: 2px dashed var(--s-ce) !important; }
+i.s-pe { border-top: 2px dashed var(--s-pe) !important; }
+i.s-bees { border-top: 2px solid var(--s-bees) !important; }
+i.s-exp { border-top: 2px solid var(--text) !important; }
+i.s-now { border-top: 2px dashed var(--s-now) !important; }
+.chart-tip span { white-space: nowrap; }
+.chart-tip span b { font-weight: 650; }
+.seg.mini { width: max-content; margin-bottom: 6px; }
+.seg.mini button { min-height: 32px; padding: 0 12px; font-size: 12.5px; flex: none; }
 
 /* collars: New trade and Live trade */
 .form-grid.three { grid-template-columns: 1fr 1fr 1fr; }

@@ -136,7 +136,13 @@ test('Put spread collar: edit strikes and prices, then the Live trade: KPIs, leg
   await expect(page.locator('.track .mk.entry')).toContainText('25,000');
   await expect(page.locator('table.grid tbody tr')).toHaveCount(42);
   await expect(page.locator('table.grid tr.now')).toHaveCount(1);
-  await expect(page.locator('#lvChart svg path.line.s-exp')).toHaveCount(1);
+  // payoff: total (expiry, today), options and NIFTYBEES drawn; the structures in the legend, to switch on
+  for (const c of ['s-tot', 's-tot-now', 's-opt', 's-bees']) await expect(page.locator(`#lvChart svg path.line.${c}`)).toHaveCount(1);
+  await expect(page.locator('#lvChart .mark-label').first()).toContainText(await page.locator('.kpis .stat.total b').innerText());
+  await page.locator('#lvChart .chart-legend button', { hasText: 'Put spread' }).tap();
+  await expect(page.locator('#lvChart svg path.line.s-pe')).toHaveCount(1);
+  await page.locator('#lvChart .pay-range button', { hasText: '±20 %' }).tap();
+  await expect(page.locator('#lvChart .pay-range button.on')).toHaveText('±20 %');
   await noHorizontalScroll(page);
 
   // edit a leg: close the sold call at a typed price
