@@ -15,3 +15,6 @@ test-results/
 *.css
 *.html
 *.md
+
+# A separate app with its own tooling
+MobileApp/

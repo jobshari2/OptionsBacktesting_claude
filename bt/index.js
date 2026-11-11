@@ -155,7 +155,18 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
       summary: b.summary || {},
       snap: b.snap,
     };
+    if (old?.account) t.account = old.account; // live / paper, set on the Trades screen: a save from the Builder keeps it
     writeTrades(old ? list.map((x) => (x.id === t.id ? t : x)) : [...list, t]);
+    return t;
+  }
+  // Mark a saved trade 'live' (real money, counted in the Trades screen's total P&L) or 'paper'.
+  function setTradeAccount(b) {
+    if (b?.account !== 'live' && b?.account !== 'paper') throw new Error('account must be live or paper');
+    const list = readTrades();
+    const t = list.find((x) => x.id === b.id);
+    if (!t) throw new Error('No such trade');
+    t.account = b.account;
+    writeTrades(list);
     return t;
   }
 
@@ -534,6 +545,7 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
       }
       if (p === '/api/sb/trades' && req.method !== 'POST') return sendJson(res, 200, { trades: readTrades() });
       if (p === '/api/sb/trades' && req.method === 'POST') return sendJson(res, 200, { trade: saveTrade(await readJson(req, 3_000_000)) });
+      if (p === '/api/sb/trades/account' && req.method === 'POST') return sendJson(res, 200, { trade: setTradeAccount(await readJson(req)) });
       if (p === '/api/sb/trades/delete' && req.method === 'POST') {
         const id = (await readJson(req)).id;
         writeTrades(readTrades().filter((x) => x.id !== id));

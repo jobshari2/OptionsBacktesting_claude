@@ -916,6 +916,10 @@
     }
     return { opt, optNow: Boolean(now), bees, beesHow, overall: opt == null ? null : opt + (bees || 0), mcc, m };
   }
+  // A saved trade's account: 'live' (real money, in the total P&L) or 'paper'. Set on the Trades screen (→ Live /
+  // → Paper); until then a replay or a trade with "paper" in its name is paper, any other live-market trade is live.
+  const accountOf = (t) =>
+    t.summary?.src !== 'live' ? 'paper' : t.account === 'live' || t.account === 'paper' ? t.account : /paper/i.test(t.name) ? 'paper' : 'live';
   const whenTxt = (t) => new Date(t).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
   // Save buttons of the Builder's top bar (the list of saved trades is on the Trades tab).
   function renderSaveBox() {
@@ -954,8 +958,10 @@
     const list = trades.slice().sort((a, b) => b.savedAt - a.savedAt);
     const cur = trades.find((t) => t.id === S.tradeId);
     // Active: a leg still open (the summary is kept in step by the Builder's save and by Live trade's close / undo).
-    const active = list.filter((t) => t.summary.open > 0);
-    const closed = list.filter((t) => !(t.summary.open > 0));
+    const isActive = (t) => t.summary.open > 0;
+    // Live (real money) trades and paper ones (see accountOf); only the live ones make the total P&L.
+    const live = list.filter((t) => accountOf(t) === 'live');
+    const paper = list.filter((t) => accountOf(t) !== 'live');
     const xs = new Map(list.map((t) => [t.id, splitOf(t)]));
     // Overall P&L (options + NIFTYBEES) of a group of trades: { sum, n priced, n at save prices, n without a figure }
     const totalOf = (ts) => {
@@ -982,8 +988,6 @@
       ].filter(Boolean);
       return `<div class="kpi"><span class="k-l">${label}</span><span class="k-v ${ts.length ? cls(r.sum) : 'muted'}">${ts.length ? inrS(r.sum) : '—'}</span><span class="k-s" title="${esc(sub.join(' · '))}">${sub.join(' · ')}</span></div>`;
     };
-    const live = list.filter((t) => t.summary.src === 'live');
-    const replay = list.filter((t) => t.summary.src !== 'live');
     const head = (cols) =>
       `<thead><tr><th class="l">Trade</th><th class="l">Mode</th><th class="l">Expiry</th>${cols}<th title="The options' P&amp;L: now for live trades with open legs, else as saved">Options P&amp;L</th><th title="Modified covered call / Put spread collar: the NIFTYBEES held against the options, bought → sold (or → now while held)">NIFTYBEES P&amp;L</th><th title="Options + NIFTYBEES">Overall</th><th></th><th>Saved</th><th></th></tr></thead>`;
     const table = (ts, isOpen) =>
@@ -996,28 +1000,39 @@
       }<tbody>${ts.map((t) => row(t, isOpen)).join('')}</tbody></table></div>`;
     const section = (title, ts, isOpen, empty) =>
       `<div class="sb-trades-sec"><h4>${title} <span class="muted small">${ts.length}</span></h4>${ts.length ? table(ts, isOpen) : `<div class="muted small pad">${empty}</div>`}</div>`;
-    el.innerHTML = `<div class="panel-head"><h3>Saved trades <span class="muted small">${list.length ? `${live.length} live (paper) · ${replay.length} replay` : 'none yet'}</span></h3>
+    // One account's block: its P&L cards, then its active and closed trades.
+    const group = (acct, ts) => {
+      const isLive = acct === 'live';
+      const act = ts.filter(isActive);
+      const cl = ts.filter((t) => !isActive(t));
+      return `<div class="sb-acct sb-acct-${acct}">
+        <div class="sb-acct-head"><h3>${isLive ? '🟢 Live trades' : '📝 Paper trades'}</h3><span class="muted small">${
+          isLive ? 'Real-money positions. Only these make the total P&amp;L.' : 'Practice trades and replays. Not counted in the total P&amp;L.'
+        }</span></div>
+        <div class="kpis sb-trades-kpis" title="Overall P&amp;L = options + NIFTYBEES of each trade, as in the Overall column (before costs and slippage)">
+          ${kpi(isLive ? 'Total P&amp;L · live trades' : 'Paper P&amp;L · not in the total', ts, '')}
+          ${kpi('Active', act, '')}
+          ${kpi('Closed', cl, '')}
+        </div>
+        ${section('Active', act, true, isLive ? 'No live trade has an open leg.' : 'No paper trade has an open leg.')}
+        ${section('Closed', cl, false, 'None yet: a trade moves here once all its legs are closed.')}
+      </div>`;
+    };
+    el.innerHTML = `<div class="panel-head"><h3>Saved trades <span class="muted small">${list.length ? `${live.length} live · ${paper.length} paper` : 'none yet'}</span></h3>
         <span class="spacer"></span>
         ${cur ? `<span class="muted small">in the Builder: <b>${esc(cur.name)}</b></span>` : ''}
-        ${list.some((t) => t.summary.src === 'live') ? '<button class="btn-sm ghost" data-t="refresh" title="Price the live paper trades at the current chain">↻ Live P&amp;L</button>' : ''}</div>
+        ${list.some((t) => t.summary.src === 'live') ? '<button class="btn-sm ghost" data-t="refresh" title="Price the trades with open legs at the current chain">↻ Live P&amp;L</button>' : ''}</div>
       ${
         !list.length
-          ? '<div class="muted small pad">In the <b>Builder</b>, build a position (B / S in the chain, or Apply a strategy) and press <b>Save trade</b>. Live (paper) trades and replays are listed here; <b>Load</b> puts one back in the Builder with its payoff, to adjust it and save it again.</div>'
-          : `<div class="kpis sb-trades-kpis" title="Overall P&amp;L = options + NIFTYBEES of each trade, as in the Overall column (before costs and slippage)">
-              ${kpi('Overall P&amp;L · all trades', list, '')}
-              ${kpi('Active trades', active, '')}
-              ${kpi('Closed trades', closed, '')}
-              ${live.length && replay.length ? kpi('Live (paper)', live, '') + kpi('Replays', replay, '') : ''}
-            </div>
-            ${section('Active trades', active, true, 'No trade has an open leg.')}
-            ${section('Closed trades', closed, false, 'No closed trades yet: a trade moves here once all its legs are closed.')}`
+          ? '<div class="muted small pad">In the <b>Builder</b>, build a position (B / S in the chain, or Apply a strategy) and press <b>Save trade</b>. Live and paper trades and replays are listed here; <b>Load</b> puts one back in the Builder with its payoff, to adjust it and save it again.</div>'
+          : group('live', live) + group('paper', paper)
       }`;
     function row(t, isOpen) {
       const u = t.summary;
       const now = tradesNow[t.id];
       const x = xs.get(t.id);
       return `<tr class="${t.id === S.tradeId ? 'sel' : ''}"><td class="l"><b>${esc(t.name)}</b> ${x.mcc ? MCC_PILL[mccKind(x.m, t.snap.legs)] : ''}</td>
-            <td class="l"><span class="cat-pill ${u.src === 'live' ? 'c-bullish' : 'c-neutral'}">${u.src === 'live' ? 'Live (paper)' : 'Replay'}</span></td>
+            <td class="l"><span class="cat-pill ${u.src === 'live' ? 'c-bullish' : 'c-neutral'}" title="${u.src === 'live' ? 'Built on the live option chain' : 'A replay of past market data'}">${u.src === 'live' ? 'Live market' : 'Replay'}</span></td>
             <td class="l">${(u.expiries || []).map(dayShort).join(', ')}</td>
             ${
               isOpen
@@ -1039,7 +1054,13 @@
                     `<div class="muted small">${x.beesHow === 'sold' ? 'sold ₹' + x.m.exitPx.toFixed(2) : x.beesHow === 'live' ? 'now ₹' + beesNow.px.toFixed(2) : 'estimated from Nifty'}</div>`
             }</td>
             <td class="${cls(x.overall)} b">${x.overall == null ? '—' : inrS(Math.round(x.overall))}</td>
-            <td><button class="btn-sm ghost" data-load="${t.id}" title="Put this trade in the Builder: payoff, positions and P&amp;L, to adjust it and save it again">Load</button></td>
+            <td class="sb-act-cell"><button class="btn-sm ghost" data-load="${t.id}" title="Put this trade in the Builder: payoff, positions and P&amp;L, to adjust it and save it again">Load</button>${
+              u.src !== 'live'
+                ? ''
+                : accountOf(t) === 'live'
+                  ? `<button class="btn-sm ghost" data-acct="paper" data-id="${t.id}" title="Mark as a paper trade: it moves to Paper trades and leaves the total P&amp;L">→ Paper</button>`
+                  : `<button class="btn-sm ghost" data-acct="live" data-id="${t.id}" title="Mark as a live (real-money) trade: it moves to Live trades and counts in the total P&amp;L">→ Live</button>`
+            }</td>
             <td class="muted small">${whenTxt(t.savedAt)}<div>at ${esc(u.at || '')}</div></td>
             <td class="sb-del-cell">${
               delAsk === t.id
@@ -1984,7 +2005,20 @@
       delAsk = null;
       renderTrades();
     } else if (b.dataset.t === 'refresh') refreshTrades();
+    else if (b.dataset.acct) setAccount(b.dataset.id, b.dataset.acct, b);
   });
+  // Mark a saved trade live (real money) or paper (bt-data/paper-trades.json keeps it as trade.account).
+  async function setAccount(id, account, btn) {
+    btn.disabled = true;
+    try {
+      const t = (await BT.api('/api/sb/trades/account', { id, account })).trade;
+      trades = trades.map((x) => (x.id === id ? { ...x, account: t.account } : x));
+      renderTrades();
+    } catch (e) {
+      btn.disabled = false;
+      alert('Could not change the trade: ' + e.message);
+    }
+  }
   // The date picked in the top bar becomes the replay's start date.
   async function pickDay(v) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) {

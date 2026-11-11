@@ -17,6 +17,7 @@ module.exports = defineConfig([
     'reports/',
     'playwright-report/',
     'test-results/',
+    'MobileApp/', // a separate app with its own package.json and tests
   ]),
   {
     files: ['**/*.js'],

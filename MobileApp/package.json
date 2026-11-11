@@ -1,0 +1,23 @@
+{
+  "name": "nifty-options-mobile",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Nifty options on an Android phone: an installable web app (PWA) that talks to Upstox directly, with no server of its own.",
+  "type": "module",
+  "scripts": {
+    "serve": "node tools/serve.js",
+    "serve:lan": "node tools/serve.js --lan",
+    "icons": "node tools/make-icons.mjs",
+    "stamp": "node tools/stamp.mjs",
+    "test": "node --test \"test/*.test.js\"",
+    "test:e2e": "playwright test",
+    "screenshots": "node tools/screenshots.mjs",
+    "check": "npm run stamp && npm test && npm run test:e2e"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.0"
+  }
+}

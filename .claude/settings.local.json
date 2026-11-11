@@ -117,7 +117,9 @@
       "Bash(cp \"C:/Users/Admin/Downloads/OptionAdjustments.pdf\" \"C:/Users/Admin/AppData/Local/Temp/claude/1c7530f48bee359b/baac36e8-6e5b-4333-aa38-4ff815b88e11/scratchpad/pdf/\")",
       "Bash(python -c \"import pypdf; print\\(pypdf.__version__\\)\")",
       "Bash(python -c \"import fitz; print\\('fitz ok'\\)\")",
-      "Bash(python -I -c \"import pypdf; print\\(pypdf.__version__\\)\")"
+      "Bash(python -I -c \"import pypdf; print\\(pypdf.__version__\\)\")",
+      "PowerShell(Get-ChildItem public -Recurse -File | Select-Object @{n='p';e={$_.FullName.Substring\\(\\(Get-Location\\).Path.Length+1\\)}},Length | Format-Table -AutoSize; Get-ChildItem lib -File | Select-Object Name,Length | Format-Table -AutoSize; node -v; Get-Content .gitignore)",
+      "PowerShell(Get-Content .deployment; Get-Content azure-pipelines.yml -TotalCount 40; Get-Content .env.example; \"ANDROID_HOME=$env:ANDROID_HOME\"; Test-Path \"$env:LOCALAPPDATA\\\\Android\\\\Sdk\"; \\(Get-Command adb -ErrorAction SilentlyContinue\\).Source; \\(Get-Command emulator -ErrorAction SilentlyContinue\\).Source; \\(Get-Command java -ErrorAction SilentlyContinue\\).Source)"
     ]
   }
 }

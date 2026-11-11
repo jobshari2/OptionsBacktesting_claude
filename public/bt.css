@@ -418,6 +418,14 @@ body.nc-window { height: 100vh; padding: 8px; }
 .sb-trades .panel-head h3 { margin: 0; font-size: 13px; }
 .sb-trades-wrap { max-height: none; }
 .sb-trades-kpis { padding: 4px 14px 10px; }
+.sb-acct { margin: 8px 10px 12px; border: 1px solid var(--line); border-radius: 8px; padding-bottom: 6px; }
+.sb-acct-live { border-left: 3px solid var(--up); }
+.sb-acct-paper { border-left: 3px solid var(--muted); }
+.sb-acct-paper .sb-trades-kpis .k-v { opacity: .75; }
+.sb-acct-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; padding: 8px 14px 4px; }
+.sb-acct-head h3 { margin: 0; font-size: 13.5px; }
+.sb-trades-tbl td.sb-act-cell { white-space: nowrap; }
+.sb-trades-tbl td.sb-act-cell .btn-sm + .btn-sm { margin-left: 4px; }
 .sb-trades-sec h4 { margin: 6px 14px 6px; font-size: 12.5px; }
 .sb-trades-sec + .sb-trades-sec { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 4px; }
 /* builder: expiry strip of the option chain (4 at a time, < > to move) */
