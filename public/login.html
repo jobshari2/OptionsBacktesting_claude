@@ -5,32 +5,187 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Sign in · Nifty Options Lab</title>
   <style>
-    /* self-contained: the app's own files are only served after sign-in */
-    :root { --bg: #0e1117; --panel: #161b22; --line: #2a313c; --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff; --down: #f0716b; --on-accent: #0b1220; }
-    :root[data-theme="day"] { --bg: #f4f5f7; --panel: #ffffff; --line: #d9dde3; --text: #1f2933; --muted: #5f6b7a; --accent: #1f6feb; --down: #cf222e; --on-accent: #ffffff; }
+    /* self-contained: the app's own files are only served after sign-in.
+       The page wears the design picked on it (Classic or Terminal, see design.js), so the choice is seen at once. */
+    :root {
+      --bg: #0e1117; --panel: #161b22; --panel-2: #1c222b; --line: #2a313c; --line-strong: #3a4452; --text: #e6edf3; --muted: #8b949e;
+      --accent: #58a6ff; --down: #f0716b; --on-accent: #0b1220; --r: 12px; --r-sm: 6px;
+      --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    :root[data-design="classic"][data-theme="day"] {
+      --bg: #f4f5f7; --panel: #ffffff; --panel-2: #f9f9f9; --line: #d9dde3; --line-strong: #c2c8d0; --text: #1f2933; --muted: #5f6b7a;
+      --accent: #1f6feb; --down: #cf222e; --on-accent: #ffffff;
+    }
+    :root[data-design="terminal"] {
+      --bg: #000000; --panel: #0a0a0a; --panel-2: #171717; --line: #343434; --line-strong: #5a5a5a; --text: #ffffff; --muted: #b4b4b4;
+      --accent: #ffa028; --down: #ff5d55; --on-accent: #000000; --r: 0px; --r-sm: 0px;
+      --font: "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+    }
+    :root[data-design="terminal"][data-theme="day"] {
+      --bg: #e4e7eb; --panel: #ffffff; --panel-2: #f0f2f4; --line: #b4bbc5; --line-strong: #77818f; --text: #05070a; --muted: #414a56;
+      --accent: #b84300; --down: #c21d19; --on-accent: #ffffff;
+    }
+    :root[data-design="terminal"][data-accent="blue"] { --accent: #4da3ff; --on-accent: #03101f; }
+    :root[data-design="terminal"][data-theme="day"][data-accent="blue"] { --accent: #0b50c4; --on-accent: #ffffff; }
+    :root[data-design="terminal"][data-face="din"] { --font: Bahnschrift, "Segoe UI", system-ui, sans-serif; }
+    :root[data-design="terminal"][data-face="tahoma"] { --font: Tahoma, Verdana, "Segoe UI", system-ui, sans-serif; }
+
     * { box-sizing: border-box; }
-    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 16px; background: var(--bg); color: var(--text); font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-    form { width: 100%; max-width: 340px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 24px; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 16px; background: var(--bg); color: var(--text); font: 14px/1.4 var(--font); font-variant-numeric: tabular-nums; }
+    .wrap { width: 100%; max-width: 1120px; display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 16px; align-items: stretch; }
+    .box { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 24px; }
     h1 { margin: 0 0 4px; font-size: 18px; }
+    h2 { margin: 0 0 4px; font-size: 16px; }
     p { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
     label { display: block; margin-bottom: 12px; font-size: 12px; color: var(--muted); }
-    input { display: block; width: 100%; margin-top: 4px; padding: 8px 10px; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font: inherit; font-size: 14px; }
+    input { display: block; width: 100%; margin-top: 4px; padding: 8px 10px; background: var(--bg); color: var(--text); border: 1px solid var(--line-strong); border-radius: var(--r-sm); font: inherit; font-size: 14px; }
     input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-    button { width: 100%; margin-top: 4px; padding: 9px; border: 0; border-radius: 6px; background: var(--accent); color: var(--on-accent); font: inherit; font-weight: 600; cursor: pointer; }
-    button:disabled { opacity: .6; cursor: default; }
+    button { font: inherit; cursor: pointer; }
+    #go { width: 100%; margin-top: 4px; padding: 9px; border: 0; border-radius: var(--r-sm); background: var(--accent); color: var(--on-accent); font-weight: 700; }
+    #go:disabled { opacity: .6; cursor: default; }
     #err { min-height: 18px; margin: 0 0 8px; color: var(--down); font-size: 13px; }
+    .sign { display: flex; flex-direction: column; justify-content: center; }
+    .opens { margin: 14px 0 0; font-size: 13px; }
+    .opens b { color: var(--text); }
+
+    /* ---------- the two designs ---------- */
+    .cards { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+    .card { min-width: 0; display: flex; flex-direction: column; gap: 10px; padding: 10px; text-align: left; background: var(--panel-2); color: var(--text); border: 2px solid var(--line); border-radius: var(--r); position: relative; }
+    .card:hover { border-color: var(--line-strong); }
+    .card[aria-checked="true"] { border-color: var(--accent); }
+    .card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .card-name { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 700; }
+    .card-name i { width: 16px; height: 16px; flex: none; border: 2px solid var(--muted); border-radius: 50%; display: grid; place-items: center; }
+    .card[aria-checked="true"] .card-name i { border-color: var(--accent); }
+    .card[aria-checked="true"] .card-name i::after { content: ''; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+    .card-name em { margin-left: auto; padding: 0 6px; font-style: normal; font-size: 12px; font-weight: 700; letter-spacing: .06em; background: var(--accent); color: var(--on-accent); border-radius: var(--r-sm); }
+    .card-text { color: var(--muted); font-size: 13px; line-height: 1.45; }
+    .opts { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; margin-top: 14px; font-size: 13px; color: var(--muted); }
+    .opts.off { visibility: hidden; }
+    .seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: var(--r-sm); overflow: hidden; }
+    .seg button { padding: 5px 14px; background: transparent; color: var(--muted); border: 0; font-weight: 600; }
+    .seg button + button { border-left: 1px solid var(--line-strong); }
+    .seg button[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); font-weight: 700; }
+
+    /* miniatures: each drawn in its own design's colours, text sizes and corners, whatever the page is wearing */
+    .pv { height: 168px; overflow: hidden; display: flex; font-variant-numeric: tabular-nums; pointer-events: none; }
+    .pv table { width: 100%; border-collapse: collapse; }
+    .pv td, .pv th { text-align: right; white-space: nowrap; }
+    .pv .k { text-align: center; }
+    .pv-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+    .pv-classic { background: #0e1117; color: #e6edf3; border-radius: 8px; font: 12px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; border: 1px solid #2a313c; }
+    .pv-classic .pv-top { display: flex; align-items: center; gap: 8px; padding: 7px 9px; background: #161b22; border-bottom: 1px solid #2a313c; }
+    .pv-classic .pv-top b { font-size: 12px; letter-spacing: .5px; }
+    .pv-classic .pv-tabs { display: inline-flex; padding: 2px; background: #1c222b; border: 1px solid #2a313c; border-radius: 8px; font-size: 11px; font-weight: 600; color: #8b949e; }
+    .pv-classic .pv-tabs span { padding: 2px 7px; border-radius: 6px; }
+    .pv-classic .pv-tabs .on { background: #58a6ff; color: #0b1220; }
+    .pv-classic .pv-spot { margin-left: auto; font-weight: 600; font-size: 13px; }
+    .pv-classic .pv-panel { margin: 8px; flex: 1; background: #161b22; border: 1px solid #2a313c; border-radius: 10px; overflow: hidden; }
+    .pv-classic th { padding: 3px 5px; background: #1c222b; color: #8b949e; font-size: 10.5px; font-weight: 500; text-transform: uppercase; }
+    .pv-classic td { padding: 3px 5px; font-size: 11.5px; border-bottom: 1px solid rgba(42, 49, 60, .6); }
+    .pv-classic .k { background: #1c222b; font-weight: 700; }
+    .pv-classic .atm .k { background: #d6af4c; color: #111; }
+    .pv-classic .up { color: #3fb68b; } .pv-classic .dn { color: #f0716b; } .pv-classic .m { color: #8b949e; }
+    .pv-terminal { --p-bg: #000; --p-panel: #0a0a0a; --p-head: #141414; --p-line: #343434; --p-soft: #202020; --p-text: #fff; --p-muted: #b4b4b4; --p-acc: #ffa028; --p-on: #000; --p-up: #25d07c; --p-dn: #ff5d55; --p-atm: #ffe04a; --p-onatm: #000;
+      background: var(--p-bg); color: var(--p-text); font: 13px/1.38 "Segoe UI", system-ui, sans-serif; border: 1px solid var(--p-line); }
+    :root[data-design="terminal"][data-theme="day"] .pv-terminal { --p-bg: #e4e7eb; --p-panel: #fff; --p-head: #e9ecef; --p-line: #b4bbc5; --p-soft: #dde1e6; --p-text: #05070a; --p-muted: #414a56; --p-acc: #b84300; --p-on: #fff; --p-up: #05783a; --p-dn: #c21d19; --p-atm: #8a6100; --p-onatm: #fff; }
+    .pv-terminal .pv-rail { width: 30px; flex: none; background: var(--p-panel); border-right: 1px solid var(--p-line); display: flex; flex-direction: column; }
+    .pv-terminal .pv-rail b { height: 27px; background: var(--p-acc); }
+    .pv-terminal .pv-rail i { height: 22px; border-left: 3px solid transparent; display: grid; place-items: center; }
+    .pv-terminal .pv-rail i::after { content: ''; width: 10px; height: 10px; border: 2px solid var(--p-muted); }
+    .pv-terminal .pv-rail i.on { border-left-color: var(--p-acc); background: var(--p-head); }
+    .pv-terminal .pv-rail i.on::after { border-color: var(--p-acc); }
+    .pv-terminal .pv-top { display: flex; align-items: center; gap: 10px; height: 27px; padding: 0 8px; background: var(--p-panel); border-bottom: 1px solid var(--p-line); }
+    .pv-terminal .pv-top b { color: var(--p-acc); font-size: 12px; letter-spacing: .04em; }
+    .pv-terminal .pv-spot { font-weight: 700; font-size: 16px; }
+    .pv-terminal .pv-tabs { display: flex; font-size: 12px; font-weight: 700; color: var(--p-muted); border-bottom: 1px solid var(--p-line); }
+    .pv-terminal .pv-tabs span { padding: 2px 9px; }
+    .pv-terminal .pv-tabs .on { background: var(--p-acc); color: var(--p-on); }
+    .pv-terminal .pv-panel { flex: 1; margin: 4px; background: var(--p-panel); border: 1px solid var(--p-line); overflow: hidden; }
+    .pv-terminal th { padding: 2px 5px; background: var(--p-head); color: var(--p-muted); font-size: 12px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+    .pv-terminal td { padding: 2px 5px; font-size: 13px; border-bottom: 1px solid var(--p-soft); }
+    .pv-terminal td.b { font-weight: 700; }
+    .pv-terminal .k { font-weight: 700; border-left: 1px solid var(--p-line); border-right: 1px solid var(--p-line); }
+    .pv-terminal .atm .k { background: var(--p-atm); color: var(--p-onatm); }
+    .pv-terminal .up { color: var(--p-up); } .pv-terminal .dn { color: var(--p-dn); } .pv-terminal .m { color: var(--p-muted); }
+
+    @media (max-width: 860px) {
+      .wrap { grid-template-columns: minmax(0, 1fr); max-width: 520px; }
+      .pick { order: 2; }
+    }
+    @media (max-width: 520px) { .cards { grid-template-columns: 1fr; } }
   </style>
-  <script>try { document.documentElement.dataset.theme = localStorage.getItem("nifty-theme") === "day" ? "day" : "night"; } catch (e) {}</script>
+  <script>
+    // The designs' settings, as public/design.js reads them (that file is only served after sign-in).
+    (function () {
+      var get = function (k) { try { return localStorage.getItem(k); } catch (e) { return null; } };
+      var d = document.documentElement.dataset;
+      d.design = get('nifty-design') === 'terminal' ? 'terminal' : 'classic';
+      if (d.design === 'terminal') {
+        d.theme = (get('nifty-tm-theme') || get('nifty-theme')) === 'day' ? 'day' : 'night';
+        d.accent = get('nifty-tm-accent') === 'blue' ? 'blue' : 'amber';
+        d.face = get('nifty-tm-face') || 'segoe';
+      } else d.theme = get('nifty-theme') === 'day' ? 'day' : 'night';
+    })();
+  </script>
 </head>
 <body>
-  <form id="f" method="post" action="/login.html" autocomplete="on">
-    <h1>NIFTY 50 · Options Lab</h1>
-    <p>Sign in to continue.</p>
-    <label>Username<input id="u" name="username" autocomplete="username" required autofocus /></label>
-    <label>Password<input id="p" name="password" type="password" autocomplete="current-password" required /></label>
-    <div id="err" role="alert"></div>
-    <button id="go" type="submit">Sign in</button>
-  </form>
+  <main class="wrap">
+    <form id="f" class="box sign" method="post" action="/login.html" autocomplete="on">
+      <h1>NIFTY 50 · Options Lab</h1>
+      <p>Sign in to continue.</p>
+      <label>Username<input id="u" name="username" autocomplete="username" required autofocus /></label>
+      <label>Password<input id="p" name="password" type="password" autocomplete="current-password" required /></label>
+      <div id="err" role="alert"></div>
+      <button id="go" type="submit">Sign in</button>
+      <p class="opens">Opens in the <b id="opensIn">Classic</b> design.</p>
+    </form>
+
+    <section class="box pick" aria-labelledby="pickTitle">
+      <h2 id="pickTitle">Choose your design</h2>
+      <p>The same screens, data and trades in both. You can switch again any time from inside the portal.</p>
+      <div class="cards" role="radiogroup" aria-labelledby="pickTitle">
+        <button type="button" class="card" role="radio" data-design="classic" aria-checked="true" aria-label="Classic design: the portal as you know it">
+          <div class="pv pv-classic" aria-hidden="true">
+            <div class="pv-main">
+              <div class="pv-top"><b>NIFTY 50</b><span class="pv-tabs"><span class="on">Live</span><span>Builder</span><span>Trades</span></span><span class="pv-spot">24,850.60</span></div>
+              <div class="pv-panel"><table>
+                <tr><th>OI chg</th><th>LTP</th><th class="k">Strike</th><th>LTP</th><th>OI chg</th></tr>
+                <tr><td><span class="up">+44.9 K</span></td><td>150.62</td><td class="k">24800</td><td>100.02</td><td><span class="dn">−86.0 K</span></td></tr>
+                <tr class="atm"><td><span class="dn">−1.86 L</span></td><td>122.54</td><td class="k">24850</td><td>121.95</td><td><span class="dn">−2.63 L</span></td></tr>
+                <tr><td><span class="dn">−2.97 L</span></td><td>100.50</td><td class="k">24900</td><td>149.90</td><td><span class="up">+70.2 K</span></td></tr>
+                <tr><td><span class="up">+2.53 L</span></td><td>82.46</td><td class="k">24950</td><td>181.86</td><td><span class="dn">−18.1 K</span></td></tr>
+              </table></div>
+            </div>
+          </div>
+          <div class="card-name"><i></i>Classic</div>
+          <div class="card-text">The portal as you know it: tabs along the top, rounded panels, Night, Day and Large themes.</div>
+        </button>
+        <button type="button" class="card" role="radio" data-design="terminal" aria-checked="false" aria-label="Terminal design (new): sharper, larger text, navigation rail, command line">
+          <div class="pv pv-terminal" aria-hidden="true">
+            <div class="pv-rail"><b></b><i class="on"></i><i></i><i></i><i></i><i></i></div>
+            <div class="pv-main">
+              <div class="pv-top"><b>NIFTY 50</b><span class="pv-spot">24,850.60</span></div>
+              <div class="pv-tabs"><span class="on">Chain</span><span>Live Ideas</span></div>
+              <div class="pv-panel"><table>
+                <tr><th>OI chg</th><th>LTP</th><th class="k">Strike</th><th>LTP</th><th>OI chg</th></tr>
+                <tr><td><span class="up">+44.9 K</span></td><td class="b">150.62</td><td class="k">24800</td><td class="b">100.02</td><td><span class="dn">−86.0 K</span></td></tr>
+                <tr class="atm"><td><span class="dn">−1.86 L</span></td><td class="b">122.54</td><td class="k">24850</td><td class="b">121.95</td><td><span class="dn">−2.63 L</span></td></tr>
+                <tr><td><span class="dn">−2.97 L</span></td><td class="b">100.50</td><td class="k">24900</td><td class="b">149.90</td><td><span class="up">+70.2 K</span></td></tr>
+              </table></div>
+            </div>
+          </div>
+          <div class="card-name"><i></i>Terminal<em>NEW</em></div>
+          <div class="card-text">Sharper, larger text with full contrast, square panels, a navigation rail, a command line (Ctrl K) and a status bar.</div>
+        </button>
+      </div>
+      <div class="opts" id="tmOpts">
+        <span>Terminal theme</span>
+        <span class="seg" id="tmTheme"><button type="button" data-theme="night">Night</button><button type="button" data-theme="day">Day</button></span>
+        <span>Accent, text size and typeface are under Display, inside.</span>
+      </div>
+    </section>
+  </main>
   <script>
     const $ = (id) => document.getElementById(id);
     // Only a path on this site is followed after signing in (never another address).
@@ -39,6 +194,48 @@
       const local = n.startsWith('/') && !n.startsWith('//') && !n.startsWith('/' + String.fromCharCode(92));
       return local && !n.startsWith('/login.html') ? n : '/';
     })();
+
+    // ---------- design chooser: saved as it is picked, so the portal opens in it ----------
+    const root = document.documentElement;
+    const save = (k, v) => {
+      try {
+        localStorage.setItem(k, v);
+      } catch (e) {
+        /* storage unavailable: the portal opens in the Classic design */
+      }
+    };
+    const read = (k) => {
+      try {
+        return localStorage.getItem(k);
+      } catch (e) {
+        return null;
+      }
+    };
+    function paint() {
+      const terminal = root.dataset.design === 'terminal';
+      document.querySelectorAll('.card').forEach((c) => c.setAttribute('aria-checked', String(c.dataset.design === root.dataset.design)));
+      document.querySelectorAll('#tmTheme button').forEach((b) => b.setAttribute('aria-pressed', String(terminal && b.dataset.theme === root.dataset.theme)));
+      $('tmOpts').classList.toggle('off', !terminal);
+      $('opensIn').textContent = terminal ? 'Terminal' : 'Classic';
+    }
+    function pickDesign(name) {
+      save('nifty-design', name);
+      root.dataset.design = name;
+      const theme = name === 'terminal' ? read('nifty-tm-theme') || read('nifty-theme') : read('nifty-theme');
+      root.dataset.theme = theme === 'day' ? 'day' : 'night';
+      paint();
+    }
+    document.querySelectorAll('.card').forEach((c) => c.addEventListener('click', () => pickDesign(c.dataset.design)));
+    $('tmTheme').addEventListener('click', (e) => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      save('nifty-tm-theme', b.dataset.theme);
+      root.dataset.theme = b.dataset.theme;
+      paint();
+    });
+    paint();
+
+    // ---------- sign-in ----------
     fetch('/api/auth/status', { cache: 'no-store' })
       .then((r) => r.json())
       .then((s) => {

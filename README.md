@@ -41,6 +41,20 @@ Pick a group in the top bar; its screens are in the row below. A group reopens o
 
 The colour theme (Night, Day, Large) is picked at the top right.
 
+### Two designs: Classic and Terminal
+
+The portal has two designs with the same screens, data and trades. You pick one on the **sign-in page** (it shows both and remembers the choice), and can switch any time: the **Terminal design** button in the Classic top bar, or **Display → Design** in the Terminal one.
+
+| | Classic | Terminal |
+| --- | --- | --- |
+| Navigation | Tabs along the top | A rail down the left edge (`Alt` + `1` … `7`), screens of a section as tabs (`[` and `]`) |
+| Command line | — | `Ctrl` + `K` (or `/`): type a screen, its code (`OC` chain, `BLD` Builder, `HDG` Hedge …) or a setting |
+| Themes | Night, Day, Large | **Night** and **Day** (switch in the top strip), each with an **Amber** or **Blue** accent |
+| Text | 9 – 21 px, system font | Whole pixels only, never under 12 px, in four sizes (Small … X-Large) and three typefaces (Segoe UI, Bahnschrift / DIN, Tahoma) that Windows draws sharpest; full-contrast colours |
+| Shape | Rounded panels | Square panels on 1 px rules, title bars, a status bar (connection, last update, market open / closed) |
+
+The Terminal design is a layer over the Classic one, in `public/terminal/`: Classic pages load none of it. `terminal.css` holds its colours, type scale and components; `terminal.js` builds the rail, status bar, command line and Display settings from the Classic top bar; `terminal-gen.css` restates the text sizes, corners and written-out colours of every Classic rule with the Terminal's tokens and is **generated**. After changing a Classic stylesheet run `node tools/build-terminal-css.js` (a unit test fails until you do).
+
 ---
 
 ## Part 1 · Live
@@ -379,7 +393,7 @@ Server errors (Upstox failures, crashes, file-writing problems) and errors from 
 | `npm run test:e2e` | End-to-end tests (`e2e/`): starts the app in demo mode on port 3210 and drives it in a browser with Playwright |
 | `npm run check` | Lint, format check and unit tests in one go, before a commit |
 
-The end-to-end tests need a browser. `npx playwright install chromium` downloads Playwright's own once; or set the environment variable `PW_CHANNEL` to `chrome` or `msedge` to use the one already installed. They only look and navigate: they never run a backtest or a download, and the demo server's recordings go to a temp folder. `E2E_PORT` changes the port.
+The end-to-end tests need a browser. `npx playwright install chromium` downloads Playwright's own once; or set the environment variable `PW_CHANNEL` to `chrome` or `msedge` to use the one already installed. They only look and navigate: they never run a backtest or a download, and the demo server's recordings go to a temp folder. `E2E_PORT` changes the port. With `AUTH_USERNAME` set in `.env` the test server asks for the sign-in and the tests stop at it: run them with it emptied for that command (`AUTH_USERNAME= npm run test:e2e` in bash, `$env:AUTH_USERNAME=''` first in PowerShell).
 
 The same checks run in **GitHub Actions** (`.github/workflows/ci.yml`) and in **Azure Pipelines** (`azure-pipelines.yml`) on every push to `main`, on every pull request and once a week. Both call the npm scripts above, so a check is changed in one place.
 
@@ -432,6 +446,7 @@ The same checks run in **GitHub Actions** (`.github/workflows/ci.yml`) and in **
 | `public/sb-view.js`, `public/sb-adjust.js` | Strategy Builder; structure names (iron condor, bull put spread, …) |
 | `public/bt-common.js`, `lib-view.js`, `data-view.js`, `payoff.js` | Shared helpers and charts; the Strategies and Data screens; payoff charts |
 | `public/styles.css`, `live.css`, `hedge.css`, `bt.css`, `ideas.css`, `cc.css`, `lab.css`, `themes.css` | Styles: base and chain, live pieces, hedge, strategy screens (and shared components), Live Ideas, Covered call, Strategy lab, colour themes |
+| `public/design.js`, `public/terminal/`, `tools/build-terminal-css.js` | The two designs: which one is loaded; the Terminal design (stylesheet, generated overrides, shell script); the generator of the overrides |
 | `test/` | Unit tests (`npm test`) |
 | `e2e/`, `playwright.config.js` | End-to-end tests of the page in demo mode (`npm run test:e2e`) |
 | `.github/workflows/ci.yml`, `azure-pipelines.yml`, `ci/` | The CI pipelines for GitHub Actions and Azure Pipelines, and the scripts they share |

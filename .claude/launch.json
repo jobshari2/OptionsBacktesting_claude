@@ -54,6 +54,15 @@
         "start"
       ],
       "port": 3000
+    },
+    {
+      "name": "demo-3004-testauth",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "-e",
+        "process.env.DEMO='1';process.env.PORT='3004';process.env.AUTH_USERNAME='design-test';process.env.AUTH_PASSWORD='design-test-only';require('./server.js')"
+      ],
+      "port": 3004
     }
   ]
 }

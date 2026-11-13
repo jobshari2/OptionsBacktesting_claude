@@ -114,3 +114,76 @@ test('unknown paths and files outside public/ are not served', async ({ baseURL 
     expect(res.body, path).not.toContain('UPSTOX_');
   }
 });
+
+// ---------- the Terminal design (public/terminal/): picked on the sign-in page, or from either design's own controls ----------
+test('the Classic design loads nothing of the Terminal design and offers it', async ({ page }) => {
+  const errors = scriptErrors(page);
+  await page.goto('/');
+  await expect(page.locator('html')).toHaveAttribute('data-design', 'classic');
+  await expect(page.locator('.topbar #tabs')).toBeVisible();
+  expect(await page.evaluate(() => [...document.styleSheets].filter((s) => (s.href || '').includes('/terminal/')).length)).toBe(0);
+  await expect(page.locator('#tmRail')).toHaveCount(0);
+
+  await page.locator('#designBtn').click(); // loads the page again, in the Terminal design
+  await expect(page.locator('html')).toHaveAttribute('data-design', 'terminal');
+  await expect(page.locator('#tmRail #tabs')).toBeVisible();
+  await page.reload();
+  await expect(page.locator('html')).toHaveAttribute('data-design', 'terminal');
+  expect(errors).toEqual([]);
+});
+
+test('the Terminal design: sharp text, every screen from the rail, Night / Day, the command line, back to Classic', async ({ page }) => {
+  test.slow();
+  const errors = scriptErrors(page);
+  await page.addInitScript(() => {
+    if (!localStorage.getItem('nifty-design')) localStorage.setItem('nifty-design', 'terminal');
+  });
+  await page.goto('/');
+  await expect(page.locator('#chainBody tr').first()).toBeVisible();
+  await expect(page.locator('#tmRail')).toBeVisible();
+  await expect(page.locator('#tmStatus')).toBeVisible();
+
+  // text on the Chain screen: whole pixels, never under 12 (the charts draw their own, on a canvas)
+  const sizes = await page.evaluate(() =>
+    [...document.querySelectorAll('main#app *, .topbar *, #subtabs *, #tmRail *, #tmStatus *')]
+      .filter((el) => [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim()) && el.getClientRects().length)
+      .map((el) => parseFloat(getComputedStyle(el).fontSize)),
+  );
+  expect(sizes.length).toBeGreaterThan(100);
+  expect(sizes.filter((px) => px < 12 || px !== Math.round(px))).toEqual([]);
+
+  // every screen, from the rail
+  const groups = await page
+    .locator('#subtabs .sub-group')
+    .evaluateAll((els) => els.map((g) => ({ group: g.dataset.group, views: [...g.querySelectorAll('button')].map((b) => b.dataset.view) })));
+  for (const { group, views } of groups) {
+    for (const view of views) {
+      await test.step(`${group} / ${view}`, async () => {
+        await page.locator(`#tmRail button[data-group="${group}"]`).click();
+        if (views.length > 1) await page.locator(`#subtabs button[data-view="${view}"]`).click();
+        await expect(page.locator(`main#${view === 'chain' ? 'app' : view}`)).toBeVisible();
+        await expect(page.locator('main:not(.hidden)')).toHaveCount(1);
+      });
+    }
+  }
+
+  // Night / Day, remembered
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'night');
+  await page.locator('#tmTheme button[data-v="day"]').click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'day');
+  await page.reload();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'day');
+  await expect(page.locator('#tmTheme button[data-v="day"]')).toHaveClass(/\bon\b/);
+
+  // the command line: a screen by its code, then back to the Classic design
+  await page.keyboard.press('Control+k');
+  await page.locator('#tmCmdIn').fill('bld');
+  await page.keyboard.press('Enter');
+  await expect(page.locator('main#sb')).toBeVisible();
+  await page.keyboard.press('Control+k');
+  await page.locator('#tmCmdIn').fill('cls');
+  await page.keyboard.press('Enter');
+  await expect(page.locator('html')).toHaveAttribute('data-design', 'classic');
+  await expect(page.locator('.topbar #tabs')).toBeVisible();
+  expect(errors).toEqual([]);
+});

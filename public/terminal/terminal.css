@@ -1,0 +1,380 @@
+/* ============================================================================================================
+   TERMINAL — the portal's second design (the first, Classic, is untouched: this file is only loaded when the
+   Terminal design is picked; see design.js).
+
+   What it takes from the terminals traders use all day:
+     Bloomberg        black screen, amber for what you can act on, white for data, inverse-video selections,
+                      one command line that reaches every screen (Ctrl K), mnemonic codes
+     TradingView      slim icon rail on the left, the whole width for the work, one quiet status bar
+     IBKR / thinkorswim  strike-centred chain, dense rows on hairlines, calls / puts tinted from the strike out
+     tastytrade       the instrument and its numbers always in the top strip, large
+
+   Text is the point of the design. The rules it follows, for a 100 % scaled (96 dpi) Windows screen:
+     - whole-pixel sizes only, nothing under 12 px (Classic has 9 - 12.5 px, many fractional)
+     - fonts hinted for ClearType (Segoe UI, Tahoma, Bahnschrift, Consolas), never a downloaded web font
+     - text is a solid colour on a solid background: pure white on black, muted text still 8:1; no translucent text
+     - two weights that the typeface really has; no synthetic semi-bolds
+     - square corners and 1 px rules, no shadows or blur behind text
+
+   Layers:  Classic stylesheets  ->  terminal-gen.css (sizes, corners, colours of every Classic rule, generated)
+            ->  this file (tokens, shell, components).
+   ============================================================================================================ */
+
+:root[data-design="terminal"] {
+  color-scheme: dark;
+
+  /* ---------- type ---------- */
+  --font-ui: "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: Consolas, "Cascadia Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --w-med: 400;   /* Classic's 500 */
+  --w-semi: 600;  /* Classic's 600 */
+  /* the type scale: Classic px -> step (tools/build-terminal-css.js)   <=10.5  11  12  13  14  15-16  17-18  20+ */
+  --fs-1: 12px; --fs-2: 12px; --fs-3: 13px; --fs-4: 14px; --fs-5: 15px; --fs-6: 16px; --fs-7: 18px; --fs-8: 22px;
+
+  /* ---------- shape ---------- */
+  --r: 0px;
+  --rail: 76px;
+  --statusbar: 28px;
+  --gap: 6px;
+
+  /* ---------- Night + Amber (default): black, amber accents, white data ---------- */
+  --bg: #000000; --panel: #0a0a0a; --panel-2: #171717; --line: #343434;
+  --head: #141414;            /* panel title bars */
+  --line-soft: #202020;       /* rules between table rows */
+  --line-strong: #5a5a5a;     /* borders of inputs and buttons */
+  --text: #ffffff; --muted: #b4b4b4;
+  --accent: #ffa028; --on-accent: #000000;
+  --up: #25d07c; --down: #ff5d55;
+  --ce: var(--up); --pe: var(--down);
+  --ce-soft: rgba(37, 208, 124, .22); --pe-soft: rgba(255, 93, 85, .22);
+  --res: var(--down); --sup: var(--up);
+  --atm: #ffe04a; --on-atm: #000000;
+  --itm: rgba(255, 224, 74, .075);
+  --ce-mark: #1eb26a; --pe-mark: #e8463f; --seq-hi: var(--accent);
+  --violet: #c9adff; --cyan: #62d9f5;
+  --title: var(--accent);     /* panel titles */
+  --hover: rgba(255, 160, 40, .11);
+  --field: var(--bg);         /* inputs */
+}
+/* Night + Blue: neutral graphite, blue for what you can act on */
+:root[data-design="terminal"][data-theme="night"][data-accent="blue"] {
+  --bg: #0a0c0f; --panel: #11141a; --panel-2: #1a1e26; --line: #303743;
+  --head: #171b22; --line-soft: #21262f; --line-strong: #566070;
+  --text: #f6f8fa; --muted: #aab3c0;
+  --accent: #4da3ff; --on-accent: #03101f;
+  --up: #2fd192; --down: #ff6b61;
+  --ce-soft: rgba(47, 209, 146, .2); --pe-soft: rgba(255, 107, 97, .2);
+  --atm: #f7c948; --on-atm: #111111;
+  --itm: rgba(247, 201, 72, .07);
+  --ce-mark: #25ad77; --pe-mark: #d9483f;
+  --title: var(--text);
+  --hover: rgba(77, 163, 255, .1);
+}
+/* Day: white paper, near-black ink (the sharpest text a 96 dpi screen can draw). Amber becomes a deep burnt orange
+   so it still reads on white. */
+:root[data-design="terminal"][data-theme="day"] {
+  color-scheme: light;
+  --bg: #e4e7eb; --panel: #ffffff; --panel-2: #f0f2f4; --line: #b4bbc5;
+  --head: #e9ecef; --line-soft: #dde1e6; --line-strong: #77818f;
+  --text: #05070a; --muted: #414a56;
+  --accent: #b84300; --on-accent: #ffffff;
+  --up: #05783a; --down: #c21d19;
+  --ce-soft: rgba(5, 120, 58, .16); --pe-soft: rgba(194, 29, 25, .14);
+  --atm: #8a6100; --on-atm: #ffffff;
+  --itm: rgba(138, 97, 0, .08);
+  --ce-mark: #0a8a45; --pe-mark: #cf2b26;
+  --violet: #5b2db0; --cyan: #0b6b73;
+  --title: var(--text);
+  --hover: rgba(184, 67, 0, .08);
+  --field: #ffffff;
+}
+:root[data-design="terminal"][data-theme="day"][data-accent="blue"] {
+  --accent: #0b50c4;
+  --hover: rgba(11, 80, 196, .08);
+}
+
+/* typefaces: all installed with Windows and hinted for its screen rendering */
+:root[data-design="terminal"][data-face="din"] { --font-ui: Bahnschrift, "DIN Alternate", "Segoe UI", system-ui, sans-serif; --w-med: 500; --w-semi: 600; }
+:root[data-design="terminal"][data-face="tahoma"] { --font-ui: Tahoma, Verdana, "Segoe UI", system-ui, sans-serif; --w-med: 400; --w-semi: 700; }
+
+/* text sizes: every step a whole pixel */
+:root[data-design="terminal"][data-tsize="s"]  { --fs-1: 12px; --fs-2: 12px; --fs-3: 12px; --fs-4: 13px; --fs-5: 14px; --fs-6: 15px; --fs-7: 17px; --fs-8: 20px; }
+:root[data-design="terminal"][data-tsize="l"]  { --fs-1: 13px; --fs-2: 13px; --fs-3: 14px; --fs-4: 15px; --fs-5: 16px; --fs-6: 18px; --fs-7: 20px; --fs-8: 24px; }
+:root[data-design="terminal"][data-tsize="xl"] { --fs-1: 14px; --fs-2: 14px; --fs-3: 15px; --fs-4: 16px; --fs-5: 17px; --fs-6: 19px; --fs-7: 22px; --fs-8: 27px; }
+
+:root[data-design="terminal"] {
+  /* ============================== base ============================== */
+  body {
+    background: var(--bg); color: var(--text);
+    line-height: 1.38;
+    font-variant-numeric: tabular-nums lining-nums;
+    font-kerning: normal;
+    text-rendering: optimizeSpeed;      /* no ligature / kerning passes that soften small text */
+    -webkit-font-smoothing: auto;       /* macOS: keep the sharper sub-pixel rendering */
+  }
+  body:not(.nc-window) { padding-left: var(--rail); padding-bottom: var(--statusbar); }
+  ::selection { background: var(--accent); color: var(--on-accent); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--line-strong); border: 2px solid var(--bg); }
+  ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+  ::-webkit-scrollbar-track, ::-webkit-scrollbar-corner { background: transparent; }
+  b, strong { font-weight: 700; }
+  code { font-size: var(--fs-2); }
+  a { color: var(--accent); }
+  h2 { font-size: var(--fs-7); font-weight: 700; letter-spacing: 0; }
+  h3 { font-size: var(--fs-6); }                                    /* the browser's own 1.17em is a fraction of a pixel */
+  main h2, main h3 { color: var(--title); }                          /* headings in the accent, as a terminal's field names */
+  .muted { color: var(--muted); }
+  .small { font-size: var(--fs-2); }
+
+  /* ============================== shell: rail, top strip, tabs, status bar ============================== */
+  .tm-rail {
+    position: fixed; z-index: 40; left: 0; top: 0; bottom: 0; width: var(--rail);
+    display: flex; flex-direction: column; background: var(--panel); border-right: 1px solid var(--line);
+  }
+  .tm-logo {
+    height: 52px; flex: none; display: grid; place-items: center; align-content: center;
+    border-bottom: 1px solid var(--line); background: var(--accent); color: var(--on-accent);
+    font-weight: 700; font-size: 17px; letter-spacing: .02em; line-height: 1.05; text-align: center; cursor: default;
+  }
+  .tm-logo small { display: block; font-size: 12px; font-weight: 700; letter-spacing: .12em; }
+  .topbar .tabs { display: none; }                                  /* until terminal.js has moved it into the rail */
+  .tm-rail .tabs { display: flex; flex-direction: column; background: none; border: 0; padding: 0; overflow-y: auto; scrollbar-width: none; }
+  .tm-rail .tabs button, .tm-rail-foot button {
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+    width: 100%; min-height: 58px; padding: 6px 2px; border: 0; border-left: 3px solid transparent; border-right: 3px solid transparent;
+    background: none; color: var(--muted); font: inherit; font-size: 12px; font-weight: 400; line-height: 1.1; cursor: pointer;
+  }
+  .tm-rail button > * { pointer-events: none; }                       /* a click lands on the button: app.js reads its data-group */
+  .tm-rail svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: square; stroke-linejoin: miter; }
+  .tm-rail .tabs button:hover, .tm-rail-foot button:hover { color: var(--text); background: var(--panel-2); }
+  .tm-rail .tabs button.on { color: var(--accent); background: var(--panel-2); border-left-color: var(--accent); font-weight: 700; }
+  .tm-rail-foot { margin-top: auto; border-top: 1px solid var(--line); }
+  .tm-rail-foot button { min-height: 50px; }
+  .tm-rail-foot .logout { border-radius: 0; border-width: 0 3px; }
+
+  .topbar {
+    gap: 0; flex-wrap: wrap; align-items: stretch; min-height: 52px; padding: 0;
+    background: var(--panel); border-bottom: 1px solid var(--line); box-shadow: none;
+  }
+  .topbar > * { flex: none; min-height: 51px; }
+  .topbar > .spacer { flex: 1 1 0; }
+  .brand {
+    display: flex; flex-direction: column; justify-content: center; gap: 1px; padding: 0 14px;
+    font-size: var(--fs-6); font-weight: 700; letter-spacing: .04em; color: var(--accent); border-right: 1px solid var(--line);
+  }
+  .brand .source { margin: 0; padding: 0 5px; align-self: flex-start; font-size: 12px; line-height: 16px; letter-spacing: .06em; vertical-align: 0; }
+  .source.upstox { background: none; color: var(--up); padding: 0; }
+  .source.demo { background: var(--atm); color: var(--on-atm); }
+  .topbar .stat { justify-content: center; gap: 0; padding: 0 14px; border-right: 1px solid var(--line); }
+  .label { font-size: 12px; letter-spacing: .06em; color: var(--muted); }
+  .value { font-size: var(--fs-6); font-weight: 700; }
+  .value.big { font-size: 24px; line-height: 1.1; letter-spacing: -.01em; }
+  .topbar select { height: 24px; padding: 0 4px; font-weight: 700; }
+  .topbar .stat.clock { border-right: 0; border-left: 1px solid var(--line); }
+  .clock .value { font-size: var(--fs-6); font-weight: 700; }
+  .theme-sw { display: none; }                                      /* Classic's themes; the Terminal's Night / Day switch is .tm-theme */
+  .tm-theme { display: flex; align-items: center; padding: 0 10px; border-left: 1px solid var(--line); }
+  .tm-theme .seg button { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; }
+  .tm-theme svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.8; pointer-events: none; }
+  .src-sw, .kite-wrap { display: flex; align-items: center; padding: 0 10px; border-left: 1px solid var(--line); }
+  .src-sw .label { font-size: 12px; }
+  .kite-chip { height: 28px; }
+  .kite-pop { top: 100%; box-shadow: none; border-color: var(--line-strong); }
+  .tm-cmdk {
+    display: flex; align-items: center; gap: 8px; align-self: center; height: 30px; min-height: 0; margin: 0 12px; padding: 0 8px 0 10px; min-width: 250px;
+    background: var(--field); color: var(--muted); border: 1px solid var(--line-strong); font: inherit; font-size: var(--fs-3); cursor: pointer;
+  }
+  .tm-cmdk:hover { border-color: var(--accent); color: var(--text); }
+  .tm-cmdk svg { width: 15px; height: 15px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; }
+  .tm-cmdk span { flex: 1; text-align: left; }
+  kbd, .tm-kbd {
+    display: inline-block; padding: 0 5px; min-width: 18px; text-align: center; font: 700 12px/18px var(--font-ui);
+    color: var(--text); background: var(--panel-2); border: 1px solid var(--line-strong);
+  }
+
+  .subtabs { min-height: 34px; padding: 0 6px; background: var(--bg); border-bottom: 1px solid var(--line); }
+  .subtabs button { padding: 0 14px; height: 34px; font-size: var(--fs-3); font-weight: var(--w-semi); border-bottom: 0; color: var(--muted); position: relative; }
+  .subtabs button:hover { color: var(--text); background: var(--panel-2); }
+  .subtabs button.on { color: var(--on-accent); background: var(--accent); font-weight: 700; }
+
+  .tm-status {
+    position: fixed; z-index: 40; left: var(--rail); right: 0; bottom: 0; height: var(--statusbar);
+    display: flex; align-items: stretch; background: var(--panel); border-top: 1px solid var(--line);
+    font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden;
+  }
+  .tm-status > * { display: flex; align-items: center; gap: 6px; padding: 0 12px; border-right: 1px solid var(--line); flex: none; }
+  .tm-status > .spacer { flex: 1 1 0; border: 0; padding: 0; }
+  .tm-status .status { color: var(--text); font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+  .tm-status .status .dot { border-radius: 0; width: 8px; height: 8px; }
+  .tm-status .status.live .dot::after { border-radius: 0; }
+  .tm-status .stat { flex-direction: row; }
+  .tm-status .stat .label { font-size: 12px; }
+  .tm-status .stat .value { font-size: 12px; font-weight: 700; color: var(--text); }
+  .tm-status #fetchedAt .age { font-size: 12px; color: var(--muted); font-weight: 400; }
+  .tm-status b { color: var(--text); }
+  .tm-status .tm-open { color: var(--up); font-weight: 700; }
+  .tm-status .tm-closed { color: var(--muted); font-weight: 700; }
+  .tm-status .tm-hints { gap: 14px; }
+  .tm-status .tm-hints span { display: inline-flex; align-items: center; gap: 5px; }
+  .tm-status kbd { line-height: 16px; }
+  .tm-status button { background: none; border: 0; border-left: 1px solid var(--line); border-right: 0; color: var(--text); font: inherit; font-weight: 700; cursor: pointer; }
+  .tm-status button:hover { background: var(--panel-2); color: var(--accent); }
+  .tm-swatch { width: 10px; height: 10px; background: var(--accent); display: inline-block; }
+
+  /* ---------- display settings (rail foot) and the command line (Ctrl K) ---------- */
+  .tm-pop {
+    position: fixed; z-index: 60; left: calc(var(--rail) + 6px); bottom: calc(var(--statusbar) + 6px); width: 380px; max-width: calc(100vw - var(--rail) - 12px);
+    background: var(--panel); border: 1px solid var(--accent); color: var(--text);
+  }
+  .tm-pop-head { display: flex; justify-content: space-between; align-items: center; padding: 7px 12px; background: var(--accent); color: var(--on-accent); font-weight: 700; text-transform: uppercase; letter-spacing: .06em; font-size: 12px; }
+  .tm-pop-head button { background: none; border: 0; color: inherit; font: inherit; font-weight: 700; cursor: pointer; padding: 0 2px; }
+  .tm-pop-body { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 10px; }
+  .tm-row { display: grid; grid-template-columns: 84px 1fr; align-items: center; gap: 8px; }
+  .tm-row > span:first-child { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+  .tm-row .seg { display: flex; }
+  .tm-row .seg button { flex: 1; padding: 5px 4px; font-size: 13px; white-space: nowrap; }
+  .tm-note { color: var(--muted); font-size: 12px; line-height: 1.45; }
+  .tm-keys { display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; align-items: center; padding-top: 10px; border-top: 1px solid var(--line); font-size: 13px; }
+  .tm-keys kbd + kbd { margin-left: 3px; }
+
+  .tm-cmd-ov { position: fixed; inset: 0; z-index: 70; background: rgba(0, 0, 0, .6); display: flex; justify-content: center; align-items: flex-start; padding-top: 11vh; }
+  .tm-cmd { width: min(720px, calc(100vw - 32px)); background: var(--panel); border: 1px solid var(--accent); display: flex; flex-direction: column; max-height: 70vh; }
+  .tm-cmd-in { display: flex; align-items: center; gap: 10px; padding: 0 12px; border-bottom: 1px solid var(--line); background: var(--bg); }
+  .tm-cmd-in b { color: var(--accent); font-size: 18px; }
+  .tm-cmd-in input { flex: 1; height: 48px; background: none; border: 0; outline: none; color: var(--text); font: inherit; font-size: 18px; }
+  .tm-cmd-in input:focus { outline: none; border: 0; }
+  .tm-cmd-in input::placeholder { color: var(--muted); }
+  .tm-cmd ul { list-style: none; margin: 0; padding: 0; overflow-y: auto; }
+  .tm-cmd li { display: grid; grid-template-columns: 58px minmax(120px, auto) 1fr; align-items: baseline; gap: 10px; padding: 7px 12px; cursor: pointer; border-bottom: 1px solid var(--line-soft); }
+  .tm-cmd li.sep { display: block; padding: 5px 12px; background: var(--head); color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; cursor: default; }
+  .tm-cmd li .c { color: var(--accent); font-weight: 700; font-size: 13px; letter-spacing: .04em; }
+  .tm-cmd li .t { font-weight: 700; font-size: 15px; white-space: nowrap; }
+  .tm-cmd li .h { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tm-cmd li.on { background: var(--accent); color: var(--on-accent); }
+  .tm-cmd li.on .c, .tm-cmd li.on .h { color: var(--on-accent); }
+  .tm-cmd-foot { display: flex; gap: 16px; padding: 6px 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; background: var(--head); }
+  .tm-cmd-foot span { display: inline-flex; gap: 5px; align-items: center; }
+  .tm-cmd .none { padding: 18px 12px; color: var(--muted); }
+
+  /* ============================== panels ============================== */
+  .panel { background: var(--panel); border: 1px solid var(--line); box-shadow: none; }
+  .panel-head { padding: 0 10px; min-height: 32px; background: var(--head); border-bottom: 1px solid var(--line); gap: 10px; }
+  .panel-head h3, .chart-head h3, .surge-title h3, .modal-head h3, .id-modal-head h3 {
+    font-size: var(--fs-3); font-weight: 700; text-transform: uppercase; letter-spacing: .07em; color: var(--title);
+  }
+  .panel-head h3 .muted, .panel-head h3 .small, .chart-head h3 .muted { text-transform: none; letter-spacing: 0; font-weight: 400; }
+  .chart-head { padding: 8px 10px 0; }
+  .legend { font-size: var(--fs-2); gap: 12px; color: var(--muted); padding: 4px 0; }
+  .sw { border-radius: 0; width: 10px; height: 10px; }
+  .pad { padding: 8px 10px; }
+  .layout { gap: var(--gap); padding: var(--gap); grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); } /* the chain is the wider half: its 15 columns fit on a 1920 screen */
+  .ch-arb { max-height: 190px; }
+  .main-col, .side, .bt-results, .sb-screen, .surge-screen, .ideas, .hedge { gap: var(--gap); }
+  .bt-screen, .lib-screen, .data-screen, .sb-screen, .surge-screen, .ideas, .hedge { padding: var(--gap); }
+  .bt-screen, .lib-screen, .data-grid, .sb-grid, .hedge-grid, .id-main { gap: var(--gap); }
+  .pane-box { gap: 0; }
+  .side > .pane-switch { margin-bottom: calc(-1 * var(--gap)); }
+  .pane-switch .seg { border-bottom: 0; }
+
+  /* ============================== controls ============================== */
+  .seg { border: 1px solid var(--line-strong); background: var(--field); }
+  .seg button { color: var(--muted); font-weight: var(--w-semi); padding: 4px 10px; }
+  .seg button + button { border-left: 1px solid var(--line-strong); }
+  .seg button:hover { color: var(--text); background: var(--panel-2); }
+  .seg button.on, .seg button.on:hover { background: var(--accent); color: var(--on-accent); font-weight: 700; }
+  .seg.sm button { padding: 3px 9px; }
+
+  .btn, .btn-sm { background: var(--accent); color: var(--on-accent); border: 1px solid var(--accent); font-weight: 700; letter-spacing: .01em; }
+  .btn-sm:hover:not(:disabled), .btn:hover { filter: brightness(1.12); }
+  .btn-sm.ghost { background: var(--field); color: var(--text); border-color: var(--line-strong); font-weight: var(--w-semi); }
+  .btn-sm.ghost:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); filter: none; }
+  .btn-sm.ghost.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 700; }
+  .btn-sm:disabled { opacity: 1; background: var(--panel-2); border-color: var(--line); color: var(--muted); }
+  button.icon { color: var(--muted); }
+  button.icon:hover { color: var(--accent); }
+  .logout { background: none; border: 0; }
+
+  select, input.num, input.txt, textarea.txt, input[type="time"], input[type="date"], input[type="datetime-local"], input[type="number"], input[type="text"], input[type="search"] {
+    background: var(--field); color: var(--text); border: 1px solid var(--line-strong);
+  }
+  select:hover, input:hover { border-color: var(--muted); }
+  input:focus, select:focus, textarea:focus { border-color: var(--accent); outline: 1px solid var(--accent); outline-offset: 0; }
+  input[type="checkbox"], input[type="radio"], input[type="range"] { accent-color: var(--accent); }
+  ::placeholder { color: var(--muted); opacity: 1; }
+  .mini { font-size: var(--fs-2); color: var(--muted); }
+
+  /* ============================== tables ============================== */
+  .chain th, .chain td { height: 26px; padding: 2px 4px; font-size: var(--fs-3); }
+  .chain thead th, .grid-tbl thead th, .id-ch thead th, .sb-chain-tbl thead th {
+    background: var(--head); color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: .05em;
+  }
+  .chain thead tr:first-child th { height: 24px; }
+  .chain thead tr:nth-child(2) th { top: 24px; border-bottom: 1px solid var(--line); }
+  .side-head th { font-size: 13px; letter-spacing: .14em; }
+  .chain tbody tr, .grid-tbl th, .grid-tbl td { border-bottom: 1px solid var(--line-soft); }
+  .chain tbody tr:hover td, .grid-tbl tbody tr:hover td { background-color: var(--hover); }
+  .chain td.strike, .strike-h { background: var(--panel-2); font-weight: 700; font-size: var(--fs-4); min-width: 64px; border-left: 1px solid var(--line); border-right: 1px solid var(--line); }
+  .chain td.ltp { font-weight: 700; }
+  .chain td.itm { background-color: var(--itm); }
+  .chain tr.atm td { border-top: 1px solid var(--atm); border-bottom: 1px solid var(--atm); }
+  .chain tr.atm td.strike { background: var(--atm); color: var(--on-atm); }
+  .chain td.maxoi { outline: 1px solid var(--accent); outline-offset: -1px; }
+  .chain .chg { font-size: 12px; min-width: 34px; }
+  .chain td.ba { font-size: var(--fs-3); }
+  .chain td.oi .bar { top: 3px; bottom: 3px; opacity: 1; border-radius: 0; }
+  .spot-row td { height: 2px; }
+  .grid-tbl { font-size: var(--fs-3); }
+  .grid-tbl th, .grid-tbl td { padding: 5px 8px; }
+  .grid-tbl tbody th { font-weight: 700; }
+  .pos { color: var(--up); }
+  .neg { color: var(--down); }
+
+  /* ============================== badges, banners, tiles ============================== */
+  .pill, .bias-pill, .cat-pill, .pane-badge { font-size: 12px; font-weight: 700; letter-spacing: .04em; padding: 0 6px; line-height: 18px; }
+  .kpi, .lib-card, .pulse-line, .odds-banner, .broad-banner { background: var(--panel-2); }
+  .kpi { border-color: var(--line); padding: 7px 10px; }
+  .hedge-tiles .st .s, .kpi .k-l { letter-spacing: .05em; }
+  .error-bar { background: var(--down); color: #000; font-weight: 700; border-bottom: 0; }
+  .login { margin: 12vh auto; padding: 22px 24px; border: 1px solid var(--line); background: var(--panel); max-width: 460px; }
+  .login h2 { margin: 0 0 6px; text-transform: uppercase; letter-spacing: .06em; color: var(--title); }
+  .modal-ov, .id-modal { background: rgba(0, 0, 0, .72); }
+  .modal, .id-modal-box { border: 1px solid var(--accent); box-shadow: none; }
+  .breadth-bar, .split-bar { border-radius: 0; height: 10px; }
+  .fd-dot, .dot { border-radius: 0; }
+  .fd-dot.on { box-shadow: none; }
+}
+
+/* flashes of a price change, in the palette's own colours (the Classic keyframes carry Night's) */
+@keyframes flashUp { from { background-color: color-mix(in srgb, var(--up) 55%, transparent); } }
+@keyframes flashDown { from { background-color: color-mix(in srgb, var(--down) 55%, transparent); } }
+
+/* laptop widths: the command line's button keeps its key, not its sentence */
+@media (max-width: 1500px) {
+  :root[data-design="terminal"] {
+    .tm-cmdk { min-width: 0; }
+    .tm-cmdk span { display: none; }
+    .topbar .stat, .brand { padding: 0 10px; }
+    .tm-status .tm-hints { display: none; }
+  }
+}
+
+/* narrow windows: the rail becomes a strip along the top */
+@media (max-width: 760px) {
+  :root[data-design="terminal"] {
+    body:not(.nc-window) { padding-left: 0; }
+    .tm-rail { position: static; width: auto; flex-direction: row; border-right: 0; border-bottom: 1px solid var(--line); }
+    .tm-logo { height: auto; width: 56px; border-bottom: 0; }
+    .tm-rail .tabs { flex-direction: row; overflow-x: auto; }
+    .tm-rail .tabs button, .tm-rail-foot button { min-width: 64px; border-left: 0; border-right: 0; border-bottom: 3px solid transparent; }
+    .tm-rail .tabs button.on { border-bottom-color: var(--accent); }
+    .tm-rail-foot { margin: 0 0 0 auto; border-top: 0; display: flex; }
+    .tm-status { left: 0; }
+    .tm-status .tm-hints, .tm-cmdk span { display: none; }
+    .tm-cmdk { min-width: 0; }
+    .topbar { flex-wrap: wrap; }
+    .tm-pop { left: 6px; }
+  }
+}

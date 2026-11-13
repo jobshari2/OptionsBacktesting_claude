@@ -536,7 +536,7 @@
         layout: {
           background: { color: css('--panel') },
           textColor: css('--muted'),
-          fontFamily: 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+          fontFamily: css('--font-ui') || 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif', // --font-ui: the Terminal design's typeface
           panes: { separatorColor: line },
         },
         grid: { vertLines: { color: rgba(line, 0.35) }, horzLines: { color: rgba(line, 0.35) } },
@@ -1581,7 +1581,7 @@
     chart.timeScale().subscribeVisibleLogicalRangeChange((r) => {
       if (r && r.from < 30) loadOlder();
     });
-    new MutationObserver(applyTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+    new MutationObserver(applyTheme).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-accent', 'data-face'] });
     window.addEventListener('viewchange', () => setTimeout(tick, 0));
     document.addEventListener('visibilitychange', tick);
 
