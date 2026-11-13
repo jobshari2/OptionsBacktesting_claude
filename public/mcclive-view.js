@@ -180,12 +180,12 @@
         const pickTrade = st.trades?.length > 1 ? `<div class="set-row">${pickerHtml()}</div>` : '';
         el.innerHTML = `<div class="panel cc-doc mcl-head">${pickTrade}<div class="err small">${esc(st.error)}</div><div class="small mcl-now" id="mclNow">${nowHtml()}</div><div class="set-row">${enterBtn()}</div></div>`;
         bindPick();
-        bindPick();
         bindEnter();
         return;
       }
       if (!st?.pos) {
-        el.innerHTML = `<div class="panel empty">${st?.trades?.length ? `<div class="set-row mcl-head"><h3>Live trade</h3>${pickerHtml()}</div>` : '<h3>No live trade</h3>'}<div class="small mcl-now" id="mclNow">${nowHtml()}</div><p>Build the position in the <b>Builder</b> (${cfg.shapeText}) and press <b>Save trade</b>: it is listed in <b>Trades › Saved trades</b> and shown here. The ${cfg.name} paper trade's open series is shown here too. Or start one by the rules:</p><div class="set-row">${enterBtn()}</div></div>`;
+        el.innerHTML = `<div class="panel empty">${st?.trades?.length ? `<div class="set-row mcl-head"><h3>Live trade</h3>${pickerHtml()}</div>` : '<h3>No live trade</h3>'}<div class="small mcl-now" id="mclNow">${nowHtml()}</div><p>Build the position in the <b>Builder</b> (${cfg.shapeText}) and press <b>Save trade</b>: it is listed in <b>Trades › Saved trades</b> and shown here.${cfg.paper === false ? '' : ` The ${cfg.name} paper trade's open series is shown here too.`} Or start one by the rules:</p><div class="set-row">${enterBtn()}</div></div>`;
+        bindPick();
         bindEnter();
         return;
       }

@@ -36,6 +36,7 @@ const { createMccPaper, weekdaysLeft, monthlyFor } = require('./mccpaper');
 const mccLive = require('./bt/mcclive');
 const psc = require('./bt/psc');
 const bpc = require('./bt/bpc');
+const nbo = require('./bt/nbo');
 const lab = require('./bt/lab');
 const adjust = require('./bt/adjust');
 const { createTickStore } = require('./lib/ticks');
@@ -1328,6 +1329,172 @@ const handleBpc = collarIdea({
   shapeText: (prm) => `call ATM+${prm.ce.sellOff}, sold put spread ATM−${prm.pe.sellOff}/−${prm.pe.sellOff + prm.pe.buyGap}`,
 });
 
+// ---------- Trading Ideas › NIFTYBEES + options (bt/nbo.js on bt/mcc.js's runner) ----------
+// NIFTYBEES + any options structure the user builds (legs in points from ATM), backtested like the collars, and a
+// comparison with the Covered call, Put spread collar and Bull put collar on the same months and the same NIFTYBEES,
+// costs and ETF pricing. Saved: bt-data/nbo-backtest.json, nbo-study.json, nbo-compare.json. No paper trade, no orders.
+const NBO_FILES = {
+  backtest: path.join(__dirname, 'bt-data', 'nbo-backtest.json'),
+  study: path.join(__dirname, 'bt-data', 'nbo-study.json'),
+  compare: path.join(__dirname, 'bt-data', 'nbo-compare.json'),
+};
+// The strategies the comparison runs besides the user's: their engine and where their Backtest tab saved its settings.
+const NBO_RIVALS = [
+  { id: 'mcc', name: 'Covered call', desc: 'modified: call ratio 1×2 + put 2-3-1 butterfly', run: runMcc, defaults: MCC_DEFAULTS },
+  { id: 'psc', name: 'Put spread collar', desc: 'sell CE ATM+100, buy PE ATM−100, sell PE −200', run: psc.runPsc, defaults: psc.DEFAULTS },
+  { id: 'bpc', name: 'Bull put collar', desc: 'sell CE ATM+100, sell PE ATM−100, buy PE −200', run: bpc.runBpc, defaults: bpc.DEFAULTS },
+];
+const nboJobs = new Map();
+function nboJob(kind, run) {
+  const jid = Math.random().toString(36).slice(2, 10);
+  const job = { id: jid, kind, status: 'running', progress: { phase: 'Starting', done: 0, total: 0 }, startedAt: Date.now() };
+  nboJobs.set(jid, job);
+  while (nboJobs.size > 6) nboJobs.delete(nboJobs.keys().next().value);
+  run({ onProgress: (x) => (job.progress = { ...x, api: backtester.data.apiStats() }), stopped: () => Boolean(job.stop) })
+    .then((r) => {
+      job.result = r;
+      job.status = 'done';
+      if (!NBO_FILES[kind]) return; // 'run': a study rule opened on the Backtest tab, not kept
+      fs.mkdirSync(path.dirname(NBO_FILES[kind]), { recursive: true });
+      fs.writeFileSync(NBO_FILES[kind] + '.tmp', JSON.stringify(r));
+      fs.renameSync(NBO_FILES[kind] + '.tmp', NBO_FILES[kind]);
+    })
+    .catch((e) => {
+      job.status = 'error';
+      job.error = e.message;
+      logError(`nbo-${kind}`, e);
+    });
+  return job;
+}
+// A run kept small for the comparison table and chart (the full months stay on each strategy's own screen).
+const nboCompact = (r) => ({
+  params: r.params,
+  summary: r.summary,
+  months: r.months.map((m) => ({
+    expiry: m.expiry,
+    ok: m.ok,
+    skip: m.skip,
+    move: m.move,
+    spot0: m.spot0,
+    spotE: m.spotE,
+    opt: m.opt,
+    callPnl: m.callPnl,
+    putPnl: m.putPnl,
+    etfOnce: m.etfOnce,
+    etfMonthly: m.etfMonthly,
+    withOnce: m.withOnce,
+    withMonthly: m.withMonthly,
+    adjustments: m.adjustments,
+    costs: m.costs,
+  })),
+});
+// Its Live trade tab (handleLive): a saved Builder trade marked as this strategy (snap.mcc.kind 'nbo', set by "Enter new
+// trade" or the Builder's selector), with its NIFTYBEES; other open trades can be picked. No paper trade here. "Enter new
+// trade" builds the legs the page sends (b.params: the Strategy tab's legs, lots and budget).
+LIVE.nbo = {
+  kind: 'nbo',
+  name: 'NIFTYBEES + options',
+  file: path.join(__dirname, 'bt-data', DEMO ? 'nbo-live-demo.json' : 'nbo-live.json'),
+  paper: () => ({ state: () => ({ paper: null }) }),
+  looks: () => false, // any legs can be this strategy: only the trades marked as it are its own
+  strict: true,
+  studyFile: () => NBO_FILES.study,
+  defaults: nbo.DEFAULTS,
+  plan(S, strikes, ltp, lot, b) {
+    const prm = nbo.merge({ ...(b.params || {}), lotSize: lot });
+    if (!prm.legs.some((l) => l.lots > 0)) throw new Error('No option legs: add them on the Strategy tab first');
+    const pick = nbo.pickLegs(S, prm, strikes);
+    return { prm, pick, shapeText: nbo.structureText(prm) };
+  },
+};
+async function handleNbo(req, res, url, p0) {
+  lastClientAt = Date.now();
+  const p = p0.slice('/api/nbo'.length);
+  const body = async () => JSON.parse((await readBody(req, 50_000)).toString('utf8') || '{}');
+  try {
+    if (p === '/meta') {
+      const cal = await backtester.data.expiryCalendar().catch(() => null);
+      const monthly = cal ? [...cal.monthly].filter((e) => cal.expiredSet.has(e)).sort() : [];
+      return sendJson(res, 200, {
+        defaults: nbo.DEFAULTS,
+        presets: nbo.PRESETS,
+        maxLegs: nbo.MAX_LEGS,
+        study: nbo.STUDY.map(([sid, label]) => ({ id: sid, label })),
+        rivals: NBO_RIVALS.map((r) => ({ id: r.id, name: r.name, desc: r.desc, saved: Boolean(readJson(path.join(__dirname, 'bt-data', `${r.id}-backtest.json`))) })),
+        lot: contracts.lot || nbo.DEFAULTS.lotSize,
+        monthly,
+        demo: DEMO,
+      });
+    }
+    if (['/backtest', '/study', '/compare'].includes(p) && req.method !== 'POST') return sendJson(res, 200, { saved: readJson(NBO_FILES[p.slice(1)]) });
+    // backtest: the settings and the same without adjustments, saved; run: the same for one study rule, not saved
+    if ((p === '/backtest' || p === '/run') && req.method === 'POST') {
+      const b = await body();
+      const range = { from: b.from, to: b.to };
+      const params = nbo.merge(b.params || {});
+      if (!params.legs.some((l) => l.lots > 0)) throw new Error('Add at least one option leg with lots above 0');
+      const job = nboJob(p.slice(1), async ({ onProgress, stopped }) => {
+        const withAdj = await nbo.runNbo(backtester.data, params, range, { onProgress: (x) => onProgress({ ...x, phase: 'With adjustments' }), stopped });
+        const off = { ...params, adj: { ...params.adj, on: false } };
+        const without = await nbo.runNbo(backtester.data, off, range, { onProgress: (x) => onProgress({ ...x, phase: 'Without adjustments' }), stopped });
+        return { at: Date.now(), range, withAdj, without };
+      });
+      return sendJson(res, 200, { id: job.id, status: job.status });
+    }
+    if (p === '/study' && req.method === 'POST') {
+      const b = await body();
+      const job = nboJob('study', (o) => nbo.runNboStudy(backtester.data, nbo.merge(b.params || {}), { from: b.from, to: b.to }, o));
+      return sendJson(res, 200, { id: job.id, status: job.status });
+    }
+    // compare: the user's strategy (with and without its adjustments) and the three others, each with its own rules
+    // ('saved': its Backtest tab's last-run settings, else its defaults), all with this screen's NIFTYBEES budget,
+    // ETF pricing and costs, on the same series.
+    if (p === '/compare' && req.method === 'POST') {
+      const b = await body();
+      const range = { from: b.from, to: b.to };
+      const mine = nbo.merge(b.params || {});
+      if (!mine.legs.some((l) => l.lots > 0)) throw new Error('Add at least one option leg with lots above 0');
+      const common = { budget: mine.budget, etf: mine.etf, costs: mine.costs };
+      const job = nboJob('compare', async ({ onProgress, stopped }) => {
+        const plan = [
+          { id: 'mine', name: b.name || 'Your strategy', desc: nbo.structureText(mine), run: nbo.runNbo, params: mine },
+          { id: 'mineOff', name: (b.name || 'Your strategy') + ', no adjustments', desc: nbo.structureText(mine), run: nbo.runNbo, params: { ...mine, adj: { ...mine.adj, on: false } } },
+          ...NBO_RIVALS.map((r) => {
+            const savedP = b.use === 'defaults' ? null : readJson(path.join(__dirname, 'bt-data', `${r.id}-backtest.json`))?.withAdj?.params;
+            const own = savedP ? { ...savedP } : { ...r.defaults };
+            return { id: r.id, name: r.name, desc: r.desc, run: r.run, params: { ...own, ...common, lotSize: mine.lotSize }, from: savedP ? 'its Backtest tab settings' : 'its default rules' };
+          }),
+        ];
+        const rows = [];
+        for (let i = 0; i < plan.length; i++) {
+          if (stopped()) break;
+          const x = plan[i];
+          const r = await x.run(backtester.data, x.params, range, { onProgress: (y) => onProgress({ phase: x.name, done: i, total: plan.length, inner: y }), stopped });
+          rows.push({ id: x.id, name: x.name, desc: x.desc, from: x.from || null, ...nboCompact(r) });
+        }
+        onProgress({ phase: 'Done', done: plan.length, total: plan.length });
+        return { at: Date.now(), range, use: b.use === 'defaults' ? 'defaults' : 'saved', rows };
+      });
+      return sendJson(res, 200, { id: job.id, status: job.status });
+    }
+    if (p.startsWith('/live')) return await handleLive(req, res, url, p, LIVE.nbo);
+    if (p === '/job') {
+      const job = nboJobs.get(url.searchParams.get('id'));
+      if (!job) return sendJson(res, 404, { error: 'Job not found (the server may have restarted): run it again' });
+      return sendJson(res, 200, { id: job.id, status: job.status, progress: job.progress, error: job.error, result: job.status === 'done' ? job.result : undefined });
+    }
+    if (p === '/job/stop' && req.method === 'POST') {
+      const job = nboJobs.get((await body()).id);
+      if (job) job.stop = true;
+      return sendJson(res, 200, { ok: Boolean(job) });
+    }
+    return sendJson(res, 404, { error: 'Not found' });
+  } catch (e) {
+    logError('nbo', e);
+    return sendJson(res, 400, { error: e.message });
+  }
+}
+
 // JSON files under bt-data/ (Covered call, Put spread collar, Strategy lab, saved trades)
 const readJson = (file) => {
   try {
@@ -1738,6 +1905,8 @@ const server = http.createServer(async (req, res) => {
   if (p.startsWith('/api/psc/')) return handlePsc(req, res, url, p);
 
   if (p.startsWith('/api/bpc/')) return handleBpc(req, res, url, p);
+
+  if (p.startsWith('/api/nbo/')) return handleNbo(req, res, url, p);
 
   if (p.startsWith('/api/lab/')) return handleLab(req, res, url, p);
 

@@ -154,7 +154,14 @@
 .mcc-grp-box { border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; display: flex; flex-direction: column; gap: 4px; }
 .mcc-leg { display: flex; align-items: center; gap: 6px; font-size: 12px; flex-wrap: wrap; }
 .mcc-leg > .lbl:first-child { min-width: 110px; }
-.mcc-done, .psc-done, .bpc-done { margin-top: 6px; color: var(--up); }
+.mcc-done, .psc-done, .bpc-done, .nbo-done { margin-top: 6px; color: var(--up); }
+/* Trading Ideas › NIFTYBEES + options (nbo-view.js) */
+.nbo-legs select, .nbo-legs input { font-size: 12px; }
+.nbo-legs td { white-space: nowrap; }
+.nbo-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+.nbo-cmp tbody tr.on td { background: color-mix(in srgb, var(--accent, #58a6ff) 10%, transparent); }
+.nbo-metric { display: inline-flex; margin-left: 10px; vertical-align: middle; }
+.nbo-metric button { padding: 3px 10px; font-size: 12px; }
 .mcc-anim-ctl { flex-wrap: wrap; }
 @media (max-width: 1100px) {
   .mcc-ex-legs { grid-template-columns: minmax(0, 1fr); }

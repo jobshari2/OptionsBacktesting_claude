@@ -1757,11 +1757,12 @@
     if (callAndPuts && Math.min(...ps.map((l) => l.strike)) > Math.max(...pb.map((l) => l.strike))) return 'bpc';
     return 'mcc';
   }
-  const MCC_NAME = { psc: 'Put spread collar', bpc: 'Bull put collar', mcc: 'Modified covered call' };
+  const MCC_NAME = { psc: 'Put spread collar', bpc: 'Bull put collar', nbo: 'NIFTYBEES + options', mcc: 'Modified covered call' };
   // the Trades list's badge of each strategy
   const MCC_PILL = {
     psc: '<span class="cat-pill c-bullish" title="Put spread collar (a sold call + bought put spread against NIFTYBEES)">Collar</span> ',
     bpc: '<span class="cat-pill c-bullish" title="Bull put collar (a sold call + sold put spread against NIFTYBEES)">Bull put</span> ',
+    nbo: '<span class="cat-pill c-bullish" title="NIFTYBEES + options (your own legs against NIFTYBEES)">NB+opt</span> ',
     mcc: '<span class="cat-pill c-bullish" title="Modified covered call (call ratio + put butterfly against NIFTYBEES)">MCC</span> ',
   };
   // NIFTYBEES' price while the Builder is live and a position is held against it: /api/mcc/bees, read at most every

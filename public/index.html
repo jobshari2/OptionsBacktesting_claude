@@ -93,6 +93,7 @@
       <button data-view="cc" title="Modified covered call against NIFTYBEES (call ratio 1×2, put 2-3-1 butterfly): rules, backtest, study and live paper trade">Covered call</button>
       <button data-view="psc" title="Put spread collar against NIFTYBEES (sell 1 CE ATM+100, buy 1 PE ATM−100, sell 1 PE 100 under it): rules, what happens when Nifty moves, backtest, study and live paper trade">Put spread collar</button>
       <button data-view="bpc" title="Bull put collar against NIFTYBEES (sell 1 CE ATM+100, sell 1 PE ATM−100, buy 1 PE 100 under it): rules, what happens when Nifty moves, backtest, study, paper trade and live trade">Bull put collar</button>
+      <button data-view="nbo" title="NIFTYBEES + options: build any options structure on top of NIFTYBEES (legs in points from ATM), see its payoff, backtest it like the Put spread collar and compare it with the Covered call, Put spread collar and Bull put collar">NIFTYBEES + options</button>
       <button data-view="lab" title="Strategy lab: try a new options structure (legs from ATM) — payoff, a backtest on every monthly or weekly series, and every preset compared; starts with ways to profit from a fall">Strategy lab</button>
       <button data-view="tadj" title="Option adjustments (Catolico, Trade adjustment basics): the PDF explained with Nifty examples, an animated simulation of the adjustment rules on the current expiry, and a backtest on the option history">Adjustments</button>
     </span>
@@ -625,6 +626,14 @@
     </section>
   </main>
 
+  <!-- ===== Trading Ideas: NIFTYBEES + options (nbo-view.js) ===== -->
+  <main id="nbo" class="bt-screen cc-screen hidden">
+    <section class="bt-main">
+      <div class="panel cc-tabs-panel"><div class="seg" id="nboTabs"></div></div>
+      <div id="nboBody" class="bt-results"></div>
+    </section>
+  </main>
+
   <!-- ===== Trading Ideas: bull put collar (bpc-view.js) ===== -->
   <main id="bpc" class="bt-screen cc-screen hidden">
     <section class="bt-main">
@@ -675,6 +684,7 @@
   <script src="mcc-view.js"></script>
   <script src="psc-view.js"></script>
   <script src="bpc-view.js"></script>
+  <script src="nbo-view.js"></script>
   <script src="lab-view.js"></script>
   <script src="adj-view.js"></script>
   <script src="theme.js"></script>
