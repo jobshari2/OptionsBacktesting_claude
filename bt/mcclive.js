@@ -1038,7 +1038,142 @@ function pscDue(prm, move, entrySpot, pos, M, credit = false) {
   return null;
 }
 
+// ---------- best strikes for a new collar ----------
+// Every collar on the live chain M: sell 1 CE + a put spread (2 PE legs, one bought one sold, 50 … 700 points apart,
+// either way round: the bought put above the sold one, or the sold above the bought), strikes ATM or out of the money
+// only (the call at the ATM strike up to WIDE points above, the puts at the ATM strike down to WIDE below). Entered now at the LTP ± slip with charges, held with the NIFTYBEES (beesQty
+// units bought now at beesPx), scored at expiry on Nifty moves of 1 … 8 % from now:
+//   up      = the average total (NIFTYBEES + options) over the up moves,
+//   downOpt = the average options P&L over the down moves (what the options earn on a fall, NIFTYBEES aside),
+//   down    = the average total over the down moves, worst = the lowest total on them, flat = options P&L at Nifty now.
+//   mid     = the lowest total at expiry anywhere within ±midBand % of now (Nifty staying in a range).
+// Kept: downOpt ≥ minDown, up ≥ minUp and mid ≥ minMid (the floors); ranked by up + mid (Nifty up and Nifty staying in
+// the range, same weight), then downOpt. None that meet all: the ones that miss by the least (shortfalls added) first.
+//   minFlat: the least the options alone earn if Nifty ends where it is now (flat), e.g. 1 % of the money invested.
+// midBest: the highest mid of the collars meeting the other floors (the most the range can be asked for).
+// One per sold-call strike. Only strikes traded today with a tight quote (M.notEnterable).
+// Returns { tried, priced, within, minDown, list: [{ id, title, legs (with fills), credit, charges, up, down, downOpt,
+// worst, flat, grid (as grid()) }] }.
+// settle (a past month): { spot, bees } — Nifty and NIFTYBEES at the expiry. Each pick then also has actual: { spot,
+// opt, bees, total } (the options at intrinsic at that Nifty, NIFTYBEES bought at beesPx sold at settle.bees), and the
+// result has hindsight: the collar of all those priced (within the floor when any is) whose options made the most.
+const BEST_MOVES = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 7, 8];
+const WIDE = 1000;
+const MID_BAND = 2; // default % either side of the entry: the range Nifty stays in ("rangebound")
+function bestCollars(M, { lot, lots = 1, beesQty = 0, beesPx, expiry, slip = 0.005, day = null, n = 5, minDown = 30000, minUp = 35000, minMid = -Infinity, midBand = MID_BAND, minFlat = -Infinity, settle = null } = {}) {
+  const S = M.spot;
+  const A = atmOf(S);
+  const bees = beesQty > 0 ? { qty: beesQty, price: beesPx, now: beesPx } : null;
+  const empty = { legs: [], realised: { CE: 0, PE: 0 }, costs: {}, lot, expiry };
+  const ups = BEST_MOVES.map((m) => S * (1 + m / 100));
+  const downs = BEST_MOVES.map((m) => S * (1 - m / 100));
+  // the range: Nifty anywhere from −midBand to +midBand % at the expiry, every 0.1 %
+  const band = Math.min(10, Math.max(0.5, Number(midBand) || MID_BAND));
+  const mids = Array.from({ length: Math.round(band * 20) + 1 }, (_, i) => S * (1 + (i / 10 - band) / 100));
+  const ok = (t, K) => M.exec(t, K) > 0 && !M.notEnterable(t, K);
+  // ATM and out of the money only (no ITM): the call at the ATM strike or above, both puts at the ATM strike or below
+  const strikes = (t) => {
+    const out = [];
+    const [lo, hi] = t === 'CE' ? [A, A + WIDE] : [A - WIDE, A];
+    for (let k = lo; k <= hi; k += STEP) if (ok(t, k)) out.push(k);
+    return out;
+  };
+  const ces = strikes('CE');
+  const pes = strikes('PE');
+  const scored = [];
+  let tried = 0;
+  for (const c of ces)
+    for (const hi of pes)
+      for (const lo of pes) {
+        if (lo >= hi || hi - lo > 700) continue;
+        for (const buyHi of [true, false]) {
+          tried++;
+          const open = [
+            { type: 'CE', strike: c, side: -1, lots },
+            { type: 'PE', strike: hi, side: buyHi ? 1 : -1, lots },
+            { type: 'PE', strike: lo, side: buyHi ? -1 : 1, lots },
+          ];
+          const r = priceChange(empty, { close: [], open }, M, slip, day);
+          if (!r) continue;
+          const opt = (x) => {
+            const e = optExpiry(r.next, x);
+            return e.CE + e.PE;
+          };
+          const upTot = ups.map((x) => opt(x) + beesAt(bees, S, x));
+          const midTot = mids.map((x) => opt(x) + beesAt(bees, S, x));
+          const dnOpt = downs.map(opt);
+          const dnTot = downs.map((x, i) => dnOpt[i] + beesAt(bees, S, x));
+          scored.push({
+            id: `c${c}${buyHi ? 'b' : 's'}${hi}${buyHi ? 's' : 'b'}${lo}`,
+            open,
+            r,
+            up: sum(upTot, (v) => v) / upTot.length,
+            downOpt: sum(dnOpt, (v) => v) / dnOpt.length,
+            down: sum(dnTot, (v) => v) / dnTot.length,
+            worst: Math.min(...dnTot),
+            flat: opt(S),
+            mid: Math.min(...midTot),
+          });
+        }
+      }
+  const within = scored.filter((o) => o.downOpt >= minDown && o.up >= minUp && o.mid >= minMid && o.flat >= minFlat);
+  // ranked by Nifty going up and Nifty staying in the range (its lowest point), same weight; the floors cover the fall
+  const short = (o) => Math.max(0, minDown - o.downOpt) + Math.max(0, minUp - o.up) + Math.max(0, minMid - o.mid) + Math.max(0, minFlat - o.flat);
+  const rank = (a, b) => b.up + b.mid - (a.up + a.mid) || b.downOpt - a.downOpt;
+  const pool = within.length ? within.sort(rank) : scored.sort((a, b) => short(a) - short(b) || rank(a, b));
+  const beesOut = settle?.bees > 0 && bees ? bees.qty * (settle.bees - bees.price) : 0;
+  const actual = (pos) => {
+    if (!(settle?.spot > 0)) return null;
+    const e = optExpiry(pos, settle.spot);
+    return { spot: settle.spot, opt: e.CE + e.PE, bees: beesOut, total: e.CE + e.PE + beesOut };
+  };
+  const titleOf = (legs) => legs.map((l) => `${l.side > 0 ? 'Buy' : 'Sell'} ${l.strike} ${l.type}`).join(' · ');
+  let hindsight = null;
+  if (settle?.spot > 0)
+    for (const o of within.length ? within : scored) {
+      const a = actual(o.r.next);
+      if (!hindsight || a.opt > hindsight.actual.opt) hindsight = { title: titleOf(o.r.next.legs), actual: a, up: o.up, downOpt: o.downOpt };
+    }
+  return {
+    tried,
+    priced: scored.length,
+    within: within.length,
+    minDown,
+    minUp,
+    minMid: Number.isFinite(minMid) ? minMid : null,
+    minFlat: Number.isFinite(minFlat) ? minFlat : null,
+    midBand: band,
+    // the most any collar keeps through the range while meeting the fall and rise floors (what a range floor can ask)
+    midBest: scored.reduce((b, o) => (o.downOpt >= minDown && o.up >= minUp && o.flat >= minFlat && (b == null || o.mid > b) ? o.mid : b), null),
+    hindsight,
+    // one per sold-call strike, so the five are different trades, not one trade with the put spread moved by 50
+    list: pool
+      .filter((o, i) => pool.findIndex((q) => q.open[0].strike === o.open[0].strike) === i)
+      .slice(0, n)
+      .map((o) => {
+        const legs = o.r.next.legs;
+        return {
+          id: o.id,
+          title: titleOf(legs),
+          legs: legs.map((l) => ({ type: l.type, strike: l.strike, side: l.side, lots: l.lots, fill: l.entry, ltp: M.px(l.type, l.strike) })),
+          credit: sum(legs, (l) => -l.side * l.entry * l.lots * lot),
+          charges: o.r.charges,
+          up: o.up,
+          down: o.down,
+          downOpt: o.downOpt,
+          worst: o.worst,
+          flat: o.flat,
+          mid: o.mid,
+          grid: grid(o.r.next, M, bees, S),
+          actual: actual(o.r.next),
+        };
+      }),
+  };
+}
+
 module.exports = {
+  bestCollars,
+  BEST_MOVES,
   MOVES,
   RELIABLE,
   WORST_TOL,

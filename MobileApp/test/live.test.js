@@ -84,3 +84,35 @@ test('valuing a closed trade: legs and NIFTYBEES at their exits, closing costs c
   assert.deepEqual(v.marks, [110, 80, 40]);
   assert.ok(v.costsOut > 0);
 });
+
+test('bestCollars: full collars only, the options floor on falls, ranked by upside', async () => {
+  const { bestCollars } = await import('../www/js/live.js');
+  const { orders } = await import('../www/js/costs.js');
+  const { price } = await import('../www/js/bs.js');
+  const S = 25000;
+  const T = 45 / 365;
+  const rows = [];
+  for (let k = 23500; k <= 26500; k += 50)
+    rows.push({ strike: k, ce: { ltp: price('CE', S, k, T, 0.13), vol: 10 }, pe: { ltp: price('PE', S, k, T, 0.15), vol: 10 } });
+  const r = bestCollars({ chain: { spot: S, rows }, lot: 65, beesUnits: 5700, beesPx: 285, orders, minDown: 20000, minUp: 30000, minMid: -Infinity });
+  assert.ok(r.list.length > 0 && r.list.length <= 5);
+  for (const v of r.list) {
+    assert.equal(v.legs.length, 3);
+    assert.deepEqual(v.legs.map((l) => l.type), ['CE', 'PE', 'PE']);
+    assert.equal(v.legs[0].side, -1);
+    assert.equal(v.legs[1].side + v.legs[2].side, 0); // one put bought, one sold
+    if (r.within) assert.ok(v.downOpt >= 20000 && v.up >= 30000);
+    // ATM and out of the money only: the call at or above the ATM strike, the puts at or below it
+    for (const l of v.legs) assert.ok(l.type === 'CE' ? l.strike >= S : l.strike <= S, `${v.title}: in-the-money leg`);
+  }
+  // ranked by Nifty up + the range's lowest point
+  for (let i = 1; i < r.list.length; i++) if (r.within) assert.ok(r.list[i - 1].up + r.list[i - 1].mid >= r.list[i].up + r.list[i].mid);
+  for (const v of r.list) assert.ok(v.mid <= v.flat + 1e-6);
+  // the range floor: ask for the most any can keep
+  if (r.midBest != null) {
+    const held = bestCollars({ chain: { spot: S, rows }, lot: 65, beesUnits: 5700, beesPx: 285, orders, minDown: 20000, minUp: 30000, minMid: Math.floor(r.midBest) });
+    assert.ok(held.within > 0);
+    for (const v of held.list) assert.ok(v.mid >= Math.floor(r.midBest));
+  }
+  assert.equal(new Set(r.list.map((v) => v.legs[0].strike)).size, r.list.length);
+});

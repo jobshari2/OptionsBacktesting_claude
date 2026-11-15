@@ -752,6 +752,125 @@ async function mccBeesNow() {
   return px > 0 ? { px, at: ccBees.at, how: 'ltp' } : null;
 }
 
+// ---------- Suggestion › Past month (the collars' best strikes on an expired monthly series) ----------
+// The expired monthly series in the cached Nifty history, newest first: { expiry, from (the day after the previous
+// monthly expiry), days (its trading days before the expiry: the entry can be any of them) }.
+async function bestHistSeries() {
+  const d = backtester.data;
+  const cal = await d.expiryCalendar();
+  const monthly = [...cal.monthly].filter((e) => cal.expiredSet.has(e)).sort();
+  const start = d.indexStart();
+  if (!start) throw new Error('No Nifty history in the cache yet (Data screen)');
+  const out = [];
+  for (let i = 1; i < monthly.length; i++) {
+    const from = d.addDays(monthly[i - 1], 1);
+    if (from < start) continue;
+    const days = (await d.loadIndex(from, monthly[i]).catch(() => [])).filter((x) => x < monthly[i]);
+    if (days.length) out.push({ expiry: monthly[i], from, days });
+  }
+  return out.reverse();
+}
+// A strike counts as tradable at the minute when it traded in the 30 minutes up to it (the past has no bid / ask, so
+// this stands in for the live rule: volume today and a tight quote).
+const HIST_FRESH = 30;
+// The Suggestion's floors (₹): minDown, the least the options earn on average on Nifty falls of 1 … 8 % (default
+// 30,000); minUp, the least the whole trade (options + NIFTYBEES) earns on average on rises of 1 … 8 % (default 35,000);
+// minMid, the least the whole trade earns anywhere at expiry with Nifty within ±midBand % (default 0 = no loss in the
+// range; band 2 %, 0.5 … 10).
+const bestFloors = (b) => {
+  const f = (v, d) => (v == null || v === '' || !Number.isFinite(Number(v)) ? d : Number(v));
+  return { minDown: f(b.minDown, 30000), minUp: f(b.minUp, 35000), minMid: f(b.minMid, 0), midBand: Math.min(10, Math.max(0.5, f(b.midBand, 2))) };
+};
+// The options-only floor if Nifty stays (ends where it is at the entry): the user's ₹ (b.minFlat), or left empty
+// BEST_FLAT_PCT % of the money invested (the NIFTYBEES bought; one lot of Nifty's worth when none). { minFlat, auto, invested }
+const BEST_FLAT_PCT = 1;
+const bestFlat = (b, beesQty, beesPx, lot, lots, S) => {
+  const invested = beesQty > 0 ? beesQty * beesPx : lot * (lots || 1) * S;
+  const v = b.minFlat === '' || b.minFlat == null ? NaN : Number(b.minFlat);
+  return Number.isFinite(v) ? { minFlat: v, auto: false, invested } : { minFlat: Math.round((invested * BEST_FLAT_PCT) / 100), auto: true, invested };
+};
+// The NIFTYBEES units the Suggestion counts: the user's (b.units, 0 … 1 crore; 0 = none) or, left empty, one lot's
+// worth at the entry (auto). { qty, auto }
+const bestUnits = (b, auto) => {
+  const u = b.units === '' || b.units == null ? NaN : Number(b.units);
+  if (!Number.isFinite(u)) return { qty: auto, auto: true };
+  if (u < 0 || u > 1e7) throw new Error('NIFTYBEES units: 0 to 1,00,00,000');
+  return { qty: Math.round(u), auto: false };
+};
+async function bestHist(L, expiry, day, time, { minDown, minUp, minMid, midBand }, b) {
+  const d = backtester.data;
+  const series = (await bestHistSeries()).find((s) => s.expiry === expiry);
+  if (!series) throw new Error(`${expiry} is not an expired monthly series in the cached history`);
+  if (!series.days.includes(day)) day = series.days[0];
+  if (!/^\d{2}:\d{2}$/.test(time)) time = '09:30';
+  const m = Math.min(d.MPD - 1, Math.max(0, Number(time.slice(0, 2)) * 60 + Number(time.slice(3, 5)) - (9 * 60 + 15)));
+  time = `${String(Math.floor((m + 555) / 60)).padStart(2, '0')}:${String((m + 555) % 60).padStart(2, '0')}`;
+  await d.loadIndex(day, expiry);
+  const S = d.spotDay(day)?.[m * 4 + 3];
+  const SE = d.spotDay(expiry)?.[(d.MPD - 1) * 4 + 3];
+  if (!(S > 0) || !(SE > 0)) throw new Error(`No Nifty history for ${day} or the ${expiry} expiry`);
+  const info = await d.contracts(expiry);
+  const lot = info.lot || L.defaults.lotSize;
+  const atm = Math.round(S / 50) * 50;
+  const ks = info.strikes.filter((k) => Math.abs(k - atm) <= 1050);
+  const tasks = ks.flatMap((k) => [
+    [k, 'CE'],
+    [k, 'PE'],
+  ]);
+  const quotes = new Map();
+  let missing = 0;
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: 8 }, async () => {
+      while (next < tasks.length) {
+        const [k, t] = tasks[next++];
+        const c = await d.option(expiry, k, t, day).catch(() => null);
+        if (!c) {
+          missing++;
+          continue;
+        }
+        const a = d.optionDay(c, day);
+        const raw = c.raw?.get(day);
+        let traded = false;
+        for (let i = Math.max(0, m - HIST_FRESH); raw && i <= m && !traded; i++) traded = raw[i * 4 + 3] > 0;
+        const px = a?.[m * 4 + 3] > 0 ? a[m * 4 + 3] / 100 : null;
+        quotes.set(k + t, px ? { ltp: px, vol: traded ? 1 : 0 } : null);
+      }
+    }),
+  );
+  const rows = ks.map((k) => ({ strike: k, ce: quotes.get(k + 'CE'), pe: quotes.get(k + 'PE') }));
+  const at = Date.parse(`${day}T${time}:00+05:30`);
+  const M = mccLive.market({ spot: S, rows }, mccLive.yearsTo(expiry, at));
+  // NIFTYBEES: its recorded price at the entry and the expiry's close, else moved with Nifty (Nifty ÷ 100 at the entry)
+  await d.loadSeries(d.BEES, day, expiry);
+  const b0 = d.seriesDay(d.BEES, day)?.[m * 4 + 3];
+  const bE = d.seriesDay(d.BEES, expiry)?.[(d.MPD - 1) * 4 + 3];
+  const real = b0 > 0 && bE > 0;
+  const beesPx = real ? b0 : S / 100;
+  const beesEnd = real ? bE : (beesPx * SE) / S;
+  const { prm } = L.plan(S, ks, () => null, lot, b);
+  const { qty: beesQty, auto: beesAuto } = bestUnits(b, mccEtfQty(prm, S, beesPx));
+  const flat = bestFlat(b, beesQty, beesPx, lot, prm.lots, S);
+  const slip = (L.defaults.costs.slipPct || 0.5) / 100;
+  const out = mccLive.bestCollars(M, { lot, lots: prm.lots || 1, beesQty, beesPx, expiry, slip, day, minDown, minUp, minMid, midBand, minFlat: flat.minFlat, settle: { spot: SE, bees: beesEnd } });
+  return {
+    ...out,
+    hist: true,
+    expiry,
+    day,
+    time,
+    spot: S,
+    lot,
+    bees: { qty: beesQty, now: beesPx, live: real, auto: beesAuto },
+    flat: { auto: flat.auto, invested: flat.invested, pct: BEST_FLAT_PCT },
+    settle: { spot: SE, bees: beesEnd, real },
+    strikes: ks.length,
+    missing,
+    moves: mccLive.BEST_MOVES,
+    slipPct: slip * 100,
+  };
+}
+
 // Nifty and NIFTYBEES now, for a Live trade tab with no open trade on it (a closed trade, or none): Nifty's streamed
 // tick, else the nearest expiry's chain; NIFTYBEES streamed (watched from here on) or its LTP. null when not read.
 async function liveNow() {
@@ -1038,6 +1157,50 @@ async function handleLive(req, res, url, p, L) {
       bees: { now: beesPx, live: Boolean(bees), qty: mccEtfQty(prm, S, beesPx) },
       at: chain.updatedAt,
     });
+  }
+  // Suggestion: the 5 best strikes for a new collar on an expiry's live chain (bt/mcclive.js bestCollars), each with
+  // its P&L for Nifty moves from now. Nothing is sent to a broker.
+  if (p === '/live/best' && req.method === 'POST') {
+    if (L.kind !== 'psc' && L.kind !== 'bpc') throw new Error('Suggestions of strikes are for the collars only');
+    if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the strikes are priced on the live chain`);
+    const b = JSON.parse((await readBody(req, 10_000)).toString('utf8') || '{}');
+    const expiry = String(b.expiry || '');
+    const chain = await mccLiveChain(expiry, []);
+    if (!(chain?.spot > 0) || !chain.rows?.length) throw new Error(`No live chain for the ${expiry} expiry yet`);
+    const M = mccLive.market(chain, mccLive.yearsTo(expiry));
+    const lot = contracts.lot || L.defaults.lotSize;
+    const { prm } = L.plan(chain.spot, chain.rows.map((r) => r.strike).sort((x, y) => x - y), () => null, lot, b);
+    const beesLive = await mccBeesNow().catch(() => null);
+    const beesPx = beesLive?.px || chain.spot / 100;
+    const { qty: beesQty, auto: beesAuto } = bestUnits(b, mccEtfQty(prm, chain.spot, beesPx));
+    const slip = (L.defaults.costs.slipPct || 0.5) / 100;
+    // the least the options must earn on average on Nifty falls of 1 … 8 % (₹, default 30,000)
+    const { minDown, minUp, minMid, midBand } = bestFloors(b);
+    const flat = bestFlat(b, beesQty, beesPx, lot, prm.lots, chain.spot);
+    const out = mccLive.bestCollars(M, { lot, lots: prm.lots || 1, beesQty, beesPx, expiry, slip, day: istDate(), minDown, minUp, minMid, midBand, minFlat: flat.minFlat });
+    return sendJson(res, 200, {
+      ...out,
+      expiry,
+      spot: M.spot,
+      lot,
+      bees: { qty: beesQty, now: beesPx, live: Boolean(beesLive), auto: beesAuto },
+      flat: { auto: flat.auto, invested: flat.invested, pct: BEST_FLAT_PCT },
+      moves: mccLive.BEST_MOVES,
+      slipPct: slip * 100,
+      at: chain.updatedAt,
+    });
+  }
+  // Suggestion › Past month: the same search on an expired monthly series, on its chain as it was at a chosen minute
+  // (the cached 1-minute option candles, downloading what the cache lacks), plus what each pick actually made at the
+  // expiry. expiries: the expired monthly series (newest first) with their trading days.
+  if (p === '/live/best-hist/expiries') {
+    if (L.kind !== 'psc' && L.kind !== 'bpc') throw new Error('Suggestions of strikes are for the collars only');
+    return sendJson(res, 200, { expiries: await bestHistSeries() });
+  }
+  if (p === '/live/best-hist' && req.method === 'POST') {
+    if (L.kind !== 'psc' && L.kind !== 'bpc') throw new Error('Suggestions of strikes are for the collars only');
+    const b = JSON.parse((await readBody(req, 10_000)).toString('utf8') || '{}');
+    return sendJson(res, 200, await bestHist(L, String(b.expiry || ''), String(b.day || ''), String(b.time || '09:30'), bestFloors(b), b));
   }
   if (p === '/live/suggest' && req.method === 'POST') {
     if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the suggestions are priced on the live chain`);

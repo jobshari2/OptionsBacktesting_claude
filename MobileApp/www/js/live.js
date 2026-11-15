@@ -144,3 +144,104 @@ export function beesCover({ legs, lot, spot: S, bees, upTo = 0.5 }) {
   const toBuy = minUnits == null ? null : Math.max(0, minUnits - held);
   return { netShortLots: net, lot, perPoint, perUnit, slopeUnits, held, beesNow, minUnits, toBuy, cost: toBuy == null ? null : toBuy * beesNow, now: at(S, held), at };
 }
+
+// ---------- Suggestion: the best strikes for a new collar (the portal's bt/mcclive.js bestCollars) ----------
+// Every collar on the chain: sell 1 CE + a put spread (2 PE legs 50 … 700 points apart, one bought one sold, either way
+// round: the bought put above the sold one = Put spread collar, the sold above the bought = Bull put collar), every
+// strike ATM or out of the money only (the call at the ATM strike up to WIDE above, the puts at the ATM strike down to
+// WIDE below). Entered now at the LTP ± slipPct % with charges,
+// held with the NIFTYBEES (beesUnits at beesPx, bought now), scored at expiry on Nifty moves of 1 … 8 % from now:
+//   up      = the average total (NIFTYBEES + options) over the up moves,
+//   downOpt = the average options P&L over the down moves (what the options earn on a fall, NIFTYBEES aside),
+//   down    = the average total over the down moves, flat = the options' P&L if Nifty ends where it is now,
+//   mid     = the lowest total at expiry anywhere within ±midBand % of now (Nifty staying in a range).
+// Kept: downOpt ≥ minDown, up ≥ minUp and mid ≥ minMid (the floors); ranked by up + mid, then downOpt (none that meet
+// all: the ones that miss by the least, shortfalls added, first). minFlat: the least the options alone earn if Nifty
+// stays (flat), e.g. 1 % of the money invested. midBest: the highest mid meeting the other floors. One per
+// sold-call strike. Only strikes traded today (volume above 0) with a price and a bid–ask no wider than ₹2 / 10 %.
+export const BEST_MOVES = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 7, 8];
+const WIDE = 1000;
+const STEP = 50;
+export function bestCollars({ chain, lot, lots = 1, beesUnits = 0, beesPx = 0, slipPct = 0.5, brokerage = 20, day = null, n = 5, minDown = 30000, minUp = 35000, minMid = 0, midBand = 2, minFlat = -Infinity, orders = null }) {
+  const S = chain.spot;
+  const A = Math.round(S / STEP) * STEP;
+  const slip = slipPct / 100;
+  const rows = new Map(chain.rows.map((r) => [r.strike, r]));
+  const quote = (t, K) => {
+    const o = t === 'CE' ? rows.get(K)?.ce : rows.get(K)?.pe;
+    const px = o?.ltp > 0 ? o.ltp : null;
+    if (!px || !(o.vol > 0)) return null;
+    if (o.bid > 0 && o.ask > 0 && o.ask - o.bid > Math.max(2, ((o.bid + o.ask) / 2) * 0.1)) return null;
+    return px;
+  };
+  // ATM and out of the money only (no ITM): the call at the ATM strike or above, both puts at the ATM strike or below
+  const strikes = (t) => {
+    const out = [];
+    const [lo, hi] = t === 'CE' ? [A, A + WIDE] : [A - WIDE, A];
+    for (let k = lo; k <= hi; k += STEP) if (quote(t, k)) out.push(k);
+    return out;
+  };
+  const bees = (x) => (beesUnits > 0 ? beesUnits * beesPx * (x / S - 1) : 0);
+  const ups = BEST_MOVES.map((m) => S * (1 + m / 100));
+  const downs = BEST_MOVES.map((m) => S * (1 - m / 100));
+  const avg = (a) => a.reduce((s, v) => s + v, 0) / a.length;
+  const band = Math.min(10, Math.max(0.5, Number(midBand) || 2));
+  const mids = Array.from({ length: Math.round(band * 20) + 1 }, (_, i) => S * (1 + (i / 10 - band) / 100));
+  const ces = strikes('CE');
+  const pes = strikes('PE');
+  const scored = [];
+  let tried = 0;
+  for (const c of ces)
+    for (const hi of pes)
+      for (const lo of pes) {
+        if (lo >= hi || hi - lo > 700) continue;
+        for (const buyHi of [true, false]) {
+          tried++;
+          const spec = [
+            { type: 'CE', strike: c, side: -1 },
+            { type: 'PE', strike: hi, side: buyHi ? 1 : -1 },
+            { type: 'PE', strike: lo, side: buyHi ? -1 : 1 },
+          ];
+          let buy = 0;
+          let sell = 0;
+          const legs = spec.map((s) => {
+            const ltp = quote(s.type, s.strike);
+            const fill = s.side > 0 ? ltp * (1 + slip) : ltp * (1 - slip);
+            if (s.side > 0) buy += fill * lots * lot;
+            else sell += fill * lots * lot;
+            return { ...s, lots, ltp, entry: fill };
+          });
+          const charges = orders ? orders({ buy, sell, n: 3, brokerage, day }) : 0;
+          const opt = (x) => {
+            const e = expiryAt(legs, lot, x);
+            return e.CE + e.PE - charges;
+          };
+          const dn = downs.map(opt);
+          scored.push({
+            legs,
+            charges,
+            up: avg(ups.map((x) => opt(x) + bees(x))),
+            downOpt: avg(dn),
+            down: avg(dn.map((v, i) => v + bees(downs[i]))),
+            flat: opt(S),
+            mid: Math.min(...mids.map((x) => opt(x) + bees(x))),
+          });
+        }
+      }
+  const within = scored.filter((o) => o.downOpt >= minDown && o.up >= minUp && o.mid >= minMid && o.flat >= minFlat);
+  // ranked by Nifty going up and Nifty staying in the range (its lowest point), same weight; the floors cover the fall
+  const short = (o) => Math.max(0, minDown - o.downOpt) + Math.max(0, minUp - o.up) + Math.max(0, minMid - o.mid) + Math.max(0, minFlat - o.flat);
+  const rank = (a, b) => b.up + b.mid - (a.up + a.mid) || b.downOpt - a.downOpt;
+  const midBest = scored.reduce((m, o) => (o.downOpt >= minDown && o.up >= minUp && o.flat >= minFlat && (m == null || o.mid > m) ? o.mid : m), null);
+  const pool = within.length ? within.sort(rank) : scored.sort((a, b) => short(a) - short(b) || rank(a, b));
+  const list = pool
+    .filter((o, i) => pool.findIndex((q) => q.legs[0].strike === o.legs[0].strike) === i)
+    .slice(0, n)
+    .map((o) => ({
+      ...o,
+      kind: o.legs[1].side > 0 ? 'psc' : 'bpc',
+      title: o.legs.map((l) => `${l.side > 0 ? 'Buy' : 'Sell'} ${l.strike} ${l.type}`).join(' · '),
+      credit: o.legs.reduce((a, l) => a - l.side * l.entry * l.lots * lot, 0),
+    }));
+  return { tried, priced: scored.length, within: within.length, minDown, minUp, minMid, midBand: band, minFlat: Number.isFinite(minFlat) ? minFlat : null, midBest, list };
+}

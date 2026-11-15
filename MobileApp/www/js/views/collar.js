@@ -8,10 +8,11 @@
 import { BEES, NIFTY } from '../market.js';
 import { collarExpiry, monthlyExpiries, rowAt } from '../analytics.js';
 import { COLLARS, collarLegs, legFromChain, analyse, netGreeks, tradeCosts, netPremium, beesUnits, isClosed, valuePosition, ltpOf, NIFTY_STEP } from '../strategy.js';
-import { priceLegs, pnlNow, moveGrid, beesCover, expiryAt, todayAt, COVER_PCTS } from '../live.js';
+import { priceLegs, pnlNow, moveGrid, beesCover, expiryAt, todayAt, COVER_PCTS, bestCollars, BEST_MOVES } from '../live.js';
+import { orders } from '../costs.js';
 import { lineChart } from '../charts.js';
 import { num, inr, esc, tone, toast, sheet, confirmSheet } from '../ui.js';
-import { fmtDate, daysTo, marketOpen, fmtClock } from '../time.js';
+import { fmtDate, daysTo, marketOpen, fmtClock, ist } from '../time.js';
 import * as store from '../store.js';
 import * as positions from '../positions.js';
 
@@ -165,7 +166,7 @@ function renderNew() {
           <td><input class="cell ${l.typed ? 'typed' : ''}" data-price="${i}" type="number" inputmode="decimal" step="0.05" min="0" value="${l.entry > 0 ? l.entry : ''}" placeholder="price" aria-label="Entry price of leg ${i + 1}"></td></tr>`,
         )
         .join('')}</tbody></table>
-      <div class="row gap wrap"><button class="btn small" id="colLive">↺ Rules and LTPs</button><span class="muted small">Change a strike or a price; the strike box steps by 50.</span></div>
+      <div class="row gap wrap"><button class="btn small" id="colLive">↺ Rules and LTPs</button><button class="btn small" id="colBest">💡 Suggestion</button><span class="muted small">Change a strike or a price; the strike box steps by 50.</span></div>
     </section>
     <section class="card">
       <div class="card-head"><h2>Entry</h2><span class="muted small">blank = live</span></div>
@@ -255,6 +256,7 @@ function renderNew() {
     saveState({ edit: [null, null, null], spotIn: null, beesUnits: null, beesPx: null });
     renderNew();
   };
+  el.querySelector('#colBest').onclick = () => openBest(chain, lot, st.lots, units, beesPx);
   el.querySelector('#colSave').onclick = () => {
     if (missing) return;
     const name = `${shape.short} ${fmtDate(chain.expiry)} @ ${num(spot, 0)}`;
@@ -284,6 +286,138 @@ function renderNew() {
       },
     );
   };
+}
+
+// ---------- Suggestion ----------
+// The 5 best collars on this expiry's chain (live.js bestCollars): the options must earn at least the amount typed on
+// Nifty falls of 1 … 8 % (NIFTYBEES aside); ranked by Nifty up (NIFTYBEES + options) + Nifty staying (options). Tap one for its P&L for
+// Nifty moves; "Use this trade" puts its strikes in New trade (at their LTPs) on the collar it is.
+function openBest(chain, lot, lots, units, beesPx) {
+  let minDown = Number(store.get('bestMinDown') ?? 30000);
+  if (!Number.isFinite(minDown)) minDown = 30000;
+  let minUp = Number(store.get('bestMinUp') ?? 35000);
+  if (!Number.isFinite(minUp)) minUp = 35000;
+  // rangebound: the least the whole trade earns anywhere at expiry with Nifty within ±midBand %
+  let minMid = Number(store.get('bestMinMid') ?? 0);
+  if (!Number.isFinite(minMid)) minMid = 0;
+  let midBand = Number(store.get('bestMidBand') ?? 2);
+  if (!(midBand >= 0.5 && midBand <= 10)) midBand = 2;
+  // the options alone if Nifty stays: your ₹, or '' = auto (1 % of the NIFTYBEES invested; one lot of Nifty's worth if none)
+  let minFlat = store.get('bestMinFlat') ?? '';
+  if (minFlat !== '' && !Number.isFinite(Number(minFlat))) minFlat = '';
+  const invested = units > 0 ? units * beesPx : lot * (lots || 1) * chain.spot;
+  const flatAuto = Math.round(invested / 100);
+  let r = null;
+  let sel = 0;
+  const to = BEST_MOVES[BEST_MOVES.length - 1];
+  sheet('<h3>Suggestion</h3><div id="bestBody"></div>', (sh, close) => {
+    const body = sh.querySelector('#bestBody');
+    const head = () => `<p class="muted small">${fmtDate(chain.expiry)} · Nifty ${num(chain.spot, 0)} · ${units > 0 ? `${num(units, 0)} NIFTYBEES at ₹${num(beesPx)}` : 'no NIFTYBEES'}</p>
+      <div class="row gap"><label class="field" style="flex:1"><span>Least the options earn if Nifty falls 1–${to} % (₹)</span><input id="bestMin" type="number" inputmode="numeric" step="5000" value="${minDown}"></label></div>
+      <div class="row gap"><label class="field" style="flex:1"><span>Least options + NIFTYBEES earn if Nifty goes up 1–${to} % (₹)</span><input id="bestMinUp" type="number" inputmode="numeric" step="5000" value="${minUp}"></label></div>
+      <div class="row gap"><label class="field" style="flex:0 0 76px"><span>Range ± %</span><input id="bestBand" type="number" inputmode="decimal" min="0.5" max="10" step="0.5" value="${midBand}"></label><label class="field" style="flex:1"><span>Least the trade earns anywhere in that range (₹)</span><input id="bestMinMid" type="number" inputmode="numeric" step="5000" value="${minMid}"></label></div>
+      <div class="row gap"><label class="field" style="flex:1"><span>Least the options earn if Nifty stays (₹, empty = 1 % of ${inr(Math.round(invested), { lakh: false })})</span><input id="bestMinFlat" type="number" inputmode="numeric" step="1000" value="${minFlat}" placeholder="auto ${num(flatAuto, 0)}"></label><button class="btn small" id="bestGo" style="align-self:flex-end;flex:0 0 auto">Apply</button></div>`;
+    const bindHead = () => {
+      sh.querySelector('#bestGo').onclick = () => {
+        const amt = (id) => (sh.querySelector(id).value === '' ? NaN : Number(sh.querySelector(id).value));
+        const v = amt('#bestMin');
+        const u = amt('#bestMinUp');
+        const mm = amt('#bestMinMid');
+        const mb = amt('#bestBand');
+        if (!Number.isFinite(v) || !Number.isFinite(u) || !Number.isFinite(mm)) return toast('Type all three amounts in ₹');
+        if (!(mb >= 0.5 && mb <= 10)) return toast('Range: 0.5 to 10 %');
+        const fl = amt('#bestMinFlat');
+        if (sh.querySelector('#bestMinFlat').value !== '' && !Number.isFinite(fl)) return toast('Options if Nifty stays: an amount in ₹, or empty for 1 %');
+        minFlat = Number.isFinite(fl) ? fl : '';
+        store.set('bestMinFlat', minFlat);
+        minDown = v;
+        minUp = u;
+        minMid = mm;
+        midBand = mb;
+        store.set('bestMinMid', mm);
+        store.set('bestMidBand', mb);
+        store.set('bestMinDown', v);
+        store.set('bestMinUp', u);
+        run();
+      };
+    };
+    const draw = () => {
+      if (!r.list.length) {
+        body.innerHTML = head() + '<p class="muted small">No collar could be priced: no strikes with volume and a tight quote on this expiry.</p>';
+        return bindHead();
+      }
+      const note = r.within
+        ? `<b>${num(r.within, 0)}</b> meet all four: options at least ${inr(r.minDown, { lakh: false })} when Nifty falls, options + NIFTYBEES at least ${inr(r.minUp, { lakh: false })} when it goes up, and at least ${inr(r.minMid, { lakh: false })} anywhere within ±${r.midBand} %, options alone at least ${inr(r.minFlat, { lakh: false })} if Nifty stays; ranked by Nifty up + the range's lowest point.`
+        : `<b class="down">None meets all four floors</b> (${inr(r.minDown, { lakh: false })} on the options when Nifty falls, ${inr(r.minUp, { lakh: false })} when it goes up, ${inr(r.minMid, { lakh: false })} within ±${r.midBand} %, ${inr(r.minFlat, { lakh: false })} on the options if Nifty stays): the ones that miss by the least are shown. Lower an amount.`;
+      const midNote =
+        r.midBest == null
+          ? ' No collar meets the falls, rises and stays floors, so the range cannot be helped without lowering one.'
+          : ` The most any collar keeps through ±${r.midBand} % while meeting the other floors: <b class="${tone(r.midBest)}">${rs(Math.round(r.midBest))}</b>.`;
+      const cards = r.list
+        .map(
+          (v, i) => `<div class="card" data-best="${i}" style="padding:10px;margin:8px 0;cursor:pointer;${i === sel ? 'outline:2px solid var(--accent)' : ''}">
+          <div><b>${i + 1}. ${esc(v.title)}</b> <span class="muted small">${COLLARS[v.kind].short}</span></div>
+          <div class="muted small">${v.legs.map((l) => `${l.side > 0 ? 'buy' : 'sell'} ${l.strike} ${l.type} ~${num(l.entry, 1)}`).join(' · ')} · ${rs(Math.round(v.credit))} ${v.credit >= 0 ? 'credit' : 'debit'}</div>
+          <div class="stats">
+            <div class="stat"><span>Nifty up · total</span><b class="${tone(v.up)}">${rs(Math.round(v.up))}</b></div>
+            <div class="stat"><span>Nifty down · options</span><b class="${tone(v.downOpt)}">${rs(Math.round(v.downOpt))}</b></div>
+            <div class="stat"><span>Nifty stays · options</span><b class="${tone(v.flat)}">${rs(Math.round(v.flat))}</b></div>
+            <div class="stat"><span>Range ±${r.midBand} % · lowest</span><b class="${tone(v.mid)}">${rs(Math.round(v.mid))}</b></div>
+            <div class="stat"><span>Nifty down · total</span><b class="${tone(v.down)}">${rs(Math.round(v.down))}</b></div>
+          </div></div>`,
+        )
+        .join('');
+      const v = r.list[sel];
+      const legs = priceLegs(v.legs, chain, chain.spot, chain.expiry);
+      const bz = units > 0 ? { units, entry: beesPx, now: beesPx } : null;
+      const rows = moveGrid({ legs, lot, expiry: chain.expiry, spot: chain.spot, entrySpot: chain.spot, bees: bz }).filter((g) => Math.abs(g.m) <= 10);
+      const td = (x, b) => `<td class="${tone(x)}">${b ? '<b>' : ''}${rs(Math.round(x))}${b ? '</b>' : ''}</td>`;
+      const grid = `<table class="grid"><thead>
+        <tr class="ghead"><th></th><th colspan="3"></th><th colspan="4" class="g1">If Nifty is there today</th><th colspan="4" class="g2">At expiry (${fmtDate(chain.expiry)})</th></tr>
+        <tr><th>From start</th><th>Nifty</th><th>NIFTY­BEES</th><th>NIFTY­BEES P&amp;L</th><th class="g1">${N.CE}</th><th>${N.PE}</th><th>Options</th><th>Total</th><th class="g2">${N.CE}</th><th>${N.PE}</th><th>Options</th><th>Total</th></tr></thead><tbody>${rows
+          .map(
+            (g) => `<tr class="${g.mark ? 'now' : ''}"><th>${g.mark ? '<b>Now</b>' : pctS(g.m, 1)}</th><td><b>${num(g.x, 0)}</b></td><td>${g.beesPx != null ? num(g.beesPx) : '—'}</td>${bz ? td(g.bees) : '<td class="muted">—</td>'}
+            <td class="g1 ${tone(g.callToday)}">${rs(Math.round(g.callToday))}</td>${td(g.putToday)}${td(g.optToday)}${td(g.totalToday, true)}
+            <td class="g2 ${tone(g.call)}">${rs(Math.round(g.call))}</td>${td(g.put)}${td(g.opt)}${td(g.total, true)}</tr>`,
+          )
+          .join('')}</tbody></table>`;
+      body.innerHTML =
+        head() +
+        `<p class="small">${num(r.priced, 0)} collars priced: a sold call + a put spread either way round, ATM and out-of-the-money strikes only (call at or above the ATM, puts at or below it, up to 1,000 points), entered at the LTP ± slippage with charges. ${note}${midNote} Tap one for its table.</p>${cards}
+        <h3 id="bestTbl">P&amp;L for Nifty moves from where the trade starts</h3><p class="muted small">${esc(v.title)} · the table counts the legs at their fills, before charges</p>
+        <div class="grid-scroll">${grid}</div>
+        <div class="row gap" style="margin-top:12px"><button class="btn" id="bestClose">Close</button><button class="btn primary" id="bestUse">Use this trade</button></div>
+        <p class="muted small">Prices move: a snapshot, not a promise. With NIFTYBEES held, a fall still loses on the whole trade. Nothing is ordered.</p>`;
+      bindHead();
+      body.querySelector('#bestClose').onclick = close;
+      body.querySelectorAll('[data-best]').forEach((c) =>
+        c.addEventListener('click', () => {
+          sel = +c.dataset.best;
+          draw();
+          body.querySelector('#bestTbl')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        }),
+      );
+      body.querySelector('#bestUse').onclick = () => {
+        const p = r.list[sel];
+        saveState({ kind: p.kind, edit: p.legs.map((l) => ({ strike: l.strike, price: null })) });
+        close();
+        toast(`${COLLARS[p.kind].name}: ${p.title}`);
+        ctxRef.refreshNow();
+      };
+    };
+    const run = () => {
+      body.innerHTML = head() + '<p class="muted small">Pricing every collar on the chain…</p>';
+      bindHead();
+      // let the sheet paint before the search (a second or more on a phone)
+      setTimeout(() => {
+        const s = store.settings();
+        r = bestCollars({ chain, lot, lots, beesUnits: units, beesPx, slipPct: s.slipPct ?? 0.5, brokerage: s.brokerage ?? 20, day: ist(Date.now()).date, minDown, minUp, minMid, midBand, minFlat: minFlat === '' ? flatAuto : Number(minFlat), orders });
+        sel = 0;
+        draw();
+      }, 30);
+    };
+    run();
+  });
 }
 
 // Payoff lines from Nifty lo to hi: the trade (NIFTYBEES + options) at expiry and today, the options at expiry, the

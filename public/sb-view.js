@@ -1673,12 +1673,30 @@
     renderPayOn(M);
     const near = has ? A.legs.map(legExp).sort()[0] : null;
     const on = payOn(M);
+    const extra = has ? beesCurves(M, A, on ? `on ${dayShort(on)}` : 'at expiry') : [];
+    const opt = extra.length ? 'Options ' : '';
     BT.payoff.draw($('sbPayChart'), A, {
       expiryLabel: near ? dayShort(near) : '',
-      horizonLabel: on ? `On ${dayShort(on)} (close)` : '',
+      horizonLabel: on ? `${opt}On ${dayShort(on)} (close)` : opt ? `Options at expiry${near ? ` (${dayShort(near)})` : ''}` : '',
       nowLabel: M.label,
       levels: nearLevels(M),
+      extra,
     });
+  }
+  // Held against NIFTYBEES: the payoff chart (and its tooltip) also shows, at each Nifty level, the NIFTYBEES alone
+  // and the whole trade at expiry (options at expiry + NIFTYBEES). NIFTYBEES move with Nifty from their price now
+  // (beesHeld); once sold, their P&L is fixed at the sale.
+  function beesCurves(M, A, when) {
+    const B = beesHeld(M);
+    if (!B || !(M?.spot > 0)) return [];
+    const sold = B.how === 'sold';
+    if (!sold && !(B.px > 0)) return [];
+    const bees = A.xs.map((x) => (sold ? B.pnl : B.qty * ((B.px * x) / M.spot - B.price)));
+    const units = Math.round(B.qty).toLocaleString('en-IN');
+    return [
+      { label: `Options + NIFTYBEES ${when}`, ys: A.exp.map((v, i) => v + bees[i]), color: '#3fb68b', width: 2.2, noPct: true },
+      { label: `NIFTYBEES only (${units} units${sold ? ', sold' : ''})`, ys: bees, color: '#f0883e', dash: [6, 3], noPct: true },
+    ];
   }
 
   const px2 = (v) => (v == null || !Number.isFinite(Number(v)) ? '' : Number(v).toFixed(2));

@@ -663,3 +663,99 @@ test('collar study rules: due in the collar’s words (put spread up on a rise, 
   assert.match(down.due, /sold call down/);
   assert.equal(L.studyRules(study, pos, L.market(chainAt(24100, T), T), 24000, 'psc')[0].due, null);
 });
+
+test('best collars on a past month: what each pick actually made at the expiry, and the best in hindsight', () => {
+  const T = 20 / 365;
+  const M = L.market(chainAt(23000, T), T);
+  const settle = { spot: 22400, bees: 224 };
+  const out = L.bestCollars(M, { lot: 65, beesQty: 6500, beesPx: 230, expiry: '2026-11-24', minDown: 30000, settle });
+  assert.equal(out.list.length, 5);
+  for (const v of out.list) {
+    // the options at intrinsic at the expiry's Nifty, from their fills, less the entry charges and the exercise STT
+    const intr = (l) => Math.max(0, l.type === 'CE' ? settle.spot - l.strike : l.strike - settle.spot);
+    const gross = v.legs.reduce((s, l) => s + l.side * (intr(l) - l.fill) * l.lots * 65, 0);
+    assert.ok(v.actual.opt <= gross && v.actual.opt > gross - v.charges - 500, `${v.title}: ${v.actual.opt} vs ${gross}`);
+    near(v.actual.bees, 6500 * (224 - 230), 1e-6);
+    near(v.actual.total, v.actual.opt + v.actual.bees, 1e-6);
+    assert.ok(out.hindsight.actual.opt >= v.actual.opt - 1e-6, 'the hindsight pick made at least as much as each suggestion');
+  }
+  assert.ok(out.hindsight.downOpt >= 30000, 'the hindsight pick is within the floor');
+  // live (no settle): no actual result
+  const live = L.bestCollars(M, { lot: 65, beesQty: 6500, beesPx: 230, expiry: '2026-11-24', n: 1 });
+  assert.equal(live.list[0].actual, null);
+  assert.equal(live.hindsight, null);
+});
+
+test('best collars: ATM and out-of-the-money strikes only (call at or above the ATM, puts at or below it)', () => {
+  const T = 20 / 365;
+  for (const S of [23010, 23040]) {
+    const M = L.market(chainAt(S, T), T);
+    const atm = Math.round(S / 50) * 50;
+    for (const minDown of [30000, 0, 1e9]) {
+      const out = L.bestCollars(M, { lot: 65, beesQty: 6500, beesPx: S / 100, expiry: '2026-11-24', minDown, n: 10 });
+      assert.ok(out.list.length > 0);
+      for (const v of out.list)
+        for (const l of v.legs) assert.ok(l.type === 'CE' ? l.strike >= atm : l.strike <= atm, `${v.title} has an in-the-money leg (ATM ${atm})`);
+    }
+  }
+});
+
+test('best collars: ranked by Nifty up + Nifty staying in the range, within the floors', () => {
+  const T = 20 / 365;
+  const M = L.market(chainAt(23020, T), T);
+  const out = L.bestCollars(M, { lot: 65, beesQty: 6500, beesPx: 230.2, expiry: '2026-11-24', minDown: 30000, minUp: 0, minMid: -Infinity });
+  assert.ok(out.within > 0);
+  for (let i = 1; i < out.list.length; i++) assert.ok(out.list[i - 1].up + out.list[i - 1].mid >= out.list[i].up + out.list[i].mid - 1e-6);
+  for (const v of out.list) assert.ok(v.downOpt >= 30000);
+});
+
+test('best collars: both floors — options on falls and options + NIFTYBEES on rises', () => {
+  const T = 20 / 365;
+  const M = L.market(chainAt(23020, T), T);
+  const base = { lot: 65, beesQty: 6500, beesPx: 230.2, expiry: '2026-11-24' };
+  const out = L.bestCollars(M, { ...base, minDown: 30000, minUp: 35000 });
+  assert.equal(out.minUp, 35000);
+  if (out.within) for (const v of out.list) assert.ok(v.downOpt >= 30000 && v.up >= 35000, v.title);
+  // an upside floor no collar can reach: none within, the nearest misses first
+  const none = L.bestCollars(M, { ...base, minDown: 30000, minUp: 1e9 });
+  assert.equal(none.within, 0);
+  const miss = (v) => Math.max(0, 30000 - v.downOpt) + Math.max(0, 1e9 - v.up);
+  for (let i = 1; i < none.list.length; i++) assert.ok(miss(none.list[i - 1]) <= miss(none.list[i]) + 1e-6);
+});
+
+test('best collars: the rangebound floor — the lowest total within ±band % of now', () => {
+  const T = 20 / 365;
+  const S = 23020;
+  const M = L.market(chainAt(S, T), T);
+  const base = { lot: 65, beesQty: 6500, beesPx: S / 100, expiry: '2026-11-24', minDown: 30000, minUp: 0 };
+  const free = L.bestCollars(M, { ...base, minMid: -Infinity, midBand: 2 });
+  assert.equal(free.midBand, 2);
+  assert.ok(free.midBest != null);
+  for (const v of free.list) {
+    // mid is the lowest point of the range: no higher than "stays" (Nifty where it is) and the range's ends
+    assert.ok(v.mid <= v.flat + 1e-6, v.title);
+    const g = v.grid.filter((r) => Math.abs(r.m) <= 2);
+    for (const r of g) assert.ok(v.mid <= r.total + 1e-6, `${v.title}: ${v.mid} > ${r.total} at ${r.m} %`);
+  }
+  // asking the range for what the best can keep: all kept meet it, and the best is among them
+  const ask = Math.floor(free.midBest);
+  const held = L.bestCollars(M, { ...base, minMid: ask, midBand: 2 });
+  assert.ok(held.within > 0);
+  for (const v of held.list) assert.ok(v.mid >= ask && v.downOpt >= 30000, v.title);
+  // more than any can keep: none within
+  assert.equal(L.bestCollars(M, { ...base, minMid: free.midBest + 1, midBand: 2 }).within, 0);
+});
+
+test('best collars: the options-only floor if Nifty stays (e.g. 1 % of the money invested)', () => {
+  const T = 20 / 365;
+  const S = 23020;
+  const M = L.market(chainAt(S, T), T);
+  const base = { lot: 65, beesQty: 6500, beesPx: S / 100, expiry: '2026-11-24', minDown: 0, minUp: 0, minMid: -Infinity };
+  const ask = Math.round((6500 * (S / 100)) / 100); // 1 %
+  const out = L.bestCollars(M, { ...base, minFlat: ask });
+  assert.equal(out.minFlat, ask);
+  assert.ok(out.within > 0);
+  for (const v of out.list) assert.ok(v.flat >= ask, `${v.title}: ${v.flat} < ${ask}`);
+  // off by default
+  assert.equal(L.bestCollars(M, { ...base, n: 1 }).minFlat, null);
+});

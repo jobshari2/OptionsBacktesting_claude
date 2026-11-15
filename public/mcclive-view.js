@@ -1182,8 +1182,292 @@
             `<option value="${e.expiry}" ${e.expiry === expPick ? 'selected' : ''}>${dayLabel(e.expiry)}${e.monthly ? ' · monthly' : ''} · ${e.days} day${e.days === 1 ? '' : 's'}${e.expiry === expList.dflt ? ' (the rules’ series)' : ''}</option>`,
         )
         .join('');
-      return `<span class="mcl-enter-btn">${opts ? `<select id="mclEnterExp" title="The expiry the new trade is built on">${opts}</select>` : ''}<button class="btn-sm" id="mclEnterBtn" ${enterBusy ? 'disabled' : ''} title="Pick the legs by the rules (${cfg.shapeText}) on the expiry chosen and open them in the Builder with the NIFTYBEES, to check, change and save as a trade. Nothing is sent to a broker.">${enterBusy ? 'Building…' : '＋ Enter new trade'}</button></span>`;
+      return `<span class="mcl-enter-btn">${opts ? `<select id="mclEnterExp" title="The expiry the new trade is built on">${opts}</select>` : ''}<button class="btn-sm" id="mclEnterBtn" ${enterBusy ? 'disabled' : ''} title="Pick the legs by the rules (${cfg.shapeText}) on the expiry chosen and open them in the Builder with the NIFTYBEES, to check, change and save as a trade. Nothing is sent to a broker.">${enterBusy ? 'Building…' : '＋ Enter new trade'}</button>${
+        BEST ? `<button class="btn-sm ghost" id="mclBestBtn" title="The 5 best strikes for a new ${esc(cfg.name)} on the expiry chosen, at the live prices, for Nifty going up and down">💡 Suggestion</button>` : ''
+      }</span>`;
     };
+
+    // ---------- Suggestion: the best strikes for a new collar ----------
+    // <api>/live/best: every collar of the shape on the expiry's live chain, scored at expiry on Nifty moves of 1 … 8 %
+    // up and down from now (NIFTYBEES + options, slippage and charges in); the 5 best in both directions in a popup, each
+    // with its P&L for Nifty moves table. Nothing is sent to a broker.
+    const BEST = ['psc', 'bpc'].includes(cfg.flag?.kind);
+    const BEST_TO = 8; // the moves scored: 1 … 8 % (bt/mcclive.js BEST_MOVES)
+    const HIST_FRESH_TXT = '30 minutes'; // server.js HIST_FRESH: a past strike counts as tradable when it traded then
+    const monthName = (d) => new Date(d + 'T00:00:00Z').toLocaleDateString('en-IN', { month: 'short', year: 'numeric', timeZone: 'UTC' });
+    // Two tabs: Live (the expiry picked, at the live prices) and Past month (an expired monthly series on its chain at a
+    // chosen day and minute, with what each pick actually made at the expiry; Builder ▸ replays it there).
+    async function openBest() {
+      let tab = BT.store.get('mclBestTab', 'live') === 'hist' ? 'hist' : 'live';
+      if (tab === 'live' && !expPick) await loadExpiries().catch(() => {});
+      document.querySelector('.modal-ov.mcl-best')?.remove();
+      const ov = document.createElement('div');
+      ov.className = 'modal-ov mcl-best';
+      ov.innerHTML = `<div class="panel modal"><div class="modal-head"><h3>Suggestion: best strikes for a new ${esc(cfg.name)} <span class="muted small" data-x="sub"></span></h3><button class="icon" data-x="close" title="Close">✕</button></div>
+        <div class="seg sm" data-x="tabs" style="margin:10px 14px 0;flex:none;align-self:flex-start"><button data-tab="live" title="The expiry picked on this tab, at the live prices">Live</button><button data-tab="hist" title="Test the search on a past monthly series: its chain as it was on the day and time you pick, and what each pick actually made at the expiry">Past month</button></div>
+        <div class="cc-doc" data-x="body" style="padding:12px 14px"></div></div>`;
+      document.body.appendChild(ov);
+      const close = () => ov.remove();
+      ov.addEventListener('click', (e) => {
+        if (e.target === ov || e.target.closest('[data-x="close"]')) close();
+      });
+      const body = ov.querySelector('[data-x="body"]');
+      const sub = ov.querySelector('[data-x="sub"]');
+      let r;
+      let sel = 0;
+      let bestSeq = 0; // only the latest search draws
+      let minDown = Number(BT.store.get('mclBestMinDown', 30000));
+      if (!Number.isFinite(minDown)) minDown = 30000;
+      let minUp = Number(BT.store.get('mclBestMinUp', 35000));
+      if (!Number.isFinite(minUp)) minUp = 35000;
+      // rangebound: the least the whole trade earns anywhere at expiry with Nifty within ±midBand % of the entry
+      let minMid = Number(BT.store.get('mclBestMinMid', 0));
+      if (!Number.isFinite(minMid)) minMid = 0;
+      let midBand = Number(BT.store.get('mclBestMidBand', 2));
+      if (!(midBand >= 0.5 && midBand <= 10)) midBand = 2;
+      // NIFTYBEES units held against the collar: yours, or '' = auto (one lot of Nifty's worth at the entry)
+      // the options alone if Nifty stays: your ₹, or '' = auto (1 % of the money invested in NIFTYBEES)
+      let minFlat = BT.store.get('mclBestMinFlat', '');
+      if (minFlat !== '' && !Number.isFinite(Number(minFlat))) minFlat = '';
+      let units = BT.store.get('mclBestUnits', '');
+      if (units !== '' && !(Number(units) >= 0)) units = '';
+      // Past month: the series (newest first, with their trading days), the one picked, its entry day and time
+      let series = null;
+      const histPick = BT.store.get('mclBestHist', {});
+      const pickedSeries = () => series?.find((s) => s.expiry === histPick.expiry) || series?.[0] || null;
+      const histInputs = () => {
+        const s = pickedSeries();
+        if (!s) return '';
+        const day = s.days.includes(histPick.day) ? histPick.day : s.days[0];
+        return `<label class="mini" title="An expired monthly series">Series <select data-x="hexp">${series
+          .map((x) => `<option value="${x.expiry}" ${x.expiry === s.expiry ? 'selected' : ''}>${monthName(x.expiry)} · expiry ${dayLabel(x.expiry)}</option>`)
+          .join('')}</select></label>
+          <label class="mini" title="The day the collar is entered (the first trading day of the series is where the backtest enters)">entered on <select data-x="hday">${s.days
+            .map((x, i) => `<option value="${x}" ${x === day ? 'selected' : ''}>${dayLabel(x)}${i === 0 ? ' (first day)' : ''}</option>`)
+            .join('')}</select></label>
+          <label class="mini" title="The minute of that day the chain is read at (IST)">at <input type="time" data-x="htime" min="09:15" max="15:29" value="${esc(histPick.time || '09:30')}"></label>`;
+      };
+      const lossInput = () =>
+        `${tab === 'hist' ? histInputs() + ' ' : ''}<label class="mini" title="The options' average P&amp;L at expiry on Nifty falls of 1 … ${BEST_TO} % (NIFTYBEES aside) must be at least this">Least the options earn if Nifty falls ₹ <input class="num" type="number" step="5000" data-x="mindown" value="${minDown}" style="width:110px"></label>
+        <label class="mini" title="The whole trade's (options + NIFTYBEES) average P&amp;L at expiry on Nifty rises of 1 … ${BEST_TO} % must be at least this">Least options + NIFTYBEES earn if Nifty goes up ₹ <input class="num" type="number" step="5000" data-x="minup" value="${minUp}" style="width:110px"></label>
+        <label class="mini" title="Rangebound: the whole trade's (options + NIFTYBEES) P&amp;L at expiry must be at least this everywhere with Nifty within ± this many % of the entry (its lowest point there). 0 = no loss anywhere in the range.">Least the trade earns if Nifty stays within ± <input class="num" type="number" min="0.5" max="10" step="0.5" data-x="midband" value="${midBand}" style="width:56px"> % ₹ <input class="num" type="number" step="5000" data-x="minmid" value="${minMid}" style="width:110px"></label>
+        <label class="mini" title="The options alone (NIFTYBEES aside) at expiry if Nifty ends where it is ${tab === 'hist' ? 'at the entry' : 'now'} must earn at least this. Leave it empty for 1 % of the money invested (the NIFTYBEES bought).">Least the options earn if Nifty stays ₹ <input class="num" type="number" step="1000" data-x="minflat" value="${esc(String(minFlat))}" placeholder="${r?.flat?.auto ? `auto 1 % = ${num0(r.minFlat)}` : 'auto 1 %'}" style="width:130px"></label>
+        <label class="mini" title="NIFTYBEES units held against the collar, in every number here (the upside, the totals, the tables, Builder ▸). Leave it empty for one lot of Nifty's worth at the entry price (auto); 0 = none.">NIFTYBEES units <input class="num" type="number" min="0" step="1" data-x="units" value="${esc(String(units))}" placeholder="${r?.bees?.auto ? `auto ${num0(r.bees.qty)}` : 'auto'}" style="width:110px"></label> <button class="btn-sm ghost" data-x="rerun">${tab === 'hist' ? 'Find' : 'Apply'}</button>`;
+      const setTab = (t) => {
+        tab = t;
+        BT.store.set('mclBestTab', t);
+        ov.querySelectorAll('[data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
+        r = null;
+        fetchBest();
+      };
+      async function fetchBest() {
+        const wait = tab === 'hist' ? 'Pricing every collar on that day’s chain (downloading the option prices the cache lacks: the first time can take a minute)…' : 'Pricing every collar on the live chain…';
+        if (tab === 'live') {
+          if (!expPick) await loadExpiries().catch(() => {});
+          sub.textContent = expPick ? `expiry ${dayLabel(expPick)}` : '';
+          if (!expPick) {
+            body.innerHTML = '<div class="muted small">No live expiry listed: is the live chain logged in? The Past month tab works without it.</div>';
+            return;
+          }
+        } else {
+          if (!series) {
+            body.innerHTML = '<div class="muted small">Reading the past monthly series…</div>';
+            try {
+              series = (await BT.api(cfg.api + '/live/best-hist/expiries')).expiries;
+            } catch (e) {
+              body.innerHTML = `<div class="err small">${esc(e.message)}</div>`;
+              return;
+            }
+            if (!series.length) {
+              body.innerHTML = '<div class="muted small">No past monthly series in the cached Nifty history (Data screen).</div>';
+              return;
+            }
+          }
+          const s = pickedSeries();
+          histPick.expiry = s.expiry;
+          if (!s.days.includes(histPick.day)) histPick.day = s.days[0];
+          histPick.time ||= '09:30';
+          sub.textContent = `${monthName(s.expiry)} series · expiry ${dayLabel(s.expiry)}`;
+        }
+        body.innerHTML = `<div class="set-row">${lossInput()}</div><div class="muted small">${wait}</div>`;
+        const t = tab;
+        const seq = ++bestSeq;
+        let out;
+        try {
+          out =
+            t === 'hist'
+              ? await BT.api(cfg.api + '/live/best-hist', { expiry: histPick.expiry, day: histPick.day, time: histPick.time, minDown, minUp, minMid, midBand, minFlat, units, ...(cfg.planBody?.() || {}) })
+              : await BT.api(cfg.api + '/live/best', { expiry: expPick, minDown, minUp, minMid, midBand, minFlat, units, ...(cfg.planBody?.() || {}) });
+        } catch (e) {
+          if (seq === bestSeq) body.innerHTML = `<div class="set-row">${lossInput()}</div><div class="err small">${esc(e.message)}</div>`;
+          return;
+        }
+        if (seq !== bestSeq || t !== tab || !ov.isConnected) return; // a newer search, another tab, or closed while it ran
+        r = out;
+        sel = 0;
+        if (r.hist) Object.assign(histPick, { day: r.day, time: r.time });
+        if (!r.list.length)
+          body.innerHTML = `<div class="set-row">${lossInput()}</div><div class="muted small">${
+            r.hist ? `No collar could be priced: no strikes traded in the ${HIST_FRESH_TXT} before ${r.time} on ${dayLabel(r.day)}${r.missing ? ` (${r.missing} option price histories could not be read)` : ''}.` : 'No collar could be priced: no strikes with volume and a tight quote on this expiry yet.'
+          }</div>`;
+        else draw();
+      }
+      const gridOf = (v) => {
+        const td = (x, b) => `<td class="${cls(x)}">${b ? '<b>' : ''}${inrS(Math.round(x))}${b ? '</b>' : ''}</td>`;
+        const rows = v.grid
+          .filter((g) => Math.abs(g.m) <= 10)
+          .map(
+            (g) =>
+              `<tr class="${g.mark ? 'sel' : ''}"><td class="l">${g.mark ? '<b>Now</b> <span class="muted">0 %</span>' : sgnPct(g.m, 1)}</td><td><b>${num0(g.x)}</b></td><td>${g.beesPx != null ? '₹' + g.beesPx.toFixed(2) : '—'}</td>${r.bees.qty > 0 ? td(g.bees) : '<td class="muted">—</td>'}
+              <td class="mcl-g1 ${cls(g.callToday)}">${inrS(Math.round(g.callToday))}</td>${td(g.putToday)}${td(g.optToday)}${td(g.totalToday, true)}
+              <td class="mcl-g2 ${cls(g.call)}">${inrS(Math.round(g.call))}</td>${td(g.put)}${td(g.opt)}${td(g.total, true)}</tr>`,
+          )
+          .join('');
+        const a = v.actual;
+        return `<h4>P&amp;L for Nifty moves from where the trade starts <span class="muted small">${esc(v.title)} · Nifty ${r.hist ? `at the entry (${dayLabel(r.day)} ${r.time})` : 'now'} ${num0(r.spot)}${
+          a ? ` · <b>at the expiry ${num0(a.spot)} (${sgnPct((a.spot / r.spot - 1) * 100, 1)})</b>: options <b class="${cls(a.opt)}">${inrS(Math.round(a.opt))}</b>, NIFTYBEES ${inrS(Math.round(a.bees))}, total <b class="${cls(a.total)}">${inrS(Math.round(a.total))}</b>` : ''
+        }</span></h4>
+        <div class="tbl-wrap mcc-scen mcl-grid"><table class="grid-tbl"><thead>
+        <tr class="mcl-ghead"><th colspan="4"></th><th colspan="4" class="mcl-g1">${r.hist ? 'If Nifty is there on the entry day' : 'If Nifty is there today'}</th><th colspan="4" class="mcl-g2">At expiry (${dayLabel(r.expiry)})</th></tr>
+        <tr><th class="l">From start</th><th>Nifty</th><th>NIFTYBEES</th><th>NIFTYBEES P&amp;L</th><th class="mcl-g1">${N.ce}</th><th>${N.pe}</th><th>Options</th><th>Total</th><th class="mcl-g2">${N.ce}</th><th>${N.pe}</th><th>Options</th><th>Total</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`;
+      };
+      const draw = () => {
+        const rows = r.list
+          .map(
+            (v, i) => `<tr class="${i === sel ? 'sel' : ''}" data-best="${i}" style="cursor:pointer"><td>${i + 1}</td><td class="l"><b>${esc(v.title)}</b><div class="muted small">${v.legs.map((l) => `${l.side > 0 ? 'buy' : 'sell'} ${l.strike} ${l.type} ~${l.fill.toFixed(1)}`).join(' · ')}</div></td>
+            <td class="${cls(v.credit)}">${inrS(Math.round(v.credit))}</td><td class="${cls(v.up)}"><b>${inrS(Math.round(v.up))}</b></td><td class="${cls(v.downOpt)}"><b>${inrS(Math.round(v.downOpt))}</b></td><td class="${cls(v.flat)}"><b>${inrS(Math.round(v.flat))}</b></td><td class="${cls(v.mid)}"><b>${inrS(Math.round(v.mid))}</b></td><td class="${cls(v.down)}">${inrS(Math.round(v.down))}</td>${
+              v.actual ? `<td class="mcl-g2 ${cls(v.actual.opt)}"><b>${inrS(Math.round(v.actual.opt))}</b></td><td class="${cls(v.actual.total)}"><b>${inrS(Math.round(v.actual.total))}</b></td>` : ''
+            }
+            <td><button class="btn-sm ${i === sel ? '' : 'ghost'}" data-sb="${i}" title="${r.hist ? `Replay these legs in the Builder from ${dayLabel(r.day)} ${r.time} to the expiry, at that minute's prices, with the NIFTYBEES` : 'Open these legs in the Builder with the NIFTYBEES, to check and save as a trade'}">Builder ▸</button></td></tr>`,
+          )
+          .join('');
+        const flatWhy = r.flat?.auto ? ` (auto: ${r.flat.pct} % of ₹${num0(r.flat.invested)} invested)` : '';
+        const note = r.within
+          ? `<b>${num0(r.within)}</b> of them meet all four: the options earn at least ₹${num0(r.minDown)} on average when Nifty falls 1–${BEST_TO} %, options + NIFTYBEES earn at least ₹${num0(r.minUp)} on average when it goes up 1–${BEST_TO} %, at least ₹${num0(r.minMid)} anywhere with Nifty within ±${r.midBand} %, and the options alone earn at least ₹${num0(r.minFlat)} if Nifty stays${flatWhy}. Ranked by <b>Nifty goes up + Nifty stays in the range</b> (the rise's average plus the range's lowest point, same weight).`
+          : `<b class="neg">None meets all four: ₹${num0(r.minDown)} on the options when Nifty falls, ₹${num0(r.minUp)} on options + NIFTYBEES when it goes up, ₹${num0(r.minMid)} anywhere within ±${r.midBand} %, and ₹${num0(r.minFlat)} on the options if Nifty stays${flatWhy}</b>. Shown are the ones that miss by the least (the shortfalls added). Lower an amount to see collars that meet all four.`;
+        // how much the range can be asked for with the other two floors
+        const midNote =
+          r.midBest == null
+            ? `<b class="neg">No collar meets the falls, rises and stays floors here</b>, so the range cannot be helped without lowering one of them.`
+            : `The most any collar keeps through ±${r.midBand} % while meeting the other floors (falls, rises, options if Nifty stays) is <b class="${cls(r.midBest)}">${inrS(Math.round(r.midBest))}</b>${r.midBest < r.minMid ? ': the range floor asks for more than that' : ''}. A sold call over Nifty with the bought put under it leaves a dip just below the entry (NIFTYBEES fall before the put spread pays); the floors on falls and rises decide how deep it is.`;
+        const when = r.hist
+          ? `(only strikes that traded in the ${HIST_FRESH_TXT} before ${r.time} on ${dayLabel(r.day)}${r.missing ? `; ${r.missing} option price histories could not be read` : ''}), each entered then at that minute's price ± ${r.slipPct} % with charges, with <b>${num0(r.bees.qty)}</b> NIFTYBEES${r.bees.auto ? " (auto: one lot of Nifty’s worth)" : " (your units)"} at ₹${r.bees.now.toFixed(2)}${r.bees.live ? '' : ' (no recorded NIFTYBEES price: Nifty ÷ 100, moved with Nifty)'}`
+          : `(only strikes traded today with a tight quote), each entered now at the LTP ± ${r.slipPct} % with charges, with <b>${num0(r.bees.qty)}</b> NIFTYBEES${r.bees.auto ? " (auto: one lot of Nifty’s worth)" : " (your units)"} at ₹${r.bees.now.toFixed(2)}${r.bees.live ? '' : ' (estimated)'}`;
+        const h = r.hindsight;
+        const past = r.hist
+          ? `<p class="small"><b>What happened:</b> Nifty ${num0(r.spot)} on ${dayLabel(r.day)} ${r.time} → <b>${num0(r.settle.spot)}</b> at the ${dayLabel(r.expiry)} expiry (${sgnPct((r.settle.spot / r.spot - 1) * 100, 1)}); NIFTYBEES ₹${r.bees.now.toFixed(2)} → ₹${r.settle.bees.toFixed(2)}${r.settle.real ? '' : ' (moved with Nifty)'}. The last two columns are what each pick actually made, held to the expiry with no adjustments (options at intrinsic at the expiry's close).${
+              h ? ` With hindsight, the best of the ${r.within ? `${num0(r.within)} that meet all the floors` : `${num0(r.priced)} priced`} was <b>${esc(h.title)}</b>: options <b class="${cls(h.actual.opt)}">${inrS(Math.round(h.actual.opt))}</b>, total ${inrS(Math.round(h.actual.total))}.` : ''
+            }</p>`
+          : '';
+        body.innerHTML = `<div class="set-row">${lossInput()}</div><p class="small">${num0(r.priced)} collars priced of ${num0(r.tried)} tried ${when}: sold call + a put spread (bought above sold, or sold above bought), ATM and out-of-the-money strikes only (the call at the ATM strike or up to 1,000 points above, the puts at the ATM strike or up to 1,000 below; no in-the-money ones). ${note} ${midNote} With NIFTYBEES held, a fall still loses on the whole trade: the "Down: with NIFTYBEES" column shows it. Click a row for its table.</p>${past}
+        <div class="tbl-wrap"><table class="grid-tbl"><thead><tr><th>#</th><th class="l">Legs</th><th title="Premium received − paid, after slippage">Net credit</th><th title="Average total (NIFTYBEES + options) at expiry for Nifty up ${r.moves[0]}–${r.moves[r.moves.length - 1]} %">If Nifty goes up</th><th title="Average options P&amp;L at expiry for Nifty down 1–${BEST_TO} % (NIFTYBEES aside)">If Nifty goes down: options</th><th title="Options P&amp;L at expiry if Nifty ends where it is ${r.hist ? 'at the entry' : 'now'}">If Nifty stays: options</th><th title="The lowest total (options + NIFTYBEES) at expiry anywhere with Nifty within ±${r.midBand} % of ${r.hist ? 'the entry' : 'now'}">Rangebound ±${r.midBand} %: lowest</th><th title="Average total (NIFTYBEES + options) for Nifty down 1–${BEST_TO} %">Down: with NIFTYBEES</th>${
+          r.hist ? `<th class="mcl-g2" title="What the options actually made, held to the expiry (Nifty ${num0(r.settle.spot)} at its close), after slippage and charges">Actual: options</th><th title="Options + NIFTYBEES, actually, at the expiry">Actual: total</th>` : ''
+        }<th></th></tr></thead><tbody>${rows}</tbody></table></div>
+        ${gridOf(r.list[sel])}
+        <p class="muted small">At expiry: options at intrinsic value (STT on bought legs in the money included). ${r.hist ? 'If Nifty is there on the entry day: Black-76 at each strike’s IV at the entry minute. The past chain is the minute’s last trades (no bid / ask), so real fills could have been worse.' : 'If Nifty is there today: Black-76 at each strike\'s IV now. Prices move: suggestions are a snapshot, not a promise.'} Nothing here places orders.</p>`;
+      };
+      setTab(tab);
+      ov.querySelector('[data-x="tabs"]').addEventListener('click', (e) => {
+        const b = e.target.closest('[data-tab]');
+        if (b && b.dataset.tab !== tab) setTab(b.dataset.tab);
+      });
+      // Past month: a new series starts on its first day; the day and time are kept for the next Find
+      body.addEventListener('change', (e) => {
+        const x = e.target.dataset.x;
+        if (x === 'hexp') {
+          histPick.expiry = e.target.value;
+          histPick.day = null;
+          BT.store.set('mclBestHist', histPick);
+          const s = pickedSeries();
+          const daySel = body.querySelector('[data-x="hday"]');
+          if (daySel) daySel.innerHTML = s.days.map((d, i) => `<option value="${d}">${dayLabel(d)}${i === 0 ? ' (first day)' : ''}</option>`).join('');
+        } else if (x === 'hday') histPick.day = e.target.value;
+        else if (x === 'htime') histPick.time = e.target.value || '09:30';
+        else return;
+        BT.store.set('mclBestHist', histPick);
+      });
+      body.addEventListener('click', (e) => {
+        if (e.target.closest('[data-x="rerun"]')) {
+          const val = (k) => {
+            const s = body.querySelector(`[data-x="${k}"]`)?.value;
+            return s === '' || s == null ? NaN : Number(s);
+          };
+          const v = val('mindown');
+          const u = val('minup');
+          if (!Number.isFinite(v)) return alert('Enter the least the options should earn if Nifty falls, in ₹');
+          if (!Number.isFinite(u)) return alert('Enter the least options + NIFTYBEES should earn if Nifty goes up, in ₹');
+          const fl = val('minflat'); // empty: auto 1 %
+          if (body.querySelector('[data-x="minflat"]')?.value !== '' && !Number.isFinite(fl)) return alert('Least the options earn if Nifty stays: an amount in ₹ (empty = 1 % of the investment)');
+          minFlat = Number.isFinite(fl) ? fl : '';
+          BT.store.set('mclBestMinFlat', minFlat);
+          const n = val('units'); // empty: auto
+          if (body.querySelector('[data-x="units"]')?.value !== '' && !(n >= 0)) return alert('NIFTYBEES units: a whole number, 0 or more (empty = auto)');
+          units = Number.isFinite(n) ? Math.round(n) : '';
+          BT.store.set('mclBestUnits', units);
+          const mm = val('minmid');
+          const mb = val('midband');
+          if (!Number.isFinite(mm)) return alert('Enter the least the trade should earn if Nifty stays in the range, in ₹ (0 = no loss)');
+          if (!(mb >= 0.5 && mb <= 10)) return alert('The range: 0.5 to 10 % either side');
+          minMid = mm;
+          midBand = mb;
+          BT.store.set('mclBestMinMid', mm);
+          BT.store.set('mclBestMidBand', mb);
+          minDown = v;
+          minUp = u;
+          BT.store.set('mclBestMinDown', v);
+          BT.store.set('mclBestMinUp', u);
+          if (tab === 'hist') {
+            const q = (k) => body.querySelector(`[data-x="${k}"]`)?.value;
+            Object.assign(histPick, { expiry: q('hexp') || histPick.expiry, day: q('hday') || histPick.day, time: q('htime') || '09:30' });
+            BT.store.set('mclBestHist', histPick);
+          }
+          return fetchBest();
+        }
+        const b = e.target.closest('[data-sb]');
+        if (b && r?.hist) {
+          // the replay: the legs at that minute's prices on that day, held across the days to the expiry, with the
+          // NIFTYBEES bought then (recorded price, else Nifty ÷ 100)
+          const v = r.list[Number(b.dataset.sb)];
+          const sb = BT.store.get('sb', {});
+          if (sb.legs?.some((l) => l.open) && !sb.tradeId && !confirm('The Builder holds a position that is not saved. Replace it with this replay?')) return;
+          close();
+          BT.emit('open-builder', {
+            src: 'hist',
+            expiry: r.expiry,
+            day: r.day,
+            time: r.time,
+            session: 'multi',
+            lot: r.lot,
+            fromLabel: `Suggestion, ${monthName(r.expiry)} series: entered ${r.time} on ${dayLabel(r.day)}, held to the ${dayLabel(r.expiry)} expiry`,
+            note: `${cfg.name} · Suggestion (${monthName(r.expiry)}): ${v.title} · Nifty ${num0(r.spot)} → ${num0(r.settle.spot)} · options ${inrS(Math.round(v.actual.opt))} at the expiry`,
+            legs: v.legs.map((l) => ({ action: l.side > 0 ? 'B' : 'S', type: l.type, strike: l.strike, expiry: r.expiry, lots: l.lots, px: l.ltp })),
+            mcc: { on: true, ...(cfg.flag || {}), amount: Math.round(r.bees.qty * r.bees.now), qty: r.bees.qty, price: Math.round(r.bees.now * 100) / 100, day: r.day },
+          });
+          return;
+        }
+        if (b) {
+          const v = r.list[Number(b.dataset.sb)];
+          const today = new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10);
+          key = 'newest';
+          BT.store.set(cfg.storeKey, key);
+          close();
+          BT.emit('open-builder', {
+            src: 'live',
+            expiry: r.expiry,
+            note: `${cfg.name} · Suggestion: ${v.title}`,
+            legs: v.legs.map((l) => ({ action: l.side > 0 ? 'B' : 'S', type: l.type, strike: l.strike, expiry: r.expiry, lots: l.lots, px: l.ltp })),
+            mcc: { on: true, ...(cfg.flag || {}), amount: Math.round(r.bees.qty * r.bees.now), qty: r.bees.qty, price: Math.round(r.bees.now * 100) / 100, day: today },
+          });
+          return;
+        }
+        const tr = e.target.closest('tr[data-best]');
+        if (tr) {
+          sel = Number(tr.dataset.best);
+          draw();
+        }
+      });
+    }
     async function enterTrade() {
       const sb = BT.store.get('sb', {});
       if (sb.legs?.some((l) => l.open) && !sb.tradeId && !confirm('The Builder holds a position that is not saved. Replace it with the new trade?')) return;
@@ -1229,6 +1513,7 @@
     function bindEnter() {
       $('mclEnterExp')?.addEventListener('change', (e) => (expPick = e.target.value));
       $('mclEnterBtn')?.addEventListener('click', enterTrade);
+      $('mclBestBtn')?.addEventListener('click', openBest);
     }
 
     // A closed trade: its result as booked (options from the saved trade, NIFTYBEES bought → sold), no live prices.

@@ -263,6 +263,11 @@
       : [];
     if (has && A.tN)
       ds.push({ label: `+${A.daysAhead} day${A.daysAhead > 1 ? 's' : ''}`, data: pts(A.tN), borderColor: '#d6af4c', borderWidth: 1.4, pointRadius: 0 });
+    // extra curves on the same x grid (the Builder's NIFTYBEES held against the options): { label, ys, color, dash,
+    // width, noPct (no "% of capital" in the tooltip: that capital is the options') }
+    if (has)
+      for (const e of opts.extra || [])
+        ds.push({ label: e.label, data: pts(e.ys), borderColor: e.color, borderWidth: e.width || 1.6, borderDash: e.dash || [], pointRadius: 0, noPct: !!e.noPct });
     const marks = [
       { x: A.spot, label: 'spot', color: '#d6af4c' },
       { x: A.spot - A.sd, label: '−1σ', color: '#8b949e', dash: [2, 3] },
@@ -285,7 +290,7 @@
             callbacks: {
               title: (c) => `Nifty ${Math.round(c[0].raw.x)} (${(((c[0].raw.x - A.spot) / A.spot) * 100).toFixed(1)}%)`,
               label: (c) =>
-                `${c.dataset.label}: ${inrS(c.raw.y)}${A.capSel.total > 0 ? ` (${c.raw.y > 0 ? '+' : ''}${((c.raw.y / A.capSel.total) * 100).toFixed(1).replace('-', '−')}% of capital)` : ''}`,
+                `${c.dataset.label}: ${inrS(c.raw.y)}${A.capSel.total > 0 && !c.dataset.noPct ? ` (${c.raw.y > 0 ? '+' : ''}${((c.raw.y / A.capSel.total) * 100).toFixed(1).replace('-', '−')}% of capital)` : ''}`,
             },
           },
           payv: { marks },

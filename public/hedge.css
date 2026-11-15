@@ -35,7 +35,7 @@
 .hedge-tiles .st .s { font-size: 10.5px; color: var(--muted); text-transform: uppercase; letter-spacing: .3px; }
 .hedge-tiles .st .v { font-size: 18px; font-weight: 700; }
 .hedge-tiles .st .n { font-size: 11px; color: var(--muted); }
-.hedge-grid { min-height: 0; display: grid; gap: 12px; grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.35fr) minmax(0, 0.9fr); }
+.hedge-grid { height: clamp(440px, calc(100vh - 335px), 760px); flex: none; min-height: 0; display: grid; gap: 12px; grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.35fr) minmax(0, 0.9fr); }
 .h-list { flex: 1; min-height: 0; overflow: auto; padding: 8px 10px 10px; display: flex; flex-direction: column; gap: 8px; }
 .h-card { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; cursor: pointer; background: var(--panel); }
 .h-card:hover { border-color: var(--accent); }
@@ -48,6 +48,10 @@
 .h-card .m b { display: block; font-size: 13px; }
 .h-card .rank { display: inline-block; min-width: 18px; text-align: center; border-radius: 9px; background: var(--panel-2); font-size: 10.5px; font-weight: 700; margin-right: 6px; }
 .h-detail { overflow-y: auto; }
+/* the three middle panels keep the row height and scroll inside */
+.hedge-grid > .panel { min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+.hedge-grid > .panel.h-detail { overflow-y: auto; }
+.h-list, .h-hold-wrap, .h-detail { scrollbar-width: thin; scrollbar-gutter: stable; }
 .h-legs-wrap, .h-scen-wrap, .h-family-wrap { padding: 4px 12px; }
 .h-legs, .h-scen, .h-family, .h-holdings { width: 100%; border-collapse: collapse; font-size: 12px; }
 .h-legs th, .h-scen th, .h-family th, .h-holdings th { color: var(--muted); font-weight: 500; font-size: 10.5px; text-transform: uppercase; padding: 4px 6px; text-align: right; background: var(--panel-2); position: sticky; top: 0; }
@@ -62,8 +66,8 @@
 .h-family tr.base td { background: var(--panel-2); font-weight: 600; }
 .h-family tr.sep td { color: var(--muted); font-size: 10.5px; text-transform: uppercase; padding-top: 10px; cursor: default; background: none; }
 .h-family tr:hover td { background: rgba(88,166,255,.06); }
-.h-chart { min-height: 170px; }
-.h-chart, .hb-chart { flex: 1; } /* the chart fills what is left of its panel */
+.h-chart { flex: 0 0 auto; height: clamp(170px, 24vh, 240px); min-height: 0; }
+.hb-chart { flex: 1; } /* the chart fills what is left of its panel */
 .act-buy { color: var(--up); font-weight: 700; }
 .act-sell { color: var(--down); font-weight: 700; }
 .h-hold-tools { display: flex; gap: 6px; flex-wrap: wrap; padding: 6px 12px; }
@@ -95,7 +99,8 @@
 @media (max-width: 1100px) {
   .hedge-tiles { grid-template-columns: repeat(2, 1fr); }
   .hedge-grid, .hedge-grid.hold-min { grid-template-columns: 1fr; }
-  .hedge-grid .panel { min-height: 420px; }
+  .hedge-grid { height: auto; }
+  .hedge-grid .panel { min-height: 420px; max-height: 80vh; }
   .hedge-grid .h-hold.min { min-height: 0; }
   .h-hold-strip { writing-mode: horizontal-tb; padding: 8px 12px; }
 }
