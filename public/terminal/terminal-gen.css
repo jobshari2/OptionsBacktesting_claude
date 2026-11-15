@@ -451,6 +451,7 @@
 :root[data-design="terminal"] .mcl-enter-btn select { border-radius: var(--r) 0 0 var(--r); }
 :root[data-design="terminal"] .mcl-enter-btn #mclEnterBtn { background: var(--up, var(--up)); border-color: var(--up, var(--up)); border-radius: 0 var(--r) var(--r) 0; }
 :root[data-design="terminal"] .mcl-enter-btn #mclEnterBtn:only-child { border-radius: var(--r); }
+:root[data-design="terminal"] .mcl-cmp-now > div { border-radius: var(--r); }
 
 /* ---------- lab.css ---------- */
 :root[data-design="terminal"] .lab-set { font-size: var(--fs-3); }

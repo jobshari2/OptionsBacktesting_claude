@@ -145,6 +145,15 @@ test('Put spread collar: edit strikes and prices, then the Live trade: KPIs, leg
   await expect(page.locator('#lvChart .pay-range button.on')).toHaveText('±20 %');
   await noHorizontalScroll(page);
 
+  // 💡 Suggestion: new collars on the trade's expiry, with the NIFTYBEES it holds
+  await page.locator('#lvBest').tap();
+  await expect(page.locator('#bestBody')).toContainText('5,000 NIFTYBEES at');
+  await expect(page.locator('#bestBody [data-best]').first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('#bestBody table.grid tbody tr').first()).toBeVisible();
+  await noHorizontalScroll(page);
+  await page.locator('#bestClose').tap();
+  await expect(page.locator('#bestBody')).toHaveCount(0);
+
   // edit a leg: close the sold call at a typed price
   await page.locator('tr[data-leg="0"]').tap();
   await page.locator('#lgExit').fill('10');
@@ -165,6 +174,15 @@ test('Put spread collar: edit strikes and prices, then the Live trade: KPIs, leg
   await page.locator('#lvReopen').tap();
   await expect(page.locator('tr[data-leg="0"]')).toContainText('closed'); // closed before the trade's close: stays closed
   await expect(page.locator('tr[data-leg="1"]')).not.toContainText('closed');
+
+  // a suggestion from Live trade opens New trade with its strikes, on the trade's expiry
+  await page.locator('#lvBest').tap();
+  const pick = page.locator('#bestBody [data-best]').first();
+  await expect(pick).toBeVisible({ timeout: 15_000 });
+  const sell = (await pick.locator('b').first().innerText()).match(/Sell (\d+) CE/)[1];
+  await page.locator('#bestUse').tap();
+  await expect(page.locator('#colSub button.on')).toHaveText('New trade');
+  await expect(page.locator('[data-strike="0"]')).toHaveValue(sell);
 });
 
 test('Settings persist: theme, refresh, strikes', async ({ page }) => {

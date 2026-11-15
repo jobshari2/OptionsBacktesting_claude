@@ -279,3 +279,13 @@ tr.mcl-sug-detail:hover > td { background: color-mix(in srgb, #f0616d 6%, transp
 .mcl-enter-btn #mclEnterBtn { background: var(--up, #3fb68b); border-color: var(--up, #3fb68b); color: #fff; font-weight: 700; padding: 5px 14px; border-radius: 0 7px 7px 0; }
 .mcl-enter-btn #mclEnterBtn:only-child { border-radius: 7px; }
 .mcl-enter-btn #mclEnterBtn:hover:not(:disabled) { filter: brightness(1.1); }
+/* Live trade › Rules from the backtest study › Compare (popup) */
+.mcl-cmp .modal { width: min(1250px, 100%); }
+.mcl-cmp-cols { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.mcl-cmp-now { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+.mcl-cmp-now > div { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+.mcl-study tbody tr:hover td { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+@media (max-width: 800px) { .mcl-cmp-cols, .mcl-cmp-now { grid-template-columns: minmax(0, 1fr); } }
+.mcl-cmp .grid-tbl th { white-space: normal; text-transform: none; vertical-align: bottom; max-width: 220px; }
+.mcl-cmp .mcl-cmp-cols .grid-tbl td.l { white-space: normal; }
+.mcl-cmp .mcl-cmp-cols .grid-tbl { width: 100%; }

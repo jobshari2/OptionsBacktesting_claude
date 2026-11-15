@@ -797,6 +797,27 @@ const bestUnits = (b, auto) => {
   if (u < 0 || u > 1e7) throw new Error('NIFTYBEES units: 0 to 1,00,00,000');
   return { qty: Math.round(u), auto: false };
 };
+// The Live trade tabs with a Suggestion, and the legs its search builds: the collars' (sold call + put spread), or the
+// Modified covered call's (call ratio + put butterfly, in the tab's ratios: 1 × 2 and 2-3-1 by default).
+const BEST_KINDS = new Set(['psc', 'bpc', 'mcc']);
+// The covered call's also: its two peaks (options at expiry at the sold calls and at the sold puts) within b.peakTol ₹ of
+// each other (default BEST_PEAK_TOL; '' = off), and the trade its rules pick on the same chain (plan: L.plan with
+// prices) shown first whatever the floors.
+const BEST_PEAK_TOL = 1000;
+const bestPeakTol = (b) => {
+  if (b.peakTol === '') return null;
+  const v = b.peakTol == null ? BEST_PEAK_TOL : Number(b.peakTol);
+  return Number.isFinite(v) && v >= 0 ? v : BEST_PEAK_TOL;
+};
+const bestShape = (L, prm, b, plan) =>
+  L.kind === 'mcc'
+    ? {
+        shape: 'mcc',
+        ratios: { ce: prm.ce, pe: prm.pe },
+        peakTol: bestPeakTol(b),
+        fixed: plan?.pick?.legs?.length ? { label: 'By the rules', note: plan.shapeText || '', open: plan.pick.legs.map((l) => ({ type: l.type, strike: l.strike, side: l.side, lots: l.lots })) } : null,
+      }
+    : { shape: 'collar' };
 async function bestHist(L, expiry, day, time, { minDown, minUp, minMid, midBand }, b) {
   const d = backtester.data;
   const series = (await bestHistSeries()).find((s) => s.expiry === expiry);
@@ -848,11 +869,12 @@ async function bestHist(L, expiry, day, time, { minDown, minUp, minMid, midBand 
   const real = b0 > 0 && bE > 0;
   const beesPx = real ? b0 : S / 100;
   const beesEnd = real ? bE : (beesPx * SE) / S;
-  const { prm } = L.plan(S, ks, () => null, lot, b);
+  const plan = L.plan(S, ks, (t, k) => (L.kind === 'mcc' ? M.px(t, k) : null), lot, b);
+  const { prm } = plan;
   const { qty: beesQty, auto: beesAuto } = bestUnits(b, mccEtfQty(prm, S, beesPx));
   const flat = bestFlat(b, beesQty, beesPx, lot, prm.lots, S);
   const slip = (L.defaults.costs.slipPct || 0.5) / 100;
-  const out = mccLive.bestCollars(M, { lot, lots: prm.lots || 1, beesQty, beesPx, expiry, slip, day, minDown, minUp, minMid, midBand, minFlat: flat.minFlat, settle: { spot: SE, bees: beesEnd } });
+  const out = mccLive.bestCollars(M, { lot, lots: prm.lots || 1, beesQty, beesPx, expiry, slip, day, minDown, minUp, minMid, midBand, minFlat: flat.minFlat, settle: { spot: SE, bees: beesEnd }, ...bestShape(L, prm, b, plan) });
   return {
     ...out,
     hist: true,
@@ -1161,7 +1183,7 @@ async function handleLive(req, res, url, p, L) {
   // Suggestion: the 5 best strikes for a new collar on an expiry's live chain (bt/mcclive.js bestCollars), each with
   // its P&L for Nifty moves from now. Nothing is sent to a broker.
   if (p === '/live/best' && req.method === 'POST') {
-    if (L.kind !== 'psc' && L.kind !== 'bpc') throw new Error('Suggestions of strikes are for the collars only');
+    if (!BEST_KINDS.has(L.kind)) throw new Error('Suggestions of strikes are for the collars and the covered call only');
     if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the strikes are priced on the live chain`);
     const b = JSON.parse((await readBody(req, 10_000)).toString('utf8') || '{}');
     const expiry = String(b.expiry || '');
@@ -1169,7 +1191,8 @@ async function handleLive(req, res, url, p, L) {
     if (!(chain?.spot > 0) || !chain.rows?.length) throw new Error(`No live chain for the ${expiry} expiry yet`);
     const M = mccLive.market(chain, mccLive.yearsTo(expiry));
     const lot = contracts.lot || L.defaults.lotSize;
-    const { prm } = L.plan(chain.spot, chain.rows.map((r) => r.strike).sort((x, y) => x - y), () => null, lot, b);
+    const plan = L.plan(chain.spot, chain.rows.map((r) => r.strike).sort((x, y) => x - y), (t, k) => (L.kind === 'mcc' ? M.px(t, k) : null), lot, b);
+    const { prm } = plan;
     const beesLive = await mccBeesNow().catch(() => null);
     const beesPx = beesLive?.px || chain.spot / 100;
     const { qty: beesQty, auto: beesAuto } = bestUnits(b, mccEtfQty(prm, chain.spot, beesPx));
@@ -1177,7 +1200,7 @@ async function handleLive(req, res, url, p, L) {
     // the least the options must earn on average on Nifty falls of 1 … 8 % (₹, default 30,000)
     const { minDown, minUp, minMid, midBand } = bestFloors(b);
     const flat = bestFlat(b, beesQty, beesPx, lot, prm.lots, chain.spot);
-    const out = mccLive.bestCollars(M, { lot, lots: prm.lots || 1, beesQty, beesPx, expiry, slip, day: istDate(), minDown, minUp, minMid, midBand, minFlat: flat.minFlat });
+    const out = mccLive.bestCollars(M, { lot, lots: prm.lots || 1, beesQty, beesPx, expiry, slip, day: istDate(), minDown, minUp, minMid, midBand, minFlat: flat.minFlat, ...bestShape(L, prm, b, plan) });
     return sendJson(res, 200, {
       ...out,
       expiry,
@@ -1194,13 +1217,30 @@ async function handleLive(req, res, url, p, L) {
   // (the cached 1-minute option candles, downloading what the cache lacks), plus what each pick actually made at the
   // expiry. expiries: the expired monthly series (newest first) with their trading days.
   if (p === '/live/best-hist/expiries') {
-    if (L.kind !== 'psc' && L.kind !== 'bpc') throw new Error('Suggestions of strikes are for the collars only');
+    if (!BEST_KINDS.has(L.kind)) throw new Error('Suggestions of strikes are for the collars and the covered call only');
     return sendJson(res, 200, { expiries: await bestHistSeries() });
   }
   if (p === '/live/best-hist' && req.method === 'POST') {
-    if (L.kind !== 'psc' && L.kind !== 'bpc') throw new Error('Suggestions of strikes are for the collars only');
+    if (!BEST_KINDS.has(L.kind)) throw new Error('Suggestions of strikes are for the collars and the covered call only');
     const b = JSON.parse((await readBody(req, 10_000)).toString('utf8') || '{}');
     return sendJson(res, 200, await bestHist(L, String(b.expiry || ''), String(b.day || ''), String(b.time || '09:30'), bestFloors(b), b));
+  }
+  // Rules from the backtest study (Backtest tab › adjustment study): each rule's total and months, the row run with the
+  // strategy's own rules (current), and whether each would act on the trade now (only when the live chain is there).
+  // rows=1: every row's settings, summary and months too, for the side-by-side comparison.
+  if (p === '/live/study') {
+    const study = readJson(L.studyFile());
+    if (!study?.rows?.length) return sendJson(res, 200, { rules: [], current: null, at: null });
+    const current = mccLive.studyCurrent(study, L.defaults);
+    const st = liveLoggedIn() ? await liveState(L, url.searchParams.get('key')).catch(() => null) : null;
+    const live = Boolean(st?.pos && st.M);
+    return sendJson(res, 200, {
+      rules: mccLive.studyRules(study, live ? st.pos : null, live ? st.M : null, live ? st.entrySpot : 0, L.kind, current),
+      current,
+      live,
+      at: study.at || null,
+      ...(url.searchParams.get('rows') === '1' ? { rows: mccLive.studyRows(study) } : {}),
+    });
   }
   if (p === '/live/suggest' && req.method === 'POST') {
     if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the suggestions are priced on the live chain`);
@@ -1219,7 +1259,10 @@ async function handleLive(req, res, url, p, L) {
     return sendJson(res, 200, {
       key: st.key,
       ...out,
-      rules: mccLive.studyRules(readJson(L.studyFile()), st.pos, st.M, st.entrySpot, L.kind),
+      rules: (() => {
+        const study = readJson(L.studyFile());
+        return mccLive.studyRules(study, st.pos, st.M, st.entrySpot, L.kind, mccLive.studyCurrent(study, L.defaults));
+      })(),
       sample: { n: moves.length, days, from: closes[0]?.day, to: closes[closes.length - 1]?.day, ivNow: st.M.atmIv, slipPct: slip * 100 },
       spot: st.M.spot,
       at: Date.now(),

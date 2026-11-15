@@ -759,3 +759,87 @@ test('best collars: the options-only floor if Nifty stays (e.g. 1 % of the money
   // off by default
   assert.equal(L.bestCollars(M, { ...base, n: 1 }).minFlat, null);
 });
+
+test('best strikes for the Modified covered call: call ratio 1 × 2 + put 2-3-1, ATM / OTM, scored like the collars', () => {
+  const T = 20 / 365;
+  const S = 23020;
+  const M = L.market(chainAt(S, T), T);
+  const atm = Math.round(S / 50) * 50;
+  const base = { lot: 65, beesQty: 6500, beesPx: S / 100, expiry: '2026-11-24', shape: 'mcc', minDown: 0, minUp: 0, minMid: -Infinity };
+  const out = L.bestCollars(M, { ...base, settle: { spot: 22600, bees: 226 } });
+  assert.equal(out.list.length, 5);
+  assert.ok(out.within > 0);
+  const sold = new Set();
+  for (const v of out.list) {
+    const ce = v.legs.filter((l) => l.type === 'CE');
+    const pe = v.legs.filter((l) => l.type === 'PE').sort((a, b) => b.strike - a.strike);
+    assert.deepEqual(
+      ce.map((l) => l.side * l.lots),
+      [1, -2],
+      v.title,
+    );
+    assert.ok(ce[0].strike >= atm && ce[1].strike > ce[0].strike && ce[1].strike - ce[0].strike <= 800, v.title);
+    assert.deepEqual(
+      pe.map((l) => l.side * l.lots),
+      [2, -3, 1],
+      v.title,
+    );
+    assert.ok(pe[0].strike <= atm && pe[0].strike - pe[1].strike <= 400 && pe[1].strike - pe[2].strike <= 300, v.title);
+    // one per sold-call strike
+    assert.ok(!sold.has(ce[1].strike));
+    sold.add(ce[1].strike);
+    // the scores are the whole trade's, priced together: stays = the options at Nifty now at expiry
+    const intr = (l, x) => Math.max(0, l.type === 'CE' ? x - l.strike : l.strike - x);
+    const gross = v.legs.reduce((s, l) => s + l.side * (intr(l, S) - l.fill) * l.lots * 65, 0);
+    assert.ok(v.flat <= gross && v.flat > gross - v.charges - 500, `${v.title}: ${v.flat} vs ${gross}`);
+    assert.ok(out.hindsight.actual.opt >= v.actual.opt - 1e-6);
+  }
+  for (let i = 1; i < out.list.length; i++) assert.ok(out.list[i - 1].up + out.list[i - 1].mid >= out.list[i].up + out.list[i].mid - 1e-6);
+  // the tab's ratios × lots
+  const two = L.bestCollars(M, { ...base, lots: 2, n: 1, ratios: { ce: { buy: 1, sell: 2 }, pe: { buy: 2, sell: 3, wing: 1 } } });
+  assert.deepEqual(
+    two.list[0].legs.map((l) => l.lots).sort(),
+    [2, 2, 4, 4, 6].sort(),
+  );
+});
+
+test('best Modified covered calls: equal peaks (options at the sold calls = at the sold puts) and the rules’ trade first', () => {
+  const T = 23 / 365;
+  const S = 24800;
+  const M = L.market(chainAt(S, T), T);
+  const intr = (l, x) => Math.max(0, l.type === 'CE' ? x - l.strike : l.strike - x);
+  const base = { lot: 65, beesQty: 6500, beesPx: S / 100, expiry: '2026-12-08', shape: 'mcc', minDown: 0, minUp: 0 };
+  const fixed = {
+    label: 'By the rules',
+    open: [
+      { type: 'CE', strike: 24900, side: 1, lots: 1 },
+      { type: 'CE', strike: 25000, side: -1, lots: 2 },
+      { type: 'PE', strike: 24700, side: 1, lots: 2 },
+      { type: 'PE', strike: 24500, side: -1, lots: 3 },
+      { type: 'PE', strike: 24400, side: 1, lots: 1 },
+    ],
+  };
+  const out = L.bestCollars(M, { ...base, peakTol: 1000, fixed });
+  assert.equal(out.peakTol, 1000);
+  assert.ok(out.peaked > 0 && out.peaked < out.tried);
+  assert.equal(out.list.length, 5);
+  for (const v of out.list) {
+    assert.ok(Math.abs(v.upPeak - v.downPeak) <= 1000, `${v.title}: ${v.upPeak} vs ${v.downPeak}`);
+    // the peaks are the options' P&L at expiry at the sold strikes (STT on exercise aside)
+    const at = (x) => v.legs.reduce((s, l) => s + l.side * (intr(l, x) - l.fill) * l.lots * 65, 0) - v.charges;
+    const ceS = v.legs.find((l) => l.type === 'CE' && l.side < 0).strike;
+    const peS = v.legs.find((l) => l.type === 'PE' && l.side < 0).strike;
+    assert.ok(v.upPeak <= at(ceS) + 1e-6 && v.upPeak > at(ceS) - 200, v.title);
+    assert.ok(v.downPeak <= at(peS) + 1e-6 && v.downPeak > at(peS) - 200, v.title);
+  }
+  // the rules' trade: scored like the picks, its unequal peaks named (call gap 100 vs puts 2 × 200)
+  const r = out.rules;
+  assert.ok(r.rules);
+  assert.equal(r.title, 'Buy 24900 CE · Sell 2× 25000 CE · Buy 2× 24700 PE · Sell 3× 24500 PE · Buy 24400 PE');
+  assert.ok(r.downPeak - r.upPeak > 15000);
+  assert.equal(r.meets.peaks, false);
+  // off: every shape searched
+  const all = L.bestCollars(M, { ...base, n: 1 });
+  assert.equal(all.peaked, all.tried);
+  assert.equal(all.rules, null);
+});

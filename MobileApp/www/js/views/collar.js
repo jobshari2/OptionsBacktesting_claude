@@ -292,7 +292,9 @@ function renderNew() {
 // The 5 best collars on this expiry's chain (live.js bestCollars): the options must earn at least the amount typed on
 // Nifty falls of 1 … 8 % (NIFTYBEES aside); ranked by Nifty up (NIFTYBEES + options) + Nifty staying (options). Tap one for its P&L for
 // Nifty moves; "Use this trade" puts its strikes in New trade (at their LTPs) on the collar it is.
-function openBest(chain, lot, lots, units, beesPx) {
+// From Live trade (fromLive): the chain is the live trade's expiry, NIFTYBEES the units it holds, and "Use this trade"
+// opens New trade on that expiry.
+function openBest(chain, lot, lots, units, beesPx, { fromLive = false } = {}) {
   let minDown = Number(store.get('bestMinDown') ?? 30000);
   if (!Number.isFinite(minDown)) minDown = 30000;
   let minUp = Number(store.get('bestMinUp') ?? 35000);
@@ -399,7 +401,11 @@ function openBest(chain, lot, lots, units, beesPx) {
       );
       body.querySelector('#bestUse').onclick = () => {
         const p = r.list[sel];
-        saveState({ kind: p.kind, edit: p.legs.map((l) => ({ strike: l.strike, price: null })) });
+        saveState({ kind: p.kind, edit: p.legs.map((l) => ({ strike: l.strike, price: null })), ...(fromLive ? { expiry: chain.expiry, lots } : {}) });
+        if (fromLive) {
+          store.set('collarSub', 'new');
+          closing = false;
+        }
         close();
         toast(`${COLLARS[p.kind].name}: ${p.title}`);
         ctxRef.refreshNow();
@@ -557,7 +563,7 @@ function renderLive() {
         <div class="stat"><span>NIFTYBEES</span><b class="${tone(n.bees)}">${bees ? rs(n.bees) : '—'}</b><small>${bees ? `${num(bees.units, 0)} × ${num(bees.entry)} → ${num(bees.now)}${bees.live ? '' : ' (est.)'}` : 'enter it below'}</small></div>
         <div class="stat total"><span>Total</span><b class="${tone(n.total)}">${n.total == null ? '—' : rs(n.total)}</b><small>NIFTYBEES + options now</small></div>
       </div>
-      <div class="row gap"><button class="btn ${closing ? '' : 'danger'} grow" id="lvCloseBtn">${closing ? 'Cancel close' : 'Close entire trade…'}</button></div>
+      <div class="row gap"><button class="btn small" id="lvBest" title="The 5 best strikes for a new collar on this expiry, at the live prices">💡 Suggestion</button><button class="btn ${closing ? '' : 'danger'} grow" id="lvCloseBtn">${closing ? 'Cancel close' : 'Close entire trade…'}</button></div>
       <div id="lvClosePanel">${closing ? closePanelHtml(m) : ''}</div>
     </section>
     ${coverHtml(m)}
@@ -847,6 +853,17 @@ function bindLive(m) {
   bindPick(el);
   bindDelete(el, p);
   el.querySelector('#lvRefresh').onclick = () => ctxRef.refreshNow();
+  // Suggestion: new collars on this trade's expiry, with the NIFTYBEES it holds (none saved: one lot of Nifty's worth)
+  el.querySelector('#lvBest').onclick = () => {
+    const chain = data.chain;
+    if (!chain?.rows?.length) return toast('No option chain for this expiry yet: refresh and try again');
+    const sold = m.legs.filter((l) => !isClosed(l) && l.type === 'CE' && l.side < 0);
+    const lots = Math.max(1, ...sold.map((l) => l.lots || 1));
+    const beesPx = m.beesLtp > 0 ? m.beesLtp : m.bees?.now;
+    if (!(beesPx > 0)) return toast('No NIFTYBEES price yet: refresh and try again');
+    const units = m.bees?.units > 0 ? m.bees.units : beesUnits(chain.spot, beesPx, m.lot, lots);
+    openBest(chain, m.lot, lots, units, beesPx, { fromLive: true });
+  };
   el.querySelector('#lvCloseBtn').onclick = () => {
     closing = !closing;
     closeVals = {};

@@ -950,13 +950,15 @@ const applyView = (pos, after) => ({ ...pos, legs: after.legs, realised: after.r
 
 // The backtest study's rules on this trade: for each rule kept in bt-data/mcc-study.json (psc-study.json), its total and
 // how many months it beat no adjustments, and whether it would act now (Nifty's move since entry, a premium's decay).
-function studyRules(study, pos, M, entrySpot, shape = 'mcc') {
+// No trade (pos null): the same list, nothing due. current: the id of the row run with the strategy's own rules.
+function studyRules(study, pos, M, entrySpot, shape = 'mcc', current = null) {
   if (!study?.rows?.length) return [];
   const none = study.rows.find((r) => r.id === 'none');
   const byExp = new Map((none?.months || []).filter((m) => m.ok).map((m) => [m.expiry, m.opt]));
-  const S = M.spot;
-  const move = entrySpot > 0 ? (S / entrySpot - 1) * 100 : 0;
-  const sold = pos.legs.filter((l) => l.side < 0);
+  const live = Boolean(pos && M);
+  const S = live ? M.spot : 0;
+  const move = live && entrySpot > 0 ? (S / entrySpot - 1) * 100 : 0;
+  const sold = live ? pos.legs.filter((l) => l.side < 0) : [];
   const decay = (pct) => sold.filter((l) => M.px(l.type, l.strike) != null && M.px(l.type, l.strike) <= (l.entry * pct) / 100);
   return study.rows
     .filter((r) => r.id !== 'none')
@@ -969,7 +971,8 @@ function studyRules(study, pos, M, entrySpot, shape = 'mcc') {
       );
       const a = r.params?.adj || {};
       let due = null;
-      if (shape === 'psc' || shape === 'bpc') due = pscDue(r.params || {}, move, entrySpot, pos, M, shape === 'bpc');
+      if (!live) due = null;
+      else if (shape === 'psc' || shape === 'bpc') due = pscDue(r.params || {}, move, entrySpot, pos, M, shape === 'bpc');
       else if (shape === 'nbo') due = nboDue(r.params || {}, move, entrySpot, pos, M);
       else if (a.on && a.trigger === 'move' && Math.abs(move) >= a.movePct)
         due = `Nifty is ${move > 0 ? 'up' : 'down'} ${Math.abs(move).toFixed(1)} % since the entry (${Math.round(entrySpot)}): the rule moves the ${move > 0 ? 'sold puts up' : 'sold calls down'}${a.legs === 'all' ? ' (the whole structure)' : ''}`;
@@ -977,9 +980,27 @@ function studyRules(study, pos, M, entrySpot, shape = 'mcc') {
         due = `${decay(a.decayPct)
           .map((l) => `${l.strike} ${l.type}`)
           .join(', ')} at or under ${a.decayPct} % of the premium sold: the rule rolls ${a.legs === 'all' ? 'that whole structure' : 'it'} toward Nifty`;
-      return { id: r.id, label: r.label, total: Math.round(total), noneTotal: Math.round(sum([...byExp.values()], (v) => v)), beat, months: ok.length, due };
+      return { id: r.id, label: r.label, total: Math.round(total), noneTotal: Math.round(sum([...byExp.values()], (v) => v)), beat, months: ok.length, due, current: r.id === current };
     })
     .sort((a, b) => b.total - a.total);
+}
+// The study row run with the strategy's own rules (defaults: the legs' distances, adjustments, up-market extra): every
+// setting the row and the defaults both have is equal. null when none is.
+const STUDY_KEYS = ['ce', 'pe', 'adj', 'up'];
+function studyCurrent(study, defaults) {
+  const same = (a = {}, b = {}) => Object.keys(b).every((k) => !(k in a) || JSON.stringify(a[k]) === JSON.stringify(b[k]));
+  const row = (study?.rows || []).find((r) => STUDY_KEYS.every((k) => same(r.params?.[k], defaults?.[k])));
+  return row ? row.id : null;
+}
+// The study for the comparison popup: each row's settings, summary and months, trimmed to what it shows.
+function studyRows(study) {
+  return (study?.rows || []).map((r) => ({
+    id: r.id,
+    label: r.label,
+    params: Object.fromEntries(STUDY_KEYS.map((k) => [k, r.params?.[k] || {}])),
+    summary: r.summary,
+    months: (r.months || []).map((m) => ({ expiry: m.expiry, ok: m.ok, why: m.why, move: m.move, opt: m.opt, callPnl: m.callPnl, putPnl: m.putPnl, withOnce: m.withOnce, adjustments: m.adjustments })),
+  }));
 }
 // A NIFTYBEES + options rule (bt/nbo.js decide) on this trade now: a side (all call legs, all put legs) re-centred when
 // Nifty has moved movePct % since the entry in a direction switched on for it, or (decay) once the side is worth
@@ -1057,10 +1078,18 @@ function pscDue(prm, move, entrySpot, pos, M, credit = false) {
 // settle (a past month): { spot, bees } — Nifty and NIFTYBEES at the expiry. Each pick then also has actual: { spot,
 // opt, bees, total } (the options at intrinsic at that Nifty, NIFTYBEES bought at beesPx sold at settle.bees), and the
 // result has hindsight: the collar of all those priced (within the floor when any is) whose options made the most.
+// shape 'mcc' (the Modified covered call), the same search and scoring on its legs instead: buy ratios.ce.buy CE, sell
+// ratios.ce.sell CE 50 … MCC_GAP points above it (the call ratio, 1 × 2); buy ratios.pe.buy PE, sell ratios.pe.sell PE
+// 50 … MCC_GAP under it and buy ratios.pe.wing PE 50 … MCC_WING under those (the put butterfly, 2-3-1); each × lots.
 const BEST_MOVES = [1, 1.5, 2, 2.5, 3, 4, 5, 6, 7, 8];
 const WIDE = 1000;
+// the Modified covered call's search (shape 'mcc'): the gap from the bought call to the sold ones and from the bought
+// puts to the sold ones (50 … MCC_GAP points), the wing under the sold puts (50 … MCC_WING)
+const MCC_GAP = 400;
+const MCC_CALL_GAP = 800; // the call ratio's gap: up to twice the puts' (equal peaks need call gap = 2 × put gap at 1×2 / 2-3-1)
+const MCC_WING = 300;
 const MID_BAND = 2; // default % either side of the entry: the range Nifty stays in ("rangebound")
-function bestCollars(M, { lot, lots = 1, beesQty = 0, beesPx, expiry, slip = 0.005, day = null, n = 5, minDown = 30000, minUp = 35000, minMid = -Infinity, midBand = MID_BAND, minFlat = -Infinity, settle = null } = {}) {
+function bestCollars(M, { lot, lots = 1, beesQty = 0, beesPx, expiry, slip = 0.005, day = null, n = 5, minDown = 30000, minUp = 35000, minMid = -Infinity, midBand = MID_BAND, minFlat = -Infinity, settle = null, shape = 'collar', ratios = null, peakTol = null, fixed = null } = {}) {
   const S = M.spot;
   const A = atmOf(S);
   const bees = beesQty > 0 ? { qty: beesQty, price: beesPx, now: beesPx } : null;
@@ -1080,62 +1109,194 @@ function bestCollars(M, { lot, lots = 1, beesQty = 0, beesPx, expiry, slip = 0.0
   };
   const ces = strikes('CE');
   const pes = strikes('PE');
-  const scored = [];
-  let tried = 0;
-  for (const c of ces)
+  // The call side and the put side are priced apart (charges are per order and optExpiry keeps calls and puts apart,
+  // so a pair's numbers are the sum of its two sides', exactly), then every pair is scored.
+  const r0 = (n) => Math.max(1, Math.round(n * lots));
+  const callSides = [];
+  const putSides = [];
+  if (shape === 'mcc') {
+    // Modified covered call: buy ce.buy CE, sell ce.sell CE gap points above (the call ratio); buy pe.buy PE, sell
+    // pe.sell PE sellGap under it, buy pe.wing PE wingGap under that (the put butterfly)
+    const ce = { buy: 1, sell: 2, ...(ratios?.ce || {}) };
+    const pe = { buy: 2, sell: 3, wing: 1, ...(ratios?.pe || {}) };
+    const has = (t, k) => (t === 'CE' ? ces : pes).includes(k);
+    for (const k of ces)
+      for (let g = STEP; g <= MCC_CALL_GAP; g += STEP)
+        if (has('CE', k + g))
+          callSides.push({
+            id: `c${k}x${k + g}`,
+            key: k + g,
+            pk: k + g, // the upside peak: Nifty at the sold calls
+            fx: k, // calls all out of the money from here down
+            open: [
+              { type: 'CE', strike: k, side: 1, lots: r0(ce.buy) },
+              { type: 'CE', strike: k + g, side: -1, lots: r0(ce.sell) },
+            ],
+          });
+    for (const k of pes)
+      for (let g = STEP; g <= MCC_GAP; g += STEP)
+        for (let w = STEP; w <= MCC_WING; w += STEP)
+          if (has('PE', k - g) && has('PE', k - g - w))
+            putSides.push({
+              id: `p${k}x${k - g}w${k - g - w}`,
+              pk: k - g, // the downside peak: Nifty at the sold puts
+              fx: k, // puts all out of the money from here up
+              open: [
+                { type: 'PE', strike: k, side: 1, lots: r0(pe.buy) },
+                { type: 'PE', strike: k - g, side: -1, lots: r0(pe.sell) },
+                { type: 'PE', strike: k - g - w, side: 1, lots: r0(pe.wing) },
+              ],
+            });
+  } else {
+    for (const c of ces) callSides.push({ id: `c${c}`, key: c, open: [{ type: 'CE', strike: c, side: -1, lots }] });
     for (const hi of pes)
       for (const lo of pes) {
         if (lo >= hi || hi - lo > 700) continue;
-        for (const buyHi of [true, false]) {
-          tried++;
-          const open = [
-            { type: 'CE', strike: c, side: -1, lots },
-            { type: 'PE', strike: hi, side: buyHi ? 1 : -1, lots },
-            { type: 'PE', strike: lo, side: buyHi ? -1 : 1, lots },
-          ];
-          const r = priceChange(empty, { close: [], open }, M, slip, day);
-          if (!r) continue;
-          const opt = (x) => {
-            const e = optExpiry(r.next, x);
-            return e.CE + e.PE;
-          };
-          const upTot = ups.map((x) => opt(x) + beesAt(bees, S, x));
-          const midTot = mids.map((x) => opt(x) + beesAt(bees, S, x));
-          const dnOpt = downs.map(opt);
-          const dnTot = downs.map((x, i) => dnOpt[i] + beesAt(bees, S, x));
-          scored.push({
-            id: `c${c}${buyHi ? 'b' : 's'}${hi}${buyHi ? 's' : 'b'}${lo}`,
-            open,
-            r,
-            up: sum(upTot, (v) => v) / upTot.length,
-            downOpt: sum(dnOpt, (v) => v) / dnOpt.length,
-            down: sum(dnTot, (v) => v) / dnTot.length,
-            worst: Math.min(...dnTot),
-            flat: opt(S),
-            mid: Math.min(...midTot),
+        for (const buyHi of [true, false])
+          putSides.push({
+            id: `${buyHi ? 'b' : 's'}${hi}${buyHi ? 's' : 'b'}${lo}`,
+            open: [
+              { type: 'PE', strike: hi, side: buyHi ? 1 : -1, lots },
+              { type: 'PE', strike: lo, side: buyHi ? -1 : 1, lots },
+            ],
           });
-        }
       }
+  }
+  // each side's options P&L at expiry at the points scored: ups, downs, the range, and Nifty where it is
+  const pts = [...ups, ...downs, ...mids, S];
+  const nU = ups.length;
+  const nD = downs.length;
+  const nM = mids.length;
+  const priceSide = (sd, t) => {
+    const r = priceChange(empty, { close: [], open: sd.open }, M, slip, day);
+    if (!r) return null;
+    const v = Float64Array.from(pts, (x) => optExpiry(r.next, x)[t]);
+    // the Modified covered call's two peaks: this side's P&L at its own peak and where it is flat (the other side's)
+    return sd.pk ? { ...sd, v, peak: optExpiry(r.next, sd.pk)[t], flatV: optExpiry(r.next, sd.fx)[t] } : { ...sd, v };
+  };
+  const cs = callSides.map((sd) => priceSide(sd, 'CE')).filter(Boolean);
+  const ps = putSides.map((sd) => priceSide(sd, 'PE')).filter(Boolean);
+  const beesV = pts.map((x) => beesAt(bees, S, x));
+  const tried = callSides.length * putSides.length;
+  const scored = [];
+  const peaks = shape === 'mcc';
+  const tol = peaks && peakTol != null && Number.isFinite(Number(peakTol)) ? Math.max(0, Number(peakTol)) : null;
+  let peaked = 0;
+  for (const c of cs)
+    for (const p of ps) {
+      // options only at expiry: Nifty at the sold calls (the puts are all out of the money there) and at the sold puts
+      const upPeak = peaks ? c.peak + p.flatV : null;
+      const downPeak = peaks ? p.peak + c.flatV : null;
+      if (tol != null && Math.abs(upPeak - downPeak) > tol) continue;
+      peaked++;
+      const a = c.v;
+      const b = p.v;
+      let up = 0;
+      let dnOpt = 0;
+      let dn = 0;
+      let worst = Infinity;
+      let mid = Infinity;
+      for (let i = 0; i < nU; i++) up += a[i] + b[i] + beesV[i];
+      for (let i = nU; i < nU + nD; i++) {
+        const o = a[i] + b[i];
+        dnOpt += o;
+        dn += o + beesV[i];
+        if (o + beesV[i] < worst) worst = o + beesV[i];
+      }
+      for (let i = nU + nD; i < nU + nD + nM; i++) if (a[i] + b[i] + beesV[i] < mid) mid = a[i] + b[i] + beesV[i];
+      const f = nU + nD + nM;
+      scored.push({ id: c.id + p.id, call: c, put: p, up: up / nU, downOpt: dnOpt / nD, down: dn / nD, worst, flat: a[f] + b[f], mid, upPeak, downPeak });
+    }
   const within = scored.filter((o) => o.downOpt >= minDown && o.up >= minUp && o.mid >= minMid && o.flat >= minFlat);
   // ranked by Nifty going up and Nifty staying in the range (its lowest point), same weight; the floors cover the fall
   const short = (o) => Math.max(0, minDown - o.downOpt) + Math.max(0, minUp - o.up) + Math.max(0, minMid - o.mid) + Math.max(0, minFlat - o.flat);
   const rank = (a, b) => b.up + b.mid - (a.up + a.mid) || b.downOpt - a.downOpt;
   const pool = within.length ? within.sort(rank) : scored.sort((a, b) => short(a) - short(b) || rank(a, b));
   const beesOut = settle?.bees > 0 && bees ? bees.qty * (settle.bees - bees.price) : 0;
+  const actualOf = (opt) => ({ spot: settle.spot, opt, bees: beesOut, total: opt + beesOut });
   const actual = (pos) => {
     if (!(settle?.spot > 0)) return null;
     const e = optExpiry(pos, settle.spot);
-    return { spot: settle.spot, opt: e.CE + e.PE, bees: beesOut, total: e.CE + e.PE + beesOut };
+    return actualOf(e.CE + e.PE);
   };
-  const titleOf = (legs) => legs.map((l) => `${l.side > 0 ? 'Buy' : 'Sell'} ${l.strike} ${l.type}`).join(' · ');
+  const titleOf = (legs) => legs.map((l) => `${l.side > 0 ? 'Buy' : 'Sell'} ${l.lots > 1 ? `${l.lots}× ` : ''}${l.strike} ${l.type}`).join(' · ');
+  const whole = (o) => (o.r ||= priceChange(empty, { close: [], open: [...o.call.open, ...o.put.open] }, M, slip, day));
   let hindsight = null;
-  if (settle?.spot > 0)
+  if (settle?.spot > 0) {
+    // each side's options at the expiry's Nifty, once
+    const at = new Map();
+    const side = (sd, t) => {
+      if (!at.has(sd)) at.set(sd, optExpiry(priceChange(empty, { close: [], open: sd.open }, M, slip, day).next, settle.spot)[t]);
+      return at.get(sd);
+    };
+    let best = null;
     for (const o of within.length ? within : scored) {
-      const a = actual(o.r.next);
-      if (!hindsight || a.opt > hindsight.actual.opt) hindsight = { title: titleOf(o.r.next.legs), actual: a, up: o.up, downOpt: o.downOpt };
+      const v = side(o.call, 'CE') + side(o.put, 'PE');
+      if (!best || v > best.v) best = { o, v };
     }
+    if (best) hindsight = { title: titleOf([...best.o.call.open, ...best.o.put.open]), actual: actualOf(best.v), up: best.o.up, downOpt: best.o.downOpt };
+  }
+  // a fixed trade (the strategy's rules), scored the same way and shown whatever the floors; priced even on strikes
+  // the search would leave out (no volume, a wide quote), which are named
+  const out1 = (o, legs, r) => ({
+    id: o.id,
+    title: titleOf(legs),
+    legs: legs.map((l) => ({ type: l.type, strike: l.strike, side: l.side, lots: l.lots, fill: l.entry, ltp: M.px(l.type, l.strike) })),
+    credit: sum(legs, (l) => -l.side * l.entry * l.lots * lot),
+    charges: r.charges,
+    up: o.up,
+    down: o.down,
+    downOpt: o.downOpt,
+    worst: o.worst,
+    flat: o.flat,
+    mid: o.mid,
+    upPeak: o.upPeak ?? null,
+    downPeak: o.downPeak ?? null,
+    grid: grid(r.next, M, bees, S),
+    actual: actual(r.next),
+  });
+  let rules = null;
+  if (fixed?.open?.length) {
+    const r = priceChange(empty, { close: [], open: fixed.open }, { ...M, notEnterable: () => null }, slip, day);
+    if (r) {
+      const opt = (x) => {
+        const e = optExpiry(r.next, x);
+        return e.CE + e.PE;
+      };
+      const avg = (a) => sum(a, (v) => v) / a.length;
+      const dnOpt = downs.map(opt);
+      const dnTot = downs.map((x, i) => dnOpt[i] + beesAt(bees, S, x));
+      const peakAt = (t) => {
+        const ks = fixed.open.filter((l) => l.type === t && l.side < 0).map((l) => l.strike);
+        return ks.length ? Math.max(...ks.map(opt)) : null;
+      };
+      const o = {
+        id: 'rules',
+        up: avg(ups.map((x) => opt(x) + beesAt(bees, S, x))),
+        downOpt: avg(dnOpt),
+        down: avg(dnTot),
+        worst: Math.min(...dnTot),
+        flat: opt(S),
+        mid: Math.min(...mids.map((x) => opt(x) + beesAt(bees, S, x))),
+        upPeak: peaks ? peakAt('CE') : null,
+        downPeak: peaks ? peakAt('PE') : null,
+      };
+      const why = fixed.open.map((l) => [l, M.notEnterable(l.type, l.strike)]).filter(([, w]) => w && w !== 'price');
+      rules = {
+        ...out1(o, r.next.legs, r),
+        rules: true,
+        label: fixed.label || 'By the rules',
+        note: fixed.note || '',
+        meets: { down: o.downOpt >= minDown, up: o.up >= minUp, mid: o.mid >= minMid, flat: o.flat >= minFlat, peaks: tol == null || Math.abs(o.upPeak - o.downPeak) <= tol },
+        thin: why.map(([l, w]) => `${l.strike} ${l.type} (${w === 'volume' ? 'no trades today' : 'wide quote'})`),
+      };
+    } else rules = { rules: true, label: fixed.label || 'By the rules', missing: true, title: titleOf(fixed.open) };
+  }
   return {
     tried,
+    peakTol: tol,
+    peaked: peaks ? peaked : null,
+    rules,
     priced: scored.length,
     within: within.length,
     minDown,
@@ -1146,27 +1307,17 @@ function bestCollars(M, { lot, lots = 1, beesQty = 0, beesPx, expiry, slip = 0.0
     // the most any collar keeps through the range while meeting the fall and rise floors (what a range floor can ask)
     midBest: scored.reduce((b, o) => (o.downOpt >= minDown && o.up >= minUp && o.flat >= minFlat && (b == null || o.mid > b) ? o.mid : b), null),
     hindsight,
-    // one per sold-call strike, so the five are different trades, not one trade with the put spread moved by 50
+    // one per sold-call strike, so the five are different trades, not one trade with the puts moved by 50
     list: pool
-      .filter((o, i) => pool.findIndex((q) => q.open[0].strike === o.open[0].strike) === i)
-      .slice(0, n)
+      .filter(
+        (
+          (seen) => (o) =>
+            seen.size < n && !seen.has(o.call.key) && seen.add(o.call.key)
+        )(new Set()),
+      )
       .map((o) => {
-        const legs = o.r.next.legs;
-        return {
-          id: o.id,
-          title: titleOf(legs),
-          legs: legs.map((l) => ({ type: l.type, strike: l.strike, side: l.side, lots: l.lots, fill: l.entry, ltp: M.px(l.type, l.strike) })),
-          credit: sum(legs, (l) => -l.side * l.entry * l.lots * lot),
-          charges: o.r.charges,
-          up: o.up,
-          down: o.down,
-          downOpt: o.downOpt,
-          worst: o.worst,
-          flat: o.flat,
-          mid: o.mid,
-          grid: grid(o.r.next, M, bees, S),
-          actual: actual(o.r.next),
-        };
+        whole(o);
+        return out1(o, o.r.next.legs, o.r);
       }),
   };
 }
@@ -1211,5 +1362,7 @@ module.exports = {
   suggest,
   applyView,
   studyRules,
+  studyCurrent,
+  studyRows,
   legText,
 };
