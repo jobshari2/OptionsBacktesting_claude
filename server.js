@@ -753,9 +753,12 @@ async function mccBeesNow() {
 }
 
 // ---------- Suggestion › Past month (the collars' best strikes on an expired monthly series) ----------
-// The expired monthly series in the cached Nifty history, newest first: { expiry, from (the day after the previous
-// monthly expiry), days (its trading days before the expiry: the entry can be any of them) }.
-async function bestHistSeries() {
+// The expired monthly series in the cached Nifty history, newest first: { expiry, from, first, days }. As on the Live
+// tab, where the expiry offered is the rules' series (monthlyFor: the monthly expiry at least minDays away), a series
+// can be entered from the day the rules move to it: when the previous monthly expiry is fewer than minDays calendar days
+// away (from, e.g. 42 days before the expiry), not only from the day after it (first). days: its trading days from
+// `from` to before the expiry; the first of them is the default entry.
+async function bestHistSeries(minDays = 15) {
   const d = backtester.data;
   const cal = await d.expiryCalendar();
   const monthly = [...cal.monthly].filter((e) => cal.expiredSet.has(e)).sort();
@@ -763,10 +766,11 @@ async function bestHistSeries() {
   if (!start) throw new Error('No Nifty history in the cache yet (Data screen)');
   const out = [];
   for (let i = 1; i < monthly.length; i++) {
-    const from = d.addDays(monthly[i - 1], 1);
+    const first = d.addDays(monthly[i - 1], 1);
+    const from = d.addDays(monthly[i - 1], -Math.max(0, minDays - 1));
     if (from < start) continue;
-    const days = (await d.loadIndex(from, monthly[i]).catch(() => [])).filter((x) => x < monthly[i]);
-    if (days.length) out.push({ expiry: monthly[i], from, days });
+    const days = (await d.loadIndex(from, monthly[i]).catch(() => [])).filter((x) => x >= from && x < monthly[i]);
+    if (days.length) out.push({ expiry: monthly[i], from, first: days.find((x) => x >= first) || null, days });
   }
   return out.reverse();
 }
@@ -820,7 +824,7 @@ const bestShape = (L, prm, b, plan) =>
     : { shape: 'collar' };
 async function bestHist(L, expiry, day, time, { minDown, minUp, minMid, midBand }, b) {
   const d = backtester.data;
-  const series = (await bestHistSeries()).find((s) => s.expiry === expiry);
+  const series = (await bestHistSeries(L.defaults.minDays)).find((s) => s.expiry === expiry);
   if (!series) throw new Error(`${expiry} is not an expired monthly series in the cached history`);
   if (!series.days.includes(day)) day = series.days[0];
   if (!/^\d{2}:\d{2}$/.test(time)) time = '09:30';
@@ -1218,7 +1222,7 @@ async function handleLive(req, res, url, p, L) {
   // expiry. expiries: the expired monthly series (newest first) with their trading days.
   if (p === '/live/best-hist/expiries') {
     if (!BEST_KINDS.has(L.kind)) throw new Error('Suggestions of strikes are for the collars and the covered call only');
-    return sendJson(res, 200, { expiries: await bestHistSeries() });
+    return sendJson(res, 200, { expiries: await bestHistSeries(L.defaults.minDays), minDays: L.defaults.minDays });
   }
   if (p === '/live/best-hist' && req.method === 'POST') {
     if (!BEST_KINDS.has(L.kind)) throw new Error('Suggestions of strikes are for the collars and the covered call only');

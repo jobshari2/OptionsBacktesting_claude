@@ -1540,7 +1540,19 @@
       if (units !== '' && !(Number(units) >= 0)) units = '';
       // Past month: the series (newest first, with their trading days), the one picked, its entry day and time
       let series = null;
+      let minDaysTxt = 15; // the rules' minimum days to the expiry (the server sends it with the series)
       const histPick = BT.store.get('mclBestHist', {});
+      // v2: the entry days start where the Live tab's rules would take the series; an older remembered day gives way once
+      if (histPick.v !== 2) {
+        histPick.v = 2;
+        histPick.day = null;
+      }
+      // a day of a series, labelled: days to its expiry, the rules' first day (default), the series' own first day
+      const dayOpt = (s, x, i, sel) => {
+        const left = Math.round((Date.parse(s.expiry) - Date.parse(x)) / 86400_000);
+        const tag = i === 0 ? ' · the rules’ first day' : x === s.first ? ' · day after the last expiry' : '';
+        return `<option value="${x}" ${sel ? 'selected' : ''}>${dayLabel(x)} · ${left} d${tag}</option>`;
+      };
       const pickedSeries = () => series?.find((s) => s.expiry === histPick.expiry) || series?.[0] || null;
       const histInputs = () => {
         const s = pickedSeries();
@@ -1549,8 +1561,8 @@
         return `<label class="mini" title="An expired monthly series">Series <select data-x="hexp">${series
           .map((x) => `<option value="${x.expiry}" ${x.expiry === s.expiry ? 'selected' : ''}>${monthName(x.expiry)} · expiry ${dayLabel(x.expiry)}</option>`)
           .join('')}</select></label>
-          <label class="mini" title="The day the ${BW.one} is entered (the first trading day of the series is where the backtest enters)">entered on <select data-x="hday">${s.days
-            .map((x, i) => `<option value="${x}" ${x === day ? 'selected' : ''}>${dayLabel(x)}${i === 0 ? ' (first day)' : ''}</option>`)
+          <label class="mini" title="The day the ${BW.one} is entered, with the days left to the expiry. As on the Live tab, a series can be entered from the day the rules move to it (its previous monthly expiry fewer than ${minDaysTxt} days away): that day is the default.">entered on <select data-x="hday">${s.days
+            .map((x, i) => dayOpt(s, x, i, x === day))
             .join('')}</select></label>
           <label class="mini" title="The minute of that day the chain is read at (IST)">at <input type="time" data-x="htime" min="09:15" max="15:29" value="${esc(histPick.time || '09:30')}"></label>`;
       };
@@ -1581,7 +1593,9 @@
           if (!series) {
             body.innerHTML = '<div class="muted small">Reading the past monthly series…</div>';
             try {
-              series = (await BT.api(cfg.api + '/live/best-hist/expiries')).expiries;
+              const ex = await BT.api(cfg.api + '/live/best-hist/expiries');
+              series = ex.expiries;
+              if (ex.minDays > 0) minDaysTxt = ex.minDays;
             } catch (e) {
               body.innerHTML = `<div class="err small">${esc(e.message)}</div>`;
               return;
@@ -1716,7 +1730,7 @@
           BT.store.set('mclBestHist', histPick);
           const s = pickedSeries();
           const daySel = body.querySelector('[data-x="hday"]');
-          if (daySel) daySel.innerHTML = s.days.map((d, i) => `<option value="${d}">${dayLabel(d)}${i === 0 ? ' (first day)' : ''}</option>`).join('');
+          if (daySel) daySel.innerHTML = s.days.map((d, i) => dayOpt(s, d, i, i === 0)).join('');
         } else if (x === 'hday') histPick.day = e.target.value;
         else if (x === 'htime') histPick.time = e.target.value || '09:30';
         else return;
