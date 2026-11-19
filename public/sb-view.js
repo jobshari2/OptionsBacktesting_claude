@@ -668,6 +668,8 @@
       const lots = l.lots || Math.max(1, Math.round((l.qty || M.lot) / M.lot));
       if (!addLeg(l.action, l.type, l.strike, lots, M, o.note || o.strategy?.name, { px: l.px, rule: l.rule, ruleStrike: l.ruleStrike, ruleExpiry: exp }))
         warn.push(`${l.strike} ${l.type} has no price`);
+      // a leg handed over already closed (Live trade › Adjustments: a plan's closed legs), at its exit price
+      else if (l.exitPx >= 0 && l.exitPx != null) closeLeg(S.legs[S.legs.length - 1], M, lots, l.why || o.note, Math.max(0.05, l.exitPx));
     }
     pending = null; // kept until here so loadDay() also fetches the handed-over strikes outside the usual window
     if (o.strategy?.mode === 'positional' && S.src === 'hist') S.session = 'multi';
@@ -840,6 +842,48 @@
       save();
     }
     loadTrades();
+  }
+  // Trading Ideas › Live trade › Adjustments: the saved trade opened here with a change made to it at the live prices
+  // (o: { id, expiry, note, close: [{ type, strike, side, lots }], open: [{ type, strike, side, lots }] }). Not saved:
+  // Save trade keeps it. Applied once the chain is loaded (activate → applyAdjustment).
+  let pendingAdj = null;
+  BT.on('adjust-trade', async (o) => {
+    if (!trades.some((t) => t.id === o.id)) {
+      await BT.loadMeta().catch(() => {});
+      await loadTrades();
+    }
+    pendingAdj = o;
+    const was = window.app.state.view;
+    await openTrade(o.id);
+    if (S.tradeId !== o.id) pendingAdj = null; // "Load this trade?" declined
+    else if (was === 'sb' && pendingAdj) await applyAdjustment(); // already on screen: activate() may have run before it was set
+  });
+  async function applyAdjustment() {
+    const o = pendingAdj;
+    pendingAdj = null;
+    if (!o || S.tradeId !== o.id) return;
+    try {
+      await ensureExp(o.expiry);
+    } catch {
+      /* reported below */
+    }
+    const M = market(o.expiry);
+    if (!M) return flash(`No live prices for ${dayShort(o.expiry)}: the adjustment was not made`);
+    const miss = [];
+    for (const c of o.close) {
+      const l = openLegs().find((x) => x.type === c.type && x.strike === c.strike && dir(x) === c.side && legExp(x) === o.expiry && x.lots >= c.lots);
+      if (!l || !closeLeg(l, M, c.lots, o.note)) miss.push(`close ${c.strike} ${c.type}`);
+    }
+    for (const n of o.open) if (!addLeg(n.side > 0 ? 'B' : 'S', n.type, n.strike, n.lots, M, o.note)) miss.push(`open ${n.strike} ${n.type}`);
+    record();
+    save();
+    renderTop();
+    render();
+    flash(
+      miss.length
+        ? `Adjustment partly made (${miss.join(', ')} failed). Not saved: check the legs, then Save trade.`
+        : 'Adjustment made at the live prices (LTP). Not saved yet: press Save trade to keep it, or load the trade again to undo it.',
+    );
   }
   // Other screens open a saved trade here (Live › Ideas lists the live paper trades).
   BT.on('open-trade', async (id) => {
@@ -1333,6 +1377,7 @@
     }
     render();
     if (pending) await placePending();
+    if (pendingAdj) await applyAdjustment();
   }
   function renderEmpty(msg) {
     $('sbChain').innerHTML = `<div class="err pad">${esc(msg)}</div>`;
@@ -1661,9 +1706,16 @@
   }
   function renderPayoff(M, A) {
     const has = A.legs.length;
+    // Every option leg closed (the adjustments are done): the payoff is the final, realised P&L — a flat line — and,
+    // while the NIFTYBEES are still held, the NIFTYBEES and the whole trade moving with Nifty from here.
+    const closedAll = !has && S.legs.some((l) => !l.open && picked(l));
     renderHeldBox(M, A);
-    $('sbKpis').innerHTML = BT.payoff.kpis(A, { pnl: A.P.total });
-    $('sbPayInfo').textContent = has ? `${SBAdjust.structure(A.legs).name} · ${M.label}` : 'add legs to see the payoff';
+    $('sbKpis').innerHTML = closedAll ? finalKpis(M, A) : BT.payoff.kpis(A, { pnl: A.P.total });
+    $('sbPayInfo').textContent = has
+      ? `${SBAdjust.structure(A.legs).name} · ${M.label}`
+      : closedAll
+        ? `All option legs closed · final P&L ${inrS(Math.round(A.P.realised))}${beesHeld(M)?.how && beesHeld(M).how !== 'sold' ? ' · NIFTYBEES still held' : ''} · ${M.label}`
+        : 'add legs to see the payoff';
     $('sbPayCtl').classList.toggle('hidden', !has);
     BT.payoff.controls($('sbPayCtl'), A, S.pay, () => {
       save();
@@ -1673,15 +1725,41 @@
     renderPayOn(M);
     const near = has ? A.legs.map(legExp).sort()[0] : null;
     const on = payOn(M);
-    const extra = has ? beesCurves(M, A, on ? `on ${dayShort(on)}` : 'at expiry') : [];
+    const extra = has || closedAll ? beesCurves(M, A, closedAll ? '(options closed)' : on ? `on ${dayShort(on)}` : 'at expiry') : [];
     const opt = extra.length ? 'Options ' : '';
     BT.payoff.draw($('sbPayChart'), A, {
       expiryLabel: near ? dayShort(near) : '',
-      horizonLabel: on ? `${opt}On ${dayShort(on)} (close)` : opt ? `Options at expiry${near ? ` (${dayShort(near)})` : ''}` : '',
+      horizonLabel: closedAll
+        ? `${opt ? 'Options: final' : 'Final'} P&L (all legs closed)`
+        : on
+          ? `${opt}On ${dayShort(on)} (close)`
+          : opt
+            ? `Options at expiry${near ? ` (${dayShort(near)})` : ''}`
+            : '',
       nowLabel: M.label,
       levels: nearLevels(M),
       extra,
+      closed: closedAll,
     });
+  }
+  // KPI tiles once every option leg is closed: the options' final P&L and, with NIFTYBEES held against them, the
+  // NIFTYBEES and the whole trade — and, while the NIFTYBEES are still held, the Nifty level where the whole trade
+  // breaks even (options' final P&L + NIFTYBEES = 0, NIFTYBEES moving with Nifty from their price now).
+  function finalKpis(M, A) {
+    const R = A.P.realised;
+    const B = beesHeld(M);
+    const tile = (k, v, tip = '') => `<div${tip ? ` title="${tip}"` : ''}><span>${k}</span><b class="${cls(v)}">${v == null ? '—' : inrS(Math.round(v))}</b></div>`;
+    let out = tile('Options · final P&amp;L', R, 'Every option leg is closed: their booked (realised) P&amp;L, before costs and slippage');
+    if (!B) return out;
+    out += tile(`NIFTYBEES${B.how === 'sold' ? ' (sold)' : ' now'}`, B.pnl);
+    out += tile(B.how === 'sold' ? 'Whole trade · final' : 'Whole trade now', B.pnl == null ? null : R + B.pnl, 'Options + NIFTYBEES');
+    if (B.how !== 'sold' && B.px > 0 && M?.spot > 0) {
+      const be = (M.spot * (B.price - R / B.qty)) / B.px;
+      out += `<div title="Nifty level where the options' final P&amp;L + the NIFTYBEES come to zero (NIFTYBEES moving with Nifty from ₹${B.px.toFixed(2)} now)"><span>Breakeven (with NIFTYBEES)</span><b>${Math.round(be)}</b></div>`;
+      const d = M.spot ? ((be - M.spot) / M.spot) * 100 : 0;
+      out += `<div><span>Nifty to breakeven</span><b class="${cls(-d)}">${d > 0 ? '+' : ''}${d.toFixed(1).replace('-', '−')}%</b></div>`;
+    }
+    return out;
   }
   // Held against NIFTYBEES: the payoff chart (and its tooltip) also shows, at each Nifty level, the NIFTYBEES alone
   // and the whole trade at expiry (options at expiry + NIFTYBEES). NIFTYBEES move with Nifty from their price now

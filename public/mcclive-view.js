@@ -232,7 +232,7 @@
 
       el.innerHTML =
         head +
-        `<div class="panel cc-doc"><h3>Legs and payoff <button class="btn-sm ghost" id="mclToSb" title="${P.src === 'builder' ? 'Open this saved trade in the Builder: its open and closed legs, log and P&amp;L, to adjust it there' : "Open the paper series's open legs in the Builder as a live paper position at their entry prices"}">Load in Builder ▸</button></h3><div class="cc-pos-grid">
+        `<div class="panel cc-doc"><h3>Legs and payoff <button class="btn-sm ghost" id="mclToSb" title="${P.src === 'builder' ? 'Open this saved trade in the Builder: its open and closed legs, log and P&amp;L, to adjust it there' : "Open the paper series's open legs in the Builder as a live paper position at their entry prices"}">Load in Builder ▸</button>${ADJ ? ' <button class="btn-sm ghost" id="mclAdjBtn" title="Options only: how much profit the sold call (or the put spread) needs before closing or covering it leaves the options with no loss at expiry, up or down; whether it is there now, and at which Nifty levels and days it would be. Builder ▸ makes the change there.">Adjustments</button>' : ''}</h3><div class="cc-pos-grid">
         <div class="tbl-wrap"><table class="grid-tbl mcl-legs"><thead><tr><th class="l">Leg</th><th class="l">Status</th><th>Entry</th><th title="Open legs: their last traded price (LTP) now; hover a price for its bid / ask. Closed legs: the price they were closed at">Now / exit</th><th title="Implied volatility at this strike now (used for the 'if today' P&amp;L)">IV</th><th>P&amp;L</th></tr></thead><tbody id="mclLegsBody">${legsBodyHtml(n)}</tbody></table><div class="muted small">ATM IV ${(st.market.atmIv * 100).toFixed(1)} % · lot ${lot()}${P.closed.length ? ' · closed legs count with the P&amp;L they were closed at, in every figure on this screen (a fixed amount at any Nifty)' : ''}</div></div>
         <div class="cc-pay"><div class="cc-pay-chart"><canvas id="mclPay"></canvas></div><div class="muted small">Solid: at expiry. Dotted: if Nifty moved there today.${st.pos.closed.length ? ' Closed legs included at their booked P&amp;L.' : ''} ${pick ? `Red: after “${esc(pick.title)}”.` : 'Pick a suggestion below to see it here.'}</div></div>
       </div></div>` +
@@ -1227,6 +1227,7 @@
       bindPick();
       bindCover();
       $('mclToSb')?.addEventListener('click', loadTrade);
+      $('mclAdjBtn')?.addEventListener('click', openAdjust);
       $('mclRefresh')?.addEventListener('click', async () => {
         await load();
         refresh();
@@ -1472,6 +1473,389 @@
         BEST ? `<button class="btn-sm ghost" id="mclBestBtn" title="The 5 best strikes for a new ${esc(cfg.name)} on the expiry chosen, at the live prices, for Nifty going up and down">💡 Suggestion</button>` : ''
       }</span>`;
     };
+
+    // ---------- Adjustments: when closing or covering legs makes the options loss-less ----------
+    // <api>/live/adjust (bt/mcclive.js adjustments), options only (the NIFTYBEES left out): per plan (close the sold
+    // call, cover it with a bought call, close it and buy back the sold put, book the put spread and cover the call,
+    // close everything) the profit the closed legs must make for the options to have no loss at expiry at any Nifty
+    // level, whether that is so now, and on which days and at which Nifty levels it would be (the model's prices). Each
+    // with its payoff; Builder ▸ makes the change there (now) or opens it as a plan (a scenario).
+    const ADJ = Boolean(cfg.adjust);
+    const GROUP_TXT = { call: 'Sold call', put: 'Put spread', both: 'Both' };
+    const NOW_SHOW = 10; // loss-free-now rows shown
+    const NOW_WIDE_TXT = 600; // bt/mcclive.js NOW_WIDE
+    const NOW_SORTS = [
+      ['few', 'Simplest first (fewest orders)', (a, b) => a.orders - b.orders || b.avg - a.avg],
+      ['min', 'Most locked in', (a, b) => b.min - a.min],
+      ['up', 'Best if Nifty rises', (a, b) => b.up - a.up],
+      ['down', 'Best if Nifty falls', (a, b) => b.down - a.down],
+      ['stays', 'Best if Nifty stays', (a, b) => b.stays - a.stays],
+      ['avg', 'Best average (±8 %)', (a, b) => b.avg - a.avg],
+    ];
+    const fillTxt = (o) => `${o.close ? (o.side < 0 ? 'buy back' : 'sell') : o.side > 0 ? 'buy' : 'sell'} ${o.lots > 1 ? `${o.lots} × ` : ''}${o.strike} ${o.type} ≈ ₹${o.price.toFixed(1)}`;
+    // a small payoff: the options as they are (grey) and after the plan (green: loss-less, else red)
+    function adjSpark(r, curve, good) {
+      const W = 140;
+      const H = 42;
+      const lim = Math.max(5000, ...curve.map(Math.abs)) * 1.6; // the as-is line runs off far on a rise: clipped
+      const clip = (y) => Math.max(-lim, Math.min(lim, y));
+      const ys = [...r.before.curve, ...curve, 0].map(clip);
+      const top = Math.max(...ys);
+      const bot = Math.min(...ys);
+      const x0 = r.xs[0];
+      const x1 = r.xs[r.xs.length - 1];
+      const X = (x) => ((x - x0) / (x1 - x0)) * W;
+      const Y = (y) => (top === bot ? H / 2 : 2 + ((top - clip(y)) / (top - bot)) * (H - 4));
+      const path = (c) => c.map((y, i) => `${i ? 'L' : 'M'}${X(r.xs[i]).toFixed(1)},${Y(y).toFixed(1)}`).join('');
+      return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="display:block"><line x1="0" x2="${W}" y1="${Y(0).toFixed(1)}" y2="${Y(0).toFixed(1)}" stroke="currentColor" stroke-opacity=".35" stroke-dasharray="2 2"/><line x1="${X(r.spot).toFixed(1)}" x2="${X(r.spot).toFixed(1)}" y1="0" y2="${H}" stroke="#58a6ff" stroke-opacity=".6"/><path d="${path(r.before.curve)}" fill="none" stroke="currentColor" stroke-opacity=".45" stroke-width="1.2"/><path d="${path(curve)}" fill="none" stroke="${good ? '#3fb68b' : '#f0616d'}" stroke-width="1.8"/></svg>`;
+    }
+    async function openAdjust() {
+      if (!st?.pos || st.closed) return;
+      const P = st.pos;
+      document.querySelector('.modal-ov.mcl-adj')?.remove();
+      const ov = document.createElement('div');
+      ov.className = 'modal-ov mcl-adj';
+      ov.innerHTML = `<div class="panel modal"><div class="modal-head"><h3>Adjustments: when the options can be made loss-less <span class="muted small">${esc(P.name)} · expiry ${dayLabel(P.expiry)} · options only</span></h3><button class="btn-sm ghost" data-x="again" title="Price everything again at the live chain">↻ Again</button><button class="icon" data-x="close" title="Close">✕</button></div>
+        <div class="cc-doc" data-x="body" style="padding:12px 14px"></div></div>`;
+      document.body.appendChild(ov);
+      let chart = null;
+      const close = () => {
+        chart?.destroy?.();
+        ov.remove();
+      };
+      const body = ov.querySelector('[data-x="body"]');
+      let r = null;
+      let sel = null; // { p: plan index, w: 'now' | index into its when } or { k: 'pick', i } (a loss-free-now row)
+      let seq = 0;
+      let sortKey = BT.store.get('mclAdjSort', 'few');
+      if (!NOW_SORTS.some(([k]) => k === sortKey)) sortKey = 'few';
+      async function find() {
+        const my = ++seq;
+        body.innerHTML = '<div class="muted small">Checking each adjustment now and on the days ahead at every Nifty level…</div>';
+        let out;
+        try {
+          out = await BT.api(cfg.api + '/live/adjust', { key: st.key });
+        } catch (e) {
+          if (my === seq && ov.isConnected) body.innerHTML = `<div class="err small">${esc(e.message)}</div>`;
+          return;
+        }
+        if (my !== seq || !ov.isConnected) return;
+        r = out;
+        // open first: a plan that works now (the reference "close everything" last), else the first that can work
+        const order = r.plans.map((p, i) => i).filter((i) => r.plans[i].id !== 'closeAll');
+        const nowOk = order.find((i) => r.plans[i].now?.lossless);
+        const later = order.find((i) => r.plans[i].possible);
+        const i = nowOk ?? later ?? 0;
+        sel = nowList().length ? { k: 'pick', i: 0 } : r.plans[i] ? { p: i, w: r.plans[i].now?.lossless ? 'now' : firstWhen(r.plans[i]) } : null;
+        draw();
+      }
+      const firstWhen = (pl) => {
+        const j = pl.when.findIndex((w) => w.trigger);
+        return j < 0 ? 'now' : j;
+      };
+      // the view picked: { v, label } (now, or a day's trigger level)
+      // the loss-free-now rows in the order picked (none loss-free: the ones that lose least at worst)
+      const nowList = () => {
+        const lf = r.lossFree;
+        if (!lf.picks.length) return lf.closest;
+        const f = NOW_SORTS.find(([k]) => k === sortKey)[2];
+        return [...lf.picks].sort(f).slice(0, NOW_SHOW);
+      };
+      const picked = (pi = sel?.p, wi = sel?.w) => {
+        if (sel?.k === 'pick' && pi === sel?.p) {
+          const v = nowList()[sel.i];
+          return v ? { v, label: 'done now, at the live prices', scenario: null, title: v.title } : null;
+        }
+        const pl = r.plans[pi];
+        if (!pl) return null;
+        if (wi === 'now') return { v: pl.now, label: 'done now, at the live prices', scenario: null, title: pl.title };
+        const w = pl.when[wi];
+        return w?.trigger ? { v: w.trigger, label: `done ${w.days ? `in ${w.days} days (${dayLabel(w.date)})` : 'today'} with Nifty at ${num0(w.trigger.x)}`, scenario: w, title: pl.title } : null;
+      };
+      const pct = (m) => sgnPct(m, m && Math.abs(m) < 1 ? 2 : 1);
+      const lvl = (e) => `<b>${num0(e.x)}</b> <span class="muted">(${pct(e.m)})</span>`;
+      const rangeTxt = (g) => (g.from && g.to ? `between ${lvl(g.from)} and ${lvl(g.to)}` : g.to ? `at or below ${lvl(g.to)}` : g.from ? `at or above ${lvl(g.from)}` : 'anywhere tried');
+      const lockTxt = (v) => (v?.min == null ? '<span class="neg">no limit to the loss</span>' : `<span class="${cls(v.min)}">${inrS(Math.round(v.min))}</span>`);
+      function needHtml(pl) {
+        const v = pl.now;
+        const n = pl.need;
+        if (pl.hedge)
+          return v
+            ? `Best covering call now: <b>buy ${num0(v.hedgeK)} CE</b> ≈ ₹${v.fills.find((f) => !f.close)?.price.toFixed(1)}${v.fills.some((f) => f.close) ? `, after ${v.fills.filter((f) => f.close).map(fillTxt).join(', ')}` : ''}: the options would end no lower than ${lockTxt(v)} at expiry${v.minAt != null ? ` (at Nifty ${num0(v.minAt)})` : ''}.`
+            : 'Cannot be priced on the live chain now.';
+        if (!n) return '';
+        if (n.profit == null) return '<span class="neg">What is left can lose without limit: no profit on the closed legs is enough.</span>';
+        const made = v ? v.closed : null;
+        const short = made == null ? null : n.profit - made;
+        const leg = n.leg;
+        const priceTxt = leg
+          ? n.price != null
+            ? ` → ${leg.side < 0 ? 'buy it back' : 'sell it'} at <b>₹${n.price.toFixed(2)} or ${leg.side < 0 ? 'less' : 'more'}</b> (sold at ₹${leg.entry.toFixed(2)}; LTP now ₹${leg.ltp != null ? leg.ltp.toFixed(2) : '—'})`
+            : ` → <span class="neg">not even at ₹0.05</span>`
+          : '';
+        const NEED = {
+          closeCall: ['the sold call', 'what the put spread left open can still lose at expiry, if Nifty ends above it'],
+          closeCallSoldPut: ['the two buy-backs', 'what the bought put left open cost'],
+          closeAll: ['the options as a whole', 'nothing is left open'],
+        }[pl.id] || ['the closed legs', 'the most the legs left can lose at expiry'];
+        return `Needs <b>₹${num0(n.profit)}</b> profit on ${NEED[0]} (${NEED[1]}), after slippage and charges${priceTxt}. ${
+          made == null ? '' : `Closing now makes <b class="${cls(made)}">${inrS(Math.round(made))}</b>: ${short > 0 ? `<span class="neg">₹${num0(short)} short</span>` : '<span class="pos">enough</span>'}.`
+        }`;
+      }
+      // The options now, strike by strike: each open leg's P&L at its LTP, the legs closed before, per structure.
+      function legsNowHtml() {
+        const n = r.legsNow;
+        const row = (l) =>
+          `<tr><td class="l">${l.side > 0 ? 'Bought' : 'Sold'} ${l.lots} × <b>${l.strike} ${l.type}</b></td><td>₹${l.entry.toFixed(2)}</td><td>${l.ltp != null ? '₹' + l.ltp.toFixed(2) : '—'}</td><td class="${cls(l.pnl)}"><b>${l.pnl != null ? inrS(Math.round(l.pnl)) : '—'}</b></td><td class="l small muted">${
+            l.pnl == null ? '' : l.pnl > 0 ? 'in profit: closing it books this' : l.pnl < 0 ? 'in loss' : ''
+          }</td></tr>`;
+        const sub = (t, name) => {
+          const ls = n.legs.filter((l) => l.type === t);
+          if (!ls.length && !n.booked[t]) return '';
+          return `${ls.map(row).join('')}${n.booked[t] ? `<tr><td class="l muted">${name}: closed before</td><td></td><td></td><td class="${cls(n.booked[t])}">${inrS(Math.round(n.booked[t]))}</td><td></td></tr>` : ''}<tr class="mcl-sub"><td class="l"><b>${name}</b></td><td></td><td></td><td class="${cls(n[t])}"><b>${inrS(Math.round(n[t]))}</b></td><td></td></tr>`;
+        };
+        return `<h4>The options now, strike by strike</h4><div class="tbl-wrap"><table class="grid-tbl" style="max-width:760px"><thead><tr><th class="l">Leg</th><th>Entry</th><th>LTP now</th><th>P&amp;L</th><th class="l"></th></tr></thead><tbody>${sub('CE', N.ce)}${sub('PE', N.pe)}<tr class="sel"><td class="l"><b>Options in all</b></td><td></td><td></td><td class="${cls(n.total)}"><b>${inrS(Math.round(n.total))}</b></td><td class="l small muted">before slippage and charges</td></tr></tbody></table></div>`;
+      }
+      // Loss-free now: adjustments made now at the live prices, using the legs' profits, after which the options cannot
+      // lose at expiry (bt/mcclive.js lossFreeNow); none: the ones that lose least at worst, and why.
+      function nowHtml2() {
+        const lf = r.lossFree;
+        const list = nowList();
+        const free = lf.picks.length > 0;
+        const uses = (v) => {
+          const c = v.fills.filter((f) => f.close);
+          return c.length ? c.map((f) => `${f.side > 0 ? 'bought' : 'sold'} ${f.strike} ${f.type} <span class="${cls(f.pnl)}">${inrS(Math.round(f.pnl))}</span>`).join(', ') : '<span class="muted">no leg closed</span>';
+        };
+        const rows = list
+          .map((v, i) => {
+            const on = sel?.k === 'pick' && sel.i === i;
+            return `<tr class="${on ? 'sel' : ''}" data-pi="${i}" style="cursor:pointer"><td>${i + 1}</td><td class="l" style="white-space:normal;min-width:260px"><b>${esc(v.title)}</b><div class="muted small">${v.fills.map(fillTxt).map(esc).join(' · ')}</div></td><td class="l small" style="white-space:normal">${uses(v)}</td><td>${v.orders}</td><td class="${cls(v.cash)}" title="Cash the change brings (+) or takes (−) now, after slippage and charges">${inrS(Math.round(v.cash))}</td><td class="${cls(v.min)}" title="The lowest the options can end at expiry after it${v.minAt != null ? ` (at Nifty ${num0(v.minAt)})` : ''}"><b>${inrS(Math.round(v.min))}</b></td><td class="${cls(v.down5)}">${inrS(Math.round(v.down5))}</td><td class="${cls(v.stays)}">${inrS(Math.round(v.stays))}</td><td class="${cls(v.up5)}">${inrS(Math.round(v.up5))}</td><td class="${cls(v.avg)}">${inrS(Math.round(v.avg))}</td><td>${adjSpark(r, v.curve, v.lossless)}</td><td>${
+              free
+                ? `<button class="btn-sm ${on ? '' : 'ghost'}" data-sbp="${i}" title="${P.src === 'builder' ? 'Open the saved trade in the Builder and make this change there at the live prices (not saved until you press Save trade)' : 'Open the options after this change in the Builder (a new, unsaved position)'}">Apply in Builder ▸</button>`
+                : ''
+            }</td></tr>`;
+          })
+          .join('');
+        const head = `<thead><tr><th>#</th><th class="l">Adjustment now (est. prices)</th><th class="l" title="The legs closed and what each books at the price now">Uses (legs closed)</th><th title="Orders">Ord.</th><th>Cash now</th><th title="The least the options end with at expiry, anywhere">Locks in at least</th><th>Nifty −5 %</th><th>Nifty stays</th><th>Nifty +5 %</th><th title="Average P&amp;L at expiry over Nifty ±8 %">Average ±8 %</th><th title="Grey: as they are · green: after it">Payoff</th><th></th></tr></thead>`;
+        const sortSel = `<label class="mini">Order by <select data-x="sort">${NOW_SORTS.map(([k, t]) => `<option value="${k}" ${k === sortKey ? 'selected' : ''}>${t}</option>`).join('')}</select></label>`;
+        const n = r.legsNow;
+        if (free)
+          return `<h4>Loss-free now <span class="muted small">${num0(lf.free)} of ${num0(lf.tried)} adjustments tried</span></h4>
+            <div class="set-row"><p class="small" style="margin:0;flex:1">Made <b>now</b>, at the live prices, these use what the legs have made so far (options in all ${inrS(Math.round(n.total))}) so the options <b>cannot lose at expiry</b>, up or down. Tried: closing any of the legs, rolling them, and buying / selling up to two strikes within ${NOW_WIDE_TXT} points of the ATM strike (calls to cover the sold call, puts, spreads).</p>${sortSel}</div>
+            <div class="tbl-wrap"><table class="grid-tbl">${head}<tbody>${rows}</tbody></table></div>`;
+        return `<h4>Loss-free now</h4><p class="small"><b class="neg">Nothing makes the options loss-free now.</b> They are at <b class="${cls(n.total)}">${inrS(Math.round(n.total))}</b> in all at the LTPs. Every change is bought and sold at market prices, so it cannot turn the P&amp;L the legs have now into more than that guaranteed: loss-free needs the options in profit by more than the change costs (slippage and charges). ${
+          n.total > 0 ? 'The profit now is smaller than that.' : 'The way there: the adjustments below, when Nifty and time move the legs into profit.'
+        } The ones that lose least at worst, made now:</p>
+          <div class="tbl-wrap"><table class="grid-tbl">${head}<tbody>${rows}</tbody></table></div>`;
+      }
+      function planHtml(pl, pi) {
+        const v = pl.now;
+        const status = v?.lossless
+          ? `<span class="pill pos" title="Done now at the live prices, the options cannot end lower than this at expiry">✓ Loss-less now · locks in ≥ ${inrS(Math.round(v.min))}</span>`
+          : pl.possible
+            ? '<span class="pill" title="Not now: see when it would be">Not yet</span>'
+            : `<span class="pill neg" title="Not on any day or Nifty level tried (±12 %)">Not reachable</span>`;
+        const show = picked(pi, sel?.p === pi ? sel.w : v?.lossless ? 'now' : firstWhen(pl));
+        const rows = pl.when
+          .map((w, j) => {
+            const t = w.trigger;
+            const on = sel?.p === pi && sel.w === j;
+            const prices = t ? t.fills.map(fillTxt).join(' · ') : '';
+            return `<tr class="${on ? 'sel' : ''}" data-p="${pi}" data-w="${j}" style="${t ? 'cursor:pointer' : ''}"><td class="l">${w.days ? `in ${w.days} days` : '<b>today</b>'}</td><td class="l">${dayLabel(w.date)}</td><td class="l">${
+              w.ranges.length ? w.ranges.map(rangeTxt).join('; ') : '<span class="muted">— (not at any level within ±12 %)</span>'
+            }</td><td class="l">${t ? (t.m === 0 ? `${lvl(t)} = now` : lvl(t)) : ''}</td><td class="l small">${esc(prices)}</td><td>${t ? lockTxt(t) : ''}</td></tr>`;
+          })
+          .join('');
+        const stays = pl.stays ? `If Nifty stays where it is (${num0(r.spot)}): loss-less ${pl.stays.days ? `from <b>${dayLabel(pl.stays.date)}</b> (in ${pl.stays.days} day${pl.stays.days === 1 ? '' : 's'}), on time decay alone` : '<b>now</b>'}.` : `If Nifty stays where it is: <span class="muted">not before the expiry</span>.`;
+        const now = sel?.p === pi && sel.w === 'now';
+        const builderBtn = v?.lossless
+          ? `<button class="btn-sm ${now ? '' : 'ghost'}" data-sb="now" data-p="${pi}" title="${P.src === 'builder' ? 'Open the saved trade in the Builder and make this change there at the live prices (not saved until you press Save trade)' : 'Open the options after this change in the Builder (a new, unsaved position)'}">Apply in Builder ▸</button>`
+          : '';
+        const planBtn =
+          sel?.p === pi && sel.w !== 'now' && pl.when[sel.w]?.trigger
+            ? `<button class="btn-sm" data-sb="plan" data-p="${pi}" title="Open the options after this change in the Builder as a plan: a new, unsaved position with the closes and new legs at the estimated prices of the row picked">Plan in Builder ▸</button>`
+            : '';
+        return `<div class="mcl-adj-plan ${sel?.p === pi ? 'on' : ''}" data-plan="${pi}">
+          <div class="set-row" style="align-items:flex-start;gap:12px"><div style="flex:1;min-width:0"><div><span class="pill">${GROUP_TXT[pl.group] || ''}</span> <b>${esc(pl.title)}</b> ${status}${pl.id === 'closeAll' ? ' <span class="muted small">(for reference)</span>' : ''}</div>
+            <div class="muted small">${esc(pl.why)}</div>
+            <div class="small" style="margin-top:4px">${needHtml(pl)}</div>
+            <div class="small">${stays}</div></div>
+            <div data-pick="${pi}" style="cursor:pointer" title="Show its payoff below">${show ? adjSpark(r, show.v.curve, show.v.lossless) : ''}<div class="muted small" style="text-align:center">${show ? (show.scenario ? (show.scenario.days ? `in ${show.scenario.days} d` : 'today') + ' · ' + num0(show.v.x) : 'now') : ''}</div></div>
+            <div style="display:flex;flex-direction:column;gap:6px">${builderBtn}${planBtn}${v?.lossless ? `<button class="btn-sm ghost" data-now="${pi}" title="Its payoff if done now">Payoff now</button>` : ''}</div></div>
+          <div class="tbl-wrap"><table class="grid-tbl"><thead><tr><th class="l">When</th><th class="l">Date</th><th class="l" title="Nifty levels at which doing it that day leaves the options loss-less (the model's prices: Black-76 at each strike's volatility now)">Works with Nifty</th><th class="l" title="The level nearest to Nifty now where it works">Nearest level</th><th class="l" title="Est. prices there, before slippage">Orders there</th><th title="The lowest the options can end at expiry after it, done there">Locks in at least</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+      }
+      function draw() {
+        const b = r.before;
+        const top = Math.max(...P.legs.filter((l) => l.type === 'CE' && l.side < 0).map((l) => l.strike), 0);
+        const beforeTxt = `<p class="small"><b>Options only</b>: the NIFTYBEES are left out. <b>Loss-less</b> = the options’ P&amp;L at expiry is ₹0 or more at <b>every</b> Nifty level, up and down (legs closed before at what they booked, slippage ${r.slipPct} % and charges on every order). As they are: options P&amp;L now <b class="${cls(b.optNow)}">${inrS(Math.round(b.optNow))}</b> (at the LTPs); at expiry they ${
+          b.unboundedUp ? `<b class="neg">lose without limit if Nifty rises</b> above ${top ? num0(top) : 'the sold call'}` : `end no lower than ${inrS(Math.round(b.min))}`
+        }. So the sold call has to be closed or covered first; each adjustment below shows the profit it needs, whether it is there now, and the Nifty levels and days at which it would be.</p>`;
+        const never = r.never.length ? `<h4>Not loss-less on their own</h4><ul class="small">${r.never.map((n) => `<li><b>${esc(n.title)}</b>: ${esc(n.why)}</li>`).join('')}</ul>` : '';
+        const pk = picked();
+        const chartBox = pk
+          ? `<h4>Payoff at expiry, options only <span class="muted small">${esc(pk.title)}, ${esc(pk.label)}${pk.v.hedgeK ? ` (cover: ${num0(pk.v.hedgeK)} CE)` : ''}</span></h4><div style="height:300px"><canvas data-x="chart"></canvas></div>
+             <div class="muted small">Grey: the options as they are. ${pk.v.lossless ? 'Green' : 'Red'}: after the change, ${pk.v.lossless ? `never below ${inrS(Math.round(pk.v.min))}` : 'still a loss somewhere'}. Options at intrinsic value at expiry (STT on bought legs in the money); legs closed earlier at the P&amp;L booked.</div>`
+          : '';
+        body.innerHTML = `${beforeTxt}${legsNowHtml()}${nowHtml2()}<h4 style="margin-top:16px">Each adjustment: the profit it needs, and when it works</h4><div class="mcl-adj-list">${r.plans.map(planHtml).join('')}</div>${never}${chartBox}<p class="muted small">Today’s and later rows are estimates: options priced by Black-76 at their volatility now (ATM IV ${(r.atmIv * 100).toFixed(1)} %), so real prices on the day can differ. Nothing here places orders.</p>`;
+        drawChart();
+      }
+      function drawChart() {
+        chart?.destroy?.();
+        chart = null;
+        const canvas = body.querySelector('[data-x="chart"]');
+        const pk = picked();
+        if (!canvas || !pk) return;
+        const v = pk.v;
+        const pts = (c) => r.xs.map((x, k) => ({ x, y: c[k] }));
+        // the as-is line runs off without limit on a rise: the scale is set by the after line and the as-is line's top
+        const lim = Math.max(...v.curve.map(Math.abs), ...r.before.curve, 5000) * 1.25;
+        const marks = {
+          id: 'mclAdjMarks',
+          beforeDatasetsDraw(c) {
+            const { ctx, chartArea: a, scales } = c;
+            ctx.save();
+            const y0 = scales.y.getPixelForValue(0);
+            if (y0 >= a.top && y0 <= a.bottom) {
+              ctx.strokeStyle = 'rgba(160,160,160,.6)';
+              ctx.setLineDash([4, 3]);
+              ctx.beginPath();
+              ctx.moveTo(a.left, y0);
+              ctx.lineTo(a.right, y0);
+              ctx.stroke();
+            }
+            const line = (x, color, text, row = 0) => {
+              const px = scales.x.getPixelForValue(x);
+              if (px < a.left || px > a.right) return;
+              ctx.strokeStyle = color;
+              ctx.setLineDash([6, 4]);
+              ctx.beginPath();
+              ctx.moveTo(px, a.top);
+              ctx.lineTo(px, a.bottom);
+              ctx.stroke();
+              ctx.setLineDash([]);
+              ctx.font = '600 11px system-ui, sans-serif';
+              ctx.fillStyle = color;
+              ctx.fillText(text, Math.min(px + 4, a.right - 110), a.top + 12 + row * 16);
+            };
+            line(r.spot, '#58a6ff', `Now ${num0(r.spot)}`);
+            if (v.x && Math.abs(v.x - r.spot) >= 1) line(v.x, '#e3b341', `Done at ${num0(v.x)}`, 1);
+            ctx.restore();
+          },
+        };
+        chart = BT.chart(canvas, {
+          plugins: [marks],
+          type: 'line',
+          data: {
+            datasets: [
+              { label: 'Options as they are', data: pts(r.before.curve), borderColor: '#8b949e', borderWidth: 1.5, pointRadius: 0 },
+              { label: 'After the change', data: pts(v.curve), borderColor: v.lossless ? '#3fb68b' : '#f0616d', borderWidth: 2.2, pointRadius: 0 },
+            ],
+          },
+          options: {
+            parsing: true,
+            interaction: { mode: 'nearest', axis: 'x', intersect: false },
+            scales: {
+              x: { type: 'linear', min: r.xs[0], max: r.xs[r.xs.length - 1], title: { display: true, text: 'Nifty at expiry' } },
+              y: { min: -lim, max: lim, ticks: { callback: (y) => kinr(y) } },
+            },
+            plugins: { tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${inrS(c.parsed.y)}`, title: (c) => 'Nifty ' + num0(c[0].parsed.x) } } },
+          },
+        });
+      }
+      // Builder ▸ — now on a saved trade: the trade opened there with the change made at the live prices (not saved);
+      // otherwise (a row's estimated prices, or the paper series) a new unsaved position holding the options after the
+      // change: legs closed earlier at their exits, this change's closes at its fills, the new legs at theirs.
+      function toBuilderAdj(pl, v, scenario) {
+        const closes = v.fills.filter((f) => f.close);
+        const opens = v.fills.filter((f) => !f.close);
+        const note = `Adjustment (${cfg.name} › Live trade): ${pl.title}${v.hedgeK ? ` (${num0(v.hedgeK)} CE)` : ''}`;
+        if (!scenario && P.src === 'builder') {
+          close();
+          BT.emit('adjust-trade', {
+            id: P.id,
+            expiry: P.expiry,
+            note,
+            close: closes.map(({ type, strike, side, lots }) => ({ type, strike, side, lots })),
+            open: opens.map(({ type, strike, side, lots }) => ({ type, strike, side, lots })),
+          });
+          return;
+        }
+        const sb = BT.store.get('sb', {});
+        if (sb.legs?.some((l) => l.open) && !sb.tradeId && !confirm('The Builder holds a position that is not saved. Replace it with this one?')) return;
+        const leg = (l, extra) => ({ action: l.side > 0 ? 'B' : 'S', type: l.type, strike: l.strike, expiry: P.expiry, lots: l.lots, px: l.entry, ...extra });
+        const legs = P.closed.filter((c) => c.expiry == null || c.expiry === P.expiry).map((c) => leg(c, { exitPx: c.exit }));
+        for (const l of P.legs) {
+          const c = closes.find((x) => x.type === l.type && x.strike === l.strike && x.side === l.side);
+          const n = c ? Math.min(c.lots, l.lots) : 0;
+          if (n) legs.push(leg({ ...l, lots: n }, { exitPx: c.px }));
+          if (l.lots - n > 0) legs.push(leg({ ...l, lots: l.lots - n }));
+        }
+        for (const o of opens) legs.push(leg({ ...o, entry: o.px }));
+        close();
+        BT.emit('open-builder', {
+          src: 'live',
+          expiry: P.expiry,
+          note: scenario ? `${note} · plan: Nifty ${num0(v.x)} ${scenario.days ? `in ${scenario.days} days` : 'today'} (estimated prices)` : note,
+          legs,
+        });
+      }
+      ov.addEventListener('change', (e) => {
+        if (e.target.dataset.x !== 'sort') return;
+        sortKey = e.target.value;
+        BT.store.set('mclAdjSort', sortKey);
+        if (sel?.k === 'pick') sel = { k: 'pick', i: 0 };
+        const box = ov.querySelector('.modal');
+        const top = box.scrollTop;
+        draw();
+        box.scrollTop = top;
+      });
+      ov.addEventListener('click', (e) => {
+        if (e.target === ov || e.target.closest('[data-x="close"]')) return close();
+        if (e.target.closest('[data-x="again"]')) return find();
+        if (!r) return;
+        const sbp = e.target.closest('[data-sbp]');
+        if (sbp) {
+          const v = nowList()[Number(sbp.dataset.sbp)];
+          return v && toBuilderAdj({ title: v.title }, v, null);
+        }
+        const pr = e.target.closest('tr[data-pi]');
+        if (pr) {
+          sel = { k: 'pick', i: Number(pr.dataset.pi) };
+          const box = ov.querySelector('.modal');
+          const top = box.scrollTop;
+          draw();
+          box.scrollTop = top;
+          return;
+        }
+        const sb = e.target.closest('[data-sb]');
+        if (sb) {
+          const pl = r.plans[Number(sb.dataset.p)];
+          if (sb.dataset.sb === 'now') return toBuilderAdj(pl, pl.now, null);
+          const pk = picked();
+          return pk && toBuilderAdj(pl, pk.v, pk.scenario);
+        }
+        let next = null;
+        const nowB = e.target.closest('[data-now]');
+        const tr = e.target.closest('tr[data-w]');
+        const spark = e.target.closest('[data-pick]');
+        const card = e.target.closest('[data-plan]');
+        if (nowB) next = { p: Number(nowB.dataset.now), w: 'now' };
+        else if (tr && r.plans[Number(tr.dataset.p)].when[Number(tr.dataset.w)]?.trigger) next = { p: Number(tr.dataset.p), w: Number(tr.dataset.w) };
+        else if (spark || card) {
+          const pi = Number((spark || card).dataset.pick ?? (spark || card).dataset.plan);
+          if (sel?.p === pi) return;
+          const pl = r.plans[pi];
+          next = { p: pi, w: pl.now?.lossless ? 'now' : firstWhen(pl) };
+        }
+        if (!next) return;
+        sel = next;
+        const box = ov.querySelector('.modal');
+        const top = box.scrollTop;
+        draw();
+        box.scrollTop = top;
+      });
+      find();
+    }
 
     // ---------- Suggestion: the best strikes for a new collar (or Modified covered call) ----------
     // <api>/live/best: every trade of the shape on the expiry's live chain, scored at expiry on Nifty moves of 1 … 8 %

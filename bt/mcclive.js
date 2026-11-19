@@ -1322,7 +1322,492 @@ function bestCollars(M, { lot, lots = 1, beesQty = 0, beesPx, expiry, slip = 0.0
   };
 }
 
+// ---------- Adjustments: when closing or covering legs leaves the options loss-less ----------
+// Options only (the NIFTYBEES left out). "Loss-less": the options' P&L at expiry (the legs closed before at the P&L
+// they booked, the legs left at intrinsic value, charges, slippage and STT on bought legs in the money) is ≥ 0 at every
+// Nifty level, rises and falls. Example: a sold call in profit, closed, leaves the put spread; when the call's profit
+// covers what the put spread cost, nothing can lose any more. Each plan (close the sold call, cover it with a bought
+// call, book the put spread and cover the call, …) is checked now at the live prices, and on the days ahead at every
+// Nifty level (Black-76 at each strike's volatility now): where and when doing it makes the options loss-less.
+const ADJ_DAYS = [0, 3, 7, 10, 14, 21, 28, 35];
+const ADJ_SPAN = 12; // ± % of Nifty searched on each day
+const ADJ_STEP = 0.25; // % steps of that search (the edges are then refined)
+const ADJ_HEDGE = [50, 100, 150, 200, 250, 300, 400, 500]; // points above the sold call a covering call is bought at
+
+// The options at expiry with Nifty at x: p = { lot, base (booked P&L, ₹), legs: [{ type, strike, side, lots, entry }] }.
+function adjPayoff(p, exStt) {
+  const n = p.legs.length;
+  const call = p.legs.map((l) => l.type === 'CE');
+  const K = p.legs.map((l) => l.strike);
+  const q = p.legs.map((l) => l.side * l.lots * p.lot);
+  const b = p.legs.map((l) => (l.side > 0 ? l.lots * p.lot : 0));
+  const base = p.base - sum(p.legs, (l) => l.side * l.entry * l.lots * p.lot);
+  return (x) => {
+    let v = base;
+    let stt = 0;
+    for (let i = 0; i < n; i++) {
+      const iv = call[i] ? (x > K[i] ? x - K[i] : 0) : x < K[i] ? K[i] - x : 0;
+      v += q[i] * iv;
+      stt += b[i] * iv;
+    }
+    return v - stt * exStt;
+  };
+}
+// The lowest the options can end at: { min, at } (at: the Nifty level), min −Infinity when more calls are sold than
+// bought (a loss without limit as Nifty rises). The payoff is straight between strikes, so it is checked at Nifty 0,
+// at every strike, and 30 % above the top strike: with as many calls bought as sold, the STT on in-the-money bought
+// calls still grows with Nifty, so the payoff can drift down there.
+function adjMin(p, exStt) {
+  const up = sum(
+    p.legs.filter((l) => l.type === 'CE'),
+    (l) => l.side * l.lots,
+  );
+  if (up < 0) return { min: -Infinity, at: Infinity };
+  const f = adjPayoff(p, exStt);
+  let min = Infinity;
+  let at = 0;
+  const ks = p.legs.map((l) => l.strike);
+  for (const x of [0, ...ks, ks.length ? Math.max(...ks) * 1.3 : 0]) {
+    const v = f(x);
+    if (v < min) [min, at] = [v, x];
+  }
+  return { min, at };
+}
+// Option prices on day d (calendar days from now) with Nifty at x: Black-76 at each strike's volatility now (sticky
+// strike) on the chain's forward moved with Nifty, plus the strike's calibration (LTP − model now) fading to the expiry;
+// so on day 0 at Nifty now every strike is worth its LTP. null for a strike with no price now.
+function adjPricer(M) {
+  const cal = new Map();
+  const calOf = (t, K) => {
+    const k = t + K;
+    if (!cal.has(k)) cal.set(k, legCal({ type: t, strike: K }, M));
+    return cal.get(k);
+  };
+  return (d, x) => {
+    const T = Math.max(0, M.T - d / 365);
+    const F = (M.F * x) / M.spot;
+    const df = Math.exp(-RATE * T);
+    const fade = M.T > 0 ? T / M.T : 0;
+    return (t, K) => {
+      if (!(M.px(t, K) > 0)) return null;
+      if (!(T > 0)) return intr({ type: t, strike: K }, x);
+      return Math.max(0.05, b76(F, K, T, M.iv(t, K), t === 'CE', df) + calOf(t, K) * fade);
+    };
+  };
+}
+// A plan done at prices px: { close: [leg ids], open: [{ type, strike, side, lots }] }. Every order at the price ±
+// slip with its charges. Returns the options after it (adjPayoff's p), what the closed legs made (closed, after their
+// charges), the cash it takes / brings, its fills; null when a price is missing.
+function adjApply(pos, plan, px, slip, day) {
+  const L = pos.lot;
+  const fills = [];
+  const legs = [];
+  let closed = 0;
+  let charges = 0;
+  let cash = 0;
+  let openCh = 0;
+  const fill = (buy, p, lots) => {
+    const f = buy ? p * (1 + slip) : p * (1 - slip);
+    const c = Costs.orders({ [buy ? 'buy' : 'sell']: f * lots * L, orders: 1, day });
+    charges += c;
+    cash += (buy ? -f : f) * lots * L - c;
+    return { f, c };
+  };
+  for (const l of pos.legs) {
+    if (!plan.close.includes(l.id)) {
+      legs.push(l);
+      continue;
+    }
+    const p = px(l.type, l.strike);
+    if (p == null) return null;
+    const { f, c } = fill(l.side < 0, p, l.lots);
+    closed += l.side * (f - l.entry) * l.lots * L - c;
+    fills.push({ type: l.type, strike: l.strike, side: l.side, lots: l.lots, entry: l.entry, price: p, px: f, close: true });
+  }
+  for (const o of plan.open) {
+    const p = px(o.type, o.strike);
+    if (!(p > 0)) return null;
+    const { f, c } = fill(o.side > 0, p, o.lots);
+    openCh += c;
+    legs.push({ ...o, entry: f });
+    fills.push({ ...o, price: p, px: f });
+  }
+  const booked = pos.realised.CE + pos.realised.PE - (pos.costs?.CE || 0) - (pos.costs?.PE || 0);
+  // booked: before, plus what the closed legs made, less the new legs' charges (their premium is in their entry)
+  return { lot: L, base: booked + closed - openCh, legs, closed, charges, cash, fills };
+}
+// The plans checked on this position (options only). group: 'call' | 'put' | 'both'. hedge: a covering call bought
+// above the sold call, its strike picked (ADJ_HEDGE) where it locks in the most.
+function adjPlans(pos) {
+  const sc = pos.legs.filter((l) => l.type === 'CE' && l.side < 0);
+  const bc = pos.legs.filter((l) => l.type === 'CE' && l.side > 0);
+  const puts = pos.legs.filter((l) => l.type === 'PE');
+  const sp = puts.filter((l) => l.side < 0);
+  const bp = puts.filter((l) => l.side > 0);
+  const ids = (ls) => ls.map((l) => l.id);
+  const txt = (ls) => ls.map((l) => `${l.strike}`).join(' / ');
+  const naked = sum(sc, (l) => l.lots) - sum(bc, (l) => l.lots);
+  const top = Math.max(...sc.map((l) => l.strike), -Infinity);
+  const plans = [];
+  if (sc.length) {
+    plans.push({
+      id: 'closeCall',
+      group: 'call',
+      title: `Close the sold ${txt(sc)} CE`,
+      why: `Buy the sold call back. What it made must cover the rest: ${puts.length ? 'the put spread’s cost if Nifty ends above it' : 'the other legs’ worst case'}.`,
+      close: ids(sc),
+      open: [],
+    });
+    if (naked > 0)
+      plans.push({
+        id: 'coverCall',
+        group: 'call',
+        title: `Cover the sold ${txt(sc)} CE: buy a CE above it`,
+        why: 'Keep the sold call and cap it with a bought call above it (a call spread): its credit, less the bought call and the gap between the strikes, must cover the rest.',
+        close: [],
+        hedge: { lots: naked, from: top },
+      });
+  }
+  if (sp.length && sc.length)
+    plans.push({
+      id: 'closeCallSoldPut',
+      group: 'both',
+      title: `Close the sold ${txt(sc)} CE and buy back the sold ${txt(sp)} PE`,
+      why: 'Only the bought put is left: no loss above it if the two buy-backs made more than it cost, and it gains on every fall.',
+      close: ids([...sc, ...sp]),
+      open: [],
+    });
+  if (puts.length && naked > 0)
+    plans.push({
+      id: 'bookPutsCover',
+      group: 'put',
+      title: `Book the put spread (${txt(puts)}) and cover the sold call with a CE above it`,
+      why: 'Take the put spread’s profit after a fall; the sold call alone would lose without limit on a rise, so it is capped with a bought call above it.',
+      close: ids(puts),
+      hedge: { lots: naked, from: top },
+    });
+  if (pos.legs.length)
+    plans.push({
+      id: 'closeAll',
+      group: 'both',
+      title: 'Close every option leg',
+      why: 'Nothing is left open: loss-less once the options as a whole are in profit.',
+      close: ids(pos.legs),
+      open: [],
+    });
+  // changes that can never be loss-less on their own (shown with why)
+  const never = [];
+  if (puts.length && naked > 0)
+    never.push({ title: `Book the put spread (${txt(puts)}) and keep the sold call`, why: 'The sold call left alone loses without limit if Nifty rises (options only), whatever the put spread made.' });
+  if (sp.length && bp.length && naked > 0)
+    never.push({ title: `Buy back the sold ${txt(sp)} PE only`, why: 'More downside protection, but the sold call still loses without limit on a rise.' });
+  return { plans, never };
+}
+// A plan at prices px: its best version (a hedged plan: the covering call that locks in the most, loss-less ones first).
+// { lossless, min, at, after (adjApply), hedgeK } or null when it cannot be priced.
+function adjBest(pos, plan, px, slip, day, exStt) {
+  const tries = plan.hedge
+    ? ADJ_HEDGE.map((h) => ({ K: plan.hedge.from + h, open: [{ type: 'CE', strike: plan.hedge.from + h, side: 1, lots: plan.hedge.lots }] }))
+    : [{ K: null, open: plan.open || [] }];
+  let best = null;
+  for (const t of tries) {
+    const after = adjApply(pos, { close: plan.close, open: t.open }, px, slip, day);
+    if (!after) continue;
+    const m = adjMin(after, exStt);
+    if (!best || m.min > best.min) best = { lossless: m.min >= 0, min: m.min, at: m.at, after, hedgeK: t.K };
+  }
+  return best;
+}
+// ---------- loss-free now: adjustments built on each leg's P&L at the live prices ----------
+const NOW_MOVES = [1, 2, 3, 4, 5, 6, 7, 8]; // % either way for the up / down averages
+const NOW_WIDE = 600; // new strikes within this many points of the ATM strike
+const NOW_KEEP = 12; // picks kept per ranking (diverse), the page sorts them
+// Each open leg's P&L at its LTP, the legs closed before (booked), per structure (calls / puts) and in all.
+function legsNow(pos, M) {
+  const L = pos.lot;
+  const legs = pos.legs.map((l) => {
+    const ltp = M.px(l.type, l.strike);
+    return { id: l.id, type: l.type, strike: l.strike, side: l.side, lots: l.lots, entry: l.entry, ltp, pnl: ltp == null ? null : l.side * (ltp - l.entry) * l.lots * L };
+  });
+  const booked = { CE: pos.realised.CE - (pos.costs?.CE || 0), PE: pos.realised.PE - (pos.costs?.PE || 0) };
+  const of = (t) => booked[t] + sum(legs.filter((l) => l.type === t), (l) => l.pnl || 0);
+  return { legs, booked, CE: of('CE'), PE: of('PE'), total: of('CE') + of('PE') };
+}
+// Every adjustment made now at the live prices (LTP ± slip, charges in): close any set of the open legs (none to all),
+// with nothing new, one new leg (buy / sell a CE / PE within NOW_WIDE of the ATM strike), or two (a call spread, a put
+// spread, a bought call + a bought put, a bought call + a sold put). Kept: those after which the options cannot lose at
+// expiry anywhere (adjMin ≥ 0). Scored on the payoff at expiry: the least it locks in, the averages of Nifty up / down
+// 1 … 8 %, Nifty staying, and the average over ±8 %.
+function lossFreeNow(pos, M, { slip = 0.005, day = null, exStt = Costs.rates(day).exStt } = {}) {
+  const S = M.spot;
+  const A = atmOf(S);
+  const L = pos.lot;
+  const legs = pos.legs;
+  const n = Math.min(legs.length, 6);
+  const sets = [];
+  for (let mask = 0; mask < 1 << n; mask++) sets.push(legs.filter((l, i) => i < n && mask & (1 << i)).map((l) => l.id));
+  const ks = (t) => {
+    const out = [];
+    for (let K = A - NOW_WIDE; K <= A + NOW_WIDE; K += STEP) if (!M.notEnterable(t, K)) out.push(K);
+    return out;
+  };
+  const CE = ks('CE');
+  const PE = ks('PE');
+  const leg = (type, strike, side) => ({ type, strike, side, lots: 1 });
+  const adds = [[]];
+  for (const K of CE) adds.push([leg('CE', K, 1)], [leg('CE', K, -1)]);
+  for (const K of PE) adds.push([leg('PE', K, 1)], [leg('PE', K, -1)]);
+  for (const a of CE) for (const b of CE) if (a !== b) adds.push([leg('CE', a, 1), leg('CE', b, -1)]);
+  for (const a of PE) for (const b of PE) if (a !== b) adds.push([leg('PE', a, 1), leg('PE', b, -1)]);
+  for (const a of CE) for (const b of PE) adds.push([leg('CE', a, 1), leg('PE', b, 1)], [leg('CE', a, 1), leg('PE', b, -1)]);
+  // the new legs' lots: as many as the most lots of a leg now (one lot for a one-lot collar)
+  const lots = Math.max(1, ...legs.map((l) => l.lots));
+  const px = (t, K) => M.px(t, K);
+  const mv = (m) => S * (1 + m / 100);
+  const found = [];
+  let tried = 0;
+  for (const close of sets)
+    for (const add of adds) {
+      if (!close.length && !add.length) continue;
+      const open = add.map((o) => ({ ...o, lots }));
+      // a new leg at a strike the trade holds is no new idea: the opposite side is a close (listed by the closes), the
+      // same side re-buys a closed leg or adds lots
+      if (open.some((o) => legs.some((l) => l.type === o.type && l.strike === o.strike))) continue;
+      tried++;
+      const after = adjApply(pos, { close, open }, px, slip, day);
+      if (!after) continue;
+      const m = adjMin(after, exStt);
+      if (!Number.isFinite(m.min)) continue;
+      found.push({ close, open, after, min: m.min, at: m.at });
+    }
+  const score = (x) => {
+    const f = adjPayoff(x.after, exStt);
+    const up = sum(NOW_MOVES, (m) => f(mv(m))) / NOW_MOVES.length;
+    const down = sum(NOW_MOVES, (m) => f(mv(-m))) / NOW_MOVES.length;
+    let avg = 0;
+    for (let i = 0; i <= 32; i++) avg += f(mv(-8 + i / 2));
+    return { up, down, stays: f(S), avg: avg / 33, up5: f(mv(5)), down5: f(mv(-5)) };
+  };
+  const free = found.filter((x) => x.min >= 0);
+  for (const x of free) x.s = score(x);
+  const orders = (x) => x.close.length + x.open.length;
+  // what each pick is (the same closes + the same kinds of new legs): at most 2 of each per ranking
+  const sig = (x) => `${x.close.join(',')}|${x.open.map((o) => (o.side > 0 ? 'B' : 'S') + o.type).join(',')}`;
+  const RANKS = {
+    avg: (x) => x.s.avg,
+    min: (x) => x.min,
+    up: (x) => x.s.up,
+    down: (x) => x.s.down,
+    stays: (x) => x.s.stays,
+    few: (x) => -orders(x) * 1e9 + x.s.avg,
+  };
+  const keep = new Set();
+  for (const f of Object.values(RANKS)) {
+    const per = new Map();
+    let k = 0;
+    for (const x of [...free].sort((a, b) => f(b) - f(a))) {
+      if (k >= NOW_KEEP) break;
+      const g = sig(x);
+      if ((per.get(g) || 0) >= 2) continue;
+      per.set(g, (per.get(g) || 0) + 1);
+      keep.add(x);
+      k++;
+    }
+  }
+  // none loss-free: the ones that lose the least at worst (bounded ones only), 2 per kind
+  const closest = [];
+  if (!free.length) {
+    const per = new Map();
+    for (const x of [...found].sort((a, b) => b.min - a.min)) {
+      if (closest.length >= 8) break;
+      const g = sig(x);
+      if ((per.get(g) || 0) >= 2) continue;
+      per.set(g, (per.get(g) || 0) + 1);
+      x.s = score(x);
+      closest.push(x);
+    }
+  }
+  const legTxt = (l) => `${l.side > 0 ? 'bought' : 'sold'} ${l.strike} ${l.type}`;
+  const title = (x) => {
+    const closed = legs.filter((l) => x.close.includes(l.id));
+    const parts = [];
+    const opens = [...x.open];
+    for (const l of closed) {
+      // a leg closed and one of its type and side opened: a roll
+      const i = opens.findIndex((o) => o.type === l.type && o.side === l.side);
+      if (i >= 0) {
+        parts.push(`roll the ${legTxt(l)} → ${opens[i].strike}`);
+        opens.splice(i, 1);
+      } else parts.push(`close the ${legTxt(l)}`);
+    }
+    for (const o of opens) parts.push(`${o.side > 0 ? 'buy' : 'sell'} ${o.lots > 1 ? `${o.lots} × ` : ''}${o.strike} ${o.type}`);
+    const t = parts.join(', ');
+    return t.charAt(0).toUpperCase() + t.slice(1);
+  };
+  const view = (x) => ({
+    id: sig(x) + '|' + x.open.map((o) => o.strike).join(','),
+    title: title(x),
+    lossless: x.min >= 0,
+    min: x.min,
+    minAt: x.at,
+    orders: orders(x),
+    closed: x.after.closed,
+    charges: x.after.charges,
+    cash: x.after.cash,
+    fills: x.after.fills.map((f) => ({ ...f, pnl: f.close ? f.side * (f.px - f.entry) * f.lots * L : null })),
+    legs: x.after.legs.map((l) => ({ type: l.type, strike: l.strike, side: l.side, lots: l.lots, entry: l.entry })),
+    ...x.s,
+    after: x.after,
+  });
+  return { tried, free: free.length, picks: [...keep].map(view), closest: closest.map(view) };
+}
+// pos, M (the live market) as the Live trade tab has them. Returns the options as they are (before), and per plan: now
+// (at the live prices), what the closed legs must make (need; the sold call's buy-back price for a single leg), when it
+// works (per day ahead: the Nifty ranges and the level nearest to Nifty now), and if Nifty stays, from which day.
+function adjustments(pos, M, { slip = 0.005, day = null } = {}) {
+  const S = M.spot;
+  const exStt = Costs.rates(day).exStt;
+  const pricer = adjPricer(M);
+  const now = pricer(0, S);
+  const booked = pos.realised.CE + pos.realised.PE - (pos.costs?.CE || 0) - (pos.costs?.PE || 0);
+  const xs = [];
+  for (let i = 0; i <= 60; i++) xs.push(Math.round(S * (0.85 + (0.3 * i) / 60)));
+  const curveOf = (p) => {
+    const f = adjPayoff(p, exStt);
+    return xs.map((x) => Math.round(f(x)));
+  };
+  const beforeP = { lot: pos.lot, base: booked, legs: pos.legs };
+  const bm = adjMin(beforeP, exStt);
+  const optNow = booked + sum(pos.legs, (l) => l.side * ((M.px(l.type, l.strike) ?? l.entry) - l.entry) * l.lots * pos.lot);
+  const view = (r, extra = {}) =>
+    r && {
+      lossless: r.lossless,
+      min: Number.isFinite(r.min) ? r.min : null,
+      minAt: Number.isFinite(r.at) ? r.at : null,
+      hedgeK: r.hedgeK,
+      closed: r.after.closed,
+      charges: r.after.charges,
+      cash: r.after.cash,
+      fills: r.after.fills,
+      legs: r.after.legs.map((l) => ({ type: l.type, strike: l.strike, side: l.side, lots: l.lots, entry: l.entry })),
+      curve: curveOf(r.after),
+      ...extra,
+    };
+  const calLeft = M.T * 365 - 0.5; // calendar days to the expiry's close
+  const days = ADJ_DAYS.filter((d) => d === 0 || d < calLeft);
+  const dateOf = (d) => (day ? new Date(Date.parse(day + 'T00:00:00Z') + d * 86400_000).toISOString().slice(0, 10) : null);
+  const { plans, never } = adjPlans(pos);
+  const out = [];
+  for (const plan of plans) {
+    const ok = (d, m) => adjBest(pos, plan, pricer(d, S * (1 + m / 100)), slip, day, exStt)?.lossless || false;
+    const r0 = adjBest(pos, plan, now, slip, day, exStt);
+    // what the closed legs must make, the legs left kept from their entries (no new legs only)
+    let need = null;
+    if (!plan.hedge) {
+      const rest = { lot: pos.lot, base: booked, legs: pos.legs.filter((l) => !plan.close.includes(l.id)) };
+      const m = adjMin(rest, exStt).min;
+      need = { profit: Number.isFinite(m) ? Math.max(0, -m) : null, restMin: Number.isFinite(m) ? m : null };
+      // one leg closed: the price to buy it back at (or sell it at) for that profit, slippage and charges in
+      const cl = pos.legs.filter((l) => plan.close.includes(l.id));
+      if (cl.length === 1 && need.profit != null) {
+        const l = cl[0];
+        const made = (p) => adjApply(pos, plan, () => p, slip, day).closed;
+        // what the leg makes falls as its price rises when it was sold, and rises when it was bought
+        let lo = 0.05;
+        let hi = Math.max(l.entry * 5, 1000);
+        const good = (p) => made(p) >= need.profit;
+        if (l.side < 0 ? good(lo) : good(hi)) {
+          for (let i = 0; i < 50; i++) {
+            const mid = (lo + hi) / 2;
+            if (good(mid) === l.side < 0) lo = mid;
+            else hi = mid;
+          }
+          need.price = (lo + hi) / 2;
+        } else need.price = null; // not even at ₹0.05
+        need.leg = { type: l.type, strike: l.strike, side: l.side, entry: l.entry, ltp: M.px(l.type, l.strike) };
+      }
+    }
+    // per day: the Nifty moves (−ADJ_SPAN … +ADJ_SPAN %) at which doing it makes the options loss-less, as ranges
+    const when = [];
+    for (const d of days) {
+      const ms = [];
+      for (let m = -ADJ_SPAN; m <= ADJ_SPAN + 1e-9; m += ADJ_STEP) ms.push(Math.round(m * 100) / 100);
+      const pass = ms.map((m) => ok(d, m));
+      const edge = (a, b) => {
+        // a passes, b fails: the move between them where it stops working
+        for (let i = 0; i < 14; i++) {
+          const mid = (a + b) / 2;
+          if (ok(d, mid)) a = mid;
+          else b = mid;
+        }
+        return a;
+      };
+      const ranges = [];
+      for (let i = 0; i < ms.length; i++) {
+        if (!pass[i] || (i && pass[i - 1])) continue;
+        let j = i;
+        while (j + 1 < ms.length && pass[j + 1]) j++;
+        ranges.push({ from: i === 0 ? null : edge(ms[i], ms[i - 1]), to: j === ms.length - 1 ? null : edge(ms[j], ms[j + 1]) });
+        i = j;
+      }
+      // the level nearest to Nifty now where it works
+      let trig = null;
+      for (const g of ranges) {
+        const lo = g.from ?? -ADJ_SPAN;
+        const hi = g.to ?? ADJ_SPAN;
+        const m = lo <= 0 && hi >= 0 ? 0 : lo > 0 ? lo : hi;
+        if (trig == null || Math.abs(m) < Math.abs(trig)) trig = m;
+      }
+      const at = trig == null ? null : view(adjBest(pos, plan, pricer(d, S * (1 + trig / 100)), slip, day, exStt), { m: trig, x: S * (1 + trig / 100), days: d });
+      when.push({
+        days: d,
+        date: dateOf(d),
+        ranges: ranges.map((g) => ({ from: g.from == null ? null : { m: g.from, x: S * (1 + g.from / 100) }, to: g.to == null ? null : { m: g.to, x: S * (1 + g.to / 100) } })),
+        trigger: at,
+      });
+    }
+    // Nifty where it is: the first day it works on time decay alone
+    let stays = null;
+    for (let d = 0; d < calLeft; d++)
+      if (ok(d, 0)) {
+        stays = { days: d, date: dateOf(d) };
+        break;
+      }
+    out.push({
+      id: plan.id,
+      group: plan.group,
+      title: plan.title,
+      why: plan.why,
+      hedge: Boolean(plan.hedge),
+      need,
+      now: view(r0, { m: 0, x: S, days: 0 }),
+      when,
+      stays,
+      possible: Boolean(r0?.lossless) || when.some((w) => w.ranges.length),
+    });
+  }
+  // loss-free now: built on each leg's P&L at the live prices
+  const ln = lossFreeNow(pos, M, { slip, day, exStt });
+  const pick = ({ after, ...v }) => ({ ...v, curve: curveOf(after) });
+  return {
+    spot: S,
+    expiry: pos.expiry,
+    xs,
+    days,
+    legsNow: legsNow(pos, M),
+    lossFree: { tried: ln.tried, free: ln.free, picks: ln.picks.map(pick), closest: ln.closest.map(pick) },
+    before: { min: Number.isFinite(bm.min) ? bm.min : null, minAt: Number.isFinite(bm.at) ? bm.at : null, unboundedUp: !Number.isFinite(bm.min), curve: curveOf(beforeP), optNow },
+    plans: out,
+    never,
+  };
+}
+
 module.exports = {
+  adjustments,
+  lossFreeNow,
+  legsNow,
+  adjPayoff,
+  adjMin,
   bestCollars,
   BEST_MOVES,
   MOVES,

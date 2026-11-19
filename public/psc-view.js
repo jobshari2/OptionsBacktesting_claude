@@ -219,6 +219,7 @@
     shapeText: 'sell 1 CE ATM + 100, buy 1 PE ATM − 100, sell 1 PE 100 under it',
     shapeShort: 'sold call + put spread',
     flag: { kind: 'psc' },
+    adjust: true, // Legs and payoff › Adjustments (loss-less changes)
     planBody: () => ({ params: params && { lots: params.lots, ce: params.ce, pe: params.pe, budget: params.budget } }),
   });
   body().addEventListener('click', (e) => {

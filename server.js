@@ -1246,6 +1246,18 @@ async function handleLive(req, res, url, p, L) {
       ...(url.searchParams.get('rows') === '1' ? { rows: mccLive.studyRows(study) } : {}),
     });
   }
+  // Adjustments (Legs and payoff › Adjustments), options only: closing the sold call, covering it, booking the put
+  // spread …: what each must make for the options to have no loss at expiry anywhere, and when (Nifty level, days
+  // ahead) that is reached (bt/mcclive.js adjustments).
+  if (p === '/live/adjust' && req.method === 'POST') {
+    if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the adjustments are priced on the live chain`);
+    const b = JSON.parse((await readBody(req, 10_000)).toString('utf8') || '{}');
+    const st = await liveState(L, b.key);
+    if (!st.pos || st.closed) throw new Error('No open trade to adjust');
+    const slip = (L.defaults.costs.slipPct || 0.5) / 100;
+    const out = mccLive.adjustments(st.pos, st.M, { slip, day: istDate() });
+    return sendJson(res, 200, { key: st.key, ...out, lot: st.pos.lot, daysLeft: st.market.daysLeft, atmIv: st.M.atmIv, slipPct: slip * 100, at: Date.now() });
+  }
   if (p === '/live/suggest' && req.method === 'POST') {
     if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the suggestions are priced on the live chain`);
     const b = JSON.parse((await readBody(req, 10_000)).toString('utf8') || '{}');

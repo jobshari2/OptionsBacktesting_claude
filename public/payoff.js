@@ -237,10 +237,13 @@
     },
   };
   // opts: { expiryLabel, horizonLabel (replaces "At expiry" when the main curve is on a chosen date), nowLabel,
-  //         levels: { resistance, support } (nearest S/R, optional) }
+  //         levels: { resistance, support } (nearest S/R, optional),
+  //         closed (no open legs but the position was traded: the main curve is the final, realised P&L — flat — and
+  //         the extra curves still show, e.g. NIFTYBEES still held after every option was closed) }
   function draw(canvas, A, opts = {}) {
     const pts = (ys) => A.xs.map((x, i) => ({ x, y: ys[i] }));
-    const has = A.legs.length;
+    const open = A.legs.length > 0;
+    const has = open || !!opts.closed;
     const ds = has
       ? [
           {
@@ -251,17 +254,18 @@
             pointRadius: 0,
             fill: { target: 'origin', above: 'rgba(63,182,139,.18)', below: 'rgba(240,113,107,.18)' },
           },
-          {
-            label: `Now (T+0${opts.nowLabel ? `, ${opts.nowLabel}` : ''})${A.ivShift ? ` IV ${A.ivShift > 0 ? '+' : ''}${A.ivShift}` : ''}`,
-            data: pts(A.t0),
-            borderColor: '#58a6ff',
-            borderWidth: 1.4,
-            pointRadius: 0,
-            borderDash: [4, 3],
-          },
         ]
       : [];
-    if (has && A.tN)
+    if (open)
+      ds.push({
+        label: `Now (T+0${opts.nowLabel ? `, ${opts.nowLabel}` : ''})${A.ivShift ? ` IV ${A.ivShift > 0 ? '+' : ''}${A.ivShift}` : ''}`,
+        data: pts(A.t0),
+        borderColor: '#58a6ff',
+        borderWidth: 1.4,
+        pointRadius: 0,
+        borderDash: [4, 3],
+      });
+    if (open && A.tN)
       ds.push({ label: `+${A.daysAhead} day${A.daysAhead > 1 ? 's' : ''}`, data: pts(A.tN), borderColor: '#d6af4c', borderWidth: 1.4, pointRadius: 0 });
     // extra curves on the same x grid (the Builder's NIFTYBEES held against the options): { label, ys, color, dash,
     // width, noPct (no "% of capital" in the tooltip: that capital is the options') }
@@ -270,8 +274,12 @@
         ds.push({ label: e.label, data: pts(e.ys), borderColor: e.color, borderWidth: e.width || 1.6, borderDash: e.dash || [], pointRadius: 0, noPct: !!e.noPct });
     const marks = [
       { x: A.spot, label: 'spot', color: '#d6af4c' },
-      { x: A.spot - A.sd, label: '−1σ', color: '#8b949e', dash: [2, 3] },
-      { x: A.spot + A.sd, label: '+1σ', color: '#8b949e', dash: [2, 3] },
+      ...(open
+        ? [
+            { x: A.spot - A.sd, label: '−1σ', color: '#8b949e', dash: [2, 3] },
+            { x: A.spot + A.sd, label: '+1σ', color: '#8b949e', dash: [2, 3] },
+          ]
+        : []),
       ...A.be.map((b) => ({ x: b, label: 'BE', color: '#b392f0', dash: [3, 3], row: 1 })),
     ];
     const lv = opts.levels;

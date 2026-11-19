@@ -281,6 +281,13 @@ tr.mcl-sug-detail:hover > td { background: color-mix(in srgb, #f0616d 6%, transp
 .mcl-enter-btn #mclEnterBtn:hover:not(:disabled) { filter: brightness(1.1); }
 /* Live trade › Rules from the backtest study › Compare (popup) */
 .mcl-cmp .modal { width: min(1250px, 100%); }
+/* Live trade › Legs and payoff › Adjustments (popup) */
+.mcl-adj .modal { width: min(1400px, 100%); }
+.mcl-adj svg { color: var(--muted, #8b949e); }
+.mcl-adj-plan { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 0 0 10px; }
+.mcl-adj-plan.on { border-color: var(--accent, #58a6ff); }
+.mcl-adj-plan .tbl-wrap { margin-top: 8px; }
+.mcl-adj tr.mcl-sub td { border-top: 1px solid var(--line); }
 .mcl-cmp-cols { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 16px; align-items: start; }
 .mcl-cmp-now { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
 .mcl-cmp-now > div { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }

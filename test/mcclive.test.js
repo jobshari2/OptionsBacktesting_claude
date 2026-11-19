@@ -843,3 +843,100 @@ test('best Modified covered calls: equal peaks (options at the sold calls = at t
   assert.equal(all.peaked, all.tried);
   assert.equal(all.rules, null);
 });
+
+// ---------- Adjustments: when closing / covering legs makes the options loss-less (options only) ----------
+const adjPos = () => {
+  const T0 = 40 / 365;
+  const e = (k, c) => Math.round(bsm(25000, k, T0, 0.14, c) * 100) / 100;
+  return {
+    expiry: '2026-12-29',
+    lot: 65,
+    realised: { CE: 0, PE: 0 },
+    costs: { CE: 0, PE: 0 },
+    legs: [
+      { id: 1, type: 'CE', strike: 25100, side: -1, lots: 1, entry: e(25100, true) },
+      { id: 2, type: 'PE', strike: 24900, side: 1, lots: 1, entry: e(24900, false) },
+      { id: 3, type: 'PE', strike: 24800, side: -1, lots: 1, entry: e(24800, false) },
+    ],
+  };
+};
+
+test('adjustments: closing the sold call needs a profit equal to the put spread’s cost; its buy-back price', () => {
+  const pos = adjPos();
+  const T = 38 / 365;
+  const M = L.market(chainAt(25000, T), T);
+  const r = L.adjustments(pos, M, { day: '2026-11-19' });
+  assert.equal(r.before.unboundedUp, true, 'a sold call alone loses without limit on a rise (options only)');
+  const cc = r.plans.find((p) => p.id === 'closeCall');
+  const debit = (pos.legs[1].entry - pos.legs[2].entry) * 65;
+  near(cc.need.profit, debit, 1, 'needed profit');
+  // at that buy-back price the call makes exactly what is needed, after 0.5 % slippage and charges
+  const f = cc.need.price * 1.005;
+  const made = (pos.legs[0].entry - f) * 65;
+  assert.ok(made >= debit && made - debit < 100, `made ${made} vs needed ${debit}`);
+  // Nifty flat with 38 days left: not yet; today it works only after a fall (at or below some level under Nifty now)
+  assert.equal(cc.now.lossless, false);
+  const today = cc.when[0];
+  assert.equal(today.days, 0);
+  assert.equal(today.ranges[0].from, null);
+  assert.ok(today.ranges[0].to.x < 25000);
+  // with time Nifty may sit higher; the days ahead keep working at Nifty now
+  assert.ok(cc.stays && cc.stays.days > 0);
+  for (const p of r.plans) for (const w of p.when) if (w.trigger) assert.ok(w.trigger.lossless && w.trigger.min >= 0, `${p.title} d${w.days}`);
+  assert.ok(r.never.some((n) => /keep the sold call/.test(n.title)));
+});
+
+test('adjustments: after a fall closing the sold call is loss-less now, and its payoff is never below 0', () => {
+  const pos = adjPos();
+  const T = 30 / 365;
+  const M = L.market(chainAt(24500, T), T);
+  const r = L.adjustments(pos, M, { day: '2026-11-19' });
+  const cc = r.plans.find((p) => p.id === 'closeCall');
+  assert.equal(cc.now.lossless, true);
+  assert.ok(cc.now.closed > cc.need.profit);
+  // what is left: the put spread, from its entries, plus what the call made
+  const after = { lot: 65, base: cc.now.closed, legs: cc.now.legs };
+  const f = L.adjPayoff(after, 0.00125);
+  for (let x = 20000; x <= 30000; x += 50) assert.ok(f(x) >= cc.now.min - 1e-6 && f(x) >= 0, `${f(x)} at ${x}`);
+  // covering the call instead: a bought call above it, the payoff capped on a rise
+  const cv = r.plans.find((p) => p.id === 'coverCall');
+  assert.equal(cv.now.lossless, true);
+  assert.ok(cv.now.hedgeK > 25100);
+});
+
+test('adjustments: after a rise nothing is loss-less now; closing the call works only if Nifty comes back down', () => {
+  const pos = adjPos();
+  const T = 30 / 365;
+  const M = L.market(chainAt(25600, T), T);
+  const r = L.adjustments(pos, M, { day: '2026-11-19' });
+  const cc = r.plans.find((p) => p.id === 'closeCall');
+  assert.equal(cc.now.lossless, false);
+  assert.ok(cc.now.closed < 0);
+  assert.ok(cc.when[0].trigger.x < 25600 && cc.when[0].trigger.m < 0);
+  assert.equal(cc.stays, null);
+});
+
+test('loss-free now: built on the legs’ P&L now; every pick cannot lose at expiry; none when the options are at a loss', () => {
+  const pos = adjPos();
+  const T = 30 / 365;
+  // after a fall: the sold call and the bought put in profit
+  const M = L.market(chainAt(24600, T), T);
+  const r = L.adjustments(pos, M, { day: '2026-11-19' });
+  const n = r.legsNow;
+  assert.ok(n.legs[0].pnl > 0 && n.legs[1].pnl > 0 && n.legs[2].pnl < 0);
+  near(n.total, n.legs.reduce((s, l) => s + l.pnl, 0), 1e-6);
+  const lf = r.lossFree;
+  assert.ok(lf.picks.length > 0 && lf.free >= lf.picks.length);
+  for (const v of lf.picks) {
+    assert.ok(v.min >= 0 && v.curve.every((y) => y >= -1), v.title);
+    assert.ok(v.legs.every((l) => !(l.type === 'CE' && l.side < 0) || v.legs.some((b) => b.type === 'CE' && b.side > 0)), `${v.title}: a sold call left uncovered`);
+  }
+  // the plain "close the sold call" is among them (one order, its profit booked)
+  const cc = lf.picks.find((v) => v.title === 'Close the sold 25100 CE');
+  assert.ok(cc && cc.orders === 1 && cc.fills[0].pnl > 0);
+  // after a rise the options are at a loss: nothing is loss-free now, the least-loss ones are shown instead
+  const up = L.adjustments(pos, L.market(chainAt(25500, T), T), { day: '2026-11-19' });
+  assert.ok(up.legsNow.total < 0);
+  assert.equal(up.lossFree.picks.length, 0);
+  assert.ok(up.lossFree.closest.length > 0 && up.lossFree.closest.every((v) => v.min < 0));
+});
