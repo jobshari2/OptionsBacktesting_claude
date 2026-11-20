@@ -38,6 +38,8 @@ bt-data/nbo-study.json
 bt-data/nbo-compare.json
 bt-data/nbo-live.json
 bt-data/nbo-live-demo.json
+bt-data/nbo-paper.json
+bt-data/nbo-paper-demo.json
 bt-data/bpc-live-demo.json
 bt-data/pbs-backtest.json
 bt-data/pbs-study.json

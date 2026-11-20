@@ -1,8 +1,9 @@
 // Trading Ideas › NIFTYBEES + options: NIFTYBEES worth one lot (or a ₹ budget) plus any options structure the user
 // builds, legs placed in points from the ATM on every monthly series, with generic rolls (bt/nbo.js on the Covered
 // call's runner). Tabs: Strategy (the legs, presets, payoff at expiry), Backtest (shown like the Put spread collar's:
-// with and without adjustments, month by month, every adjustment, the study) and Compare (this strategy against the
-// Covered call, Put spread collar and Bull put collar on the same months, NIFTYBEES and costs). Nothing here sends orders.
+// with and without adjustments, month by month, every adjustment, the study), Compare (this strategy against the
+// Covered call, Put spread collar and Bull put collar on the same months, NIFTYBEES and costs), Paper trade and Live
+// trade, as the Put spread collar has them. Nothing here sends orders.
 (() => {
   const { $, esc, inr, inrS, kinr, pct, cls, dayLabel } = BT;
   const VIEW = 'nbo';
@@ -11,6 +12,7 @@
     ['rules', 'Strategy'],
     ['bt', 'Backtest'],
     ['cmp', 'Compare'],
+    ['paper', 'Paper trade'],
     ['live', 'Live trade'],
   ];
   const KIND = {
@@ -35,6 +37,8 @@
   let viewing = null; // a study rule opened on the Backtest tab: { id, label, B, raw } (its full backtest, not saved)
   let lastDone = '';
   let cmpDone = '';
+  let paper = null;
+  let pollT = null;
 
   const num0 = (n) => (n == null || isNaN(n) ? '—' : Math.round(n).toLocaleString('en-IN'));
   const deep = (o) => JSON.parse(JSON.stringify(o));
@@ -64,6 +68,7 @@
     params.budget = v;
     BT.store.set('nbo-params', params);
     rebudgetAll();
+    drawBees();
   }
   // Saved results at another budget: the options do not depend on it, the NIFTYBEES P&L is in proportion to the units.
   const worth = (p, budget, S0) => (budget > 0 ? budget : S0 > 0 ? p.lotSize * p.lots * S0 : null);
@@ -163,6 +168,15 @@
   }
   // Legs under their side: the call legs, then the put legs.
   const GROUP_NAME = { CE: 'Call legs', PE: 'Put legs' };
+  const groupedRows = (legs, row, n, total) =>
+    ['CE', 'PE']
+      .map((t) => {
+        const g = legs.filter((l) => l.type === t);
+        if (!g.length) return '';
+        const sub = total ? total(g) : '';
+        return `<tr class="mcc-grp"><td class="l" colspan="${sub ? n - 1 : n}">${GROUP_NAME[t]}</td>${sub}</tr>${g.map(row).join('')}`;
+      })
+      .join('');
   const monthName = (d) => new Date(d + 'T00:00:00Z').toLocaleDateString('en-IN', { month: 'short', year: 'numeric', timeZone: 'UTC' });
 
   // ---------- the screen opened ----------
@@ -192,9 +206,37 @@
     if (tab === 'rules') renderRules();
     else if (tab === 'bt') renderBacktest();
     else if (tab === 'live') live.render(body());
+    else if (tab === 'paper') renderPaper();
     else renderCompare();
+    poll();
+    drawBees();
   }
-  const saveParams = () => BT.store.set('nbo-params', params);
+  const saveParams = () => {
+    BT.store.set('nbo-params', params);
+    drawBees();
+  };
+
+  // NIFTYBEES to buy for a new trade (public/bees-need.js), under the tab bar on every tab but Live trade (as on the Put
+  // spread collar): the Strategy tab budget and lots, at Nifty and NIFTYBEES now (as Enter new trade sizes them). The Live
+  // trade tab shows its own (with no trade: large, and Enter new trade takes the same units and price to the Builder).
+  // Refreshed every 30 s.
+  let beesT = null;
+  async function drawBees() {
+    clearTimeout(beesT);
+    const el = $('nboBees');
+    if (!el || !params) return;
+    if (tab === 'live' || window.app?.state.view !== VIEW) {
+      el.innerHTML = '';
+      return;
+    }
+    await window.BeesNeed?.fill(el, {
+      budget: params.budget,
+      lots: params.lots,
+      title: `NIFTYBEES to buy for a new ${NAME}`,
+      note: params.budget > 0 ? 'set on the Strategy tab (NIFTYBEES budget)' : 'a NIFTYBEES budget on the Strategy tab changes it',
+    });
+    beesT = setTimeout(drawBees, 30_000);
+  }
   // The Live trade tab: the collars' (mcclive-view.js makeCcLive) on /api/nbo/live*: a Builder trade marked as this
   // strategy, with its NIFTYBEES, on the live chain. "Enter new trade" builds the Strategy tab's legs on the live chain.
   const live = window.makeCcLive({
@@ -208,8 +250,9 @@
       return params ? structureText(params) : 'your legs from the Strategy tab';
     },
     shapeShort: 'NIFTYBEES + options trade',
-    paper: false, // no paper trade on this screen
     flag: { kind: 'nbo' },
+    adjust: true, // Legs and payoff › Adjustments (loss-less changes), as on the Put spread collar
+    guide: true, // 🧭 the guided new trade: expiry → NIFTYBEES → strikes (💡 Suggestion) → Builder
     planBody: () => ({ params: params && { lots: params.lots, legs: params.legs, budget: params.budget } }),
   });
   const stratName = () => BT.store.get('nbo-name', '') || 'Your strategy';
@@ -368,6 +411,56 @@
       .map((l) => ({ ...l, entry: pr(l.strike, l.type === 'CE') }));
   }
   // Risk notes: sold calls beyond the bought ones and the NIFTYBEES, sold puts beyond the bought ones.
+  // ---------- What happens when Nifty moves (as on the Put spread collar) ----------
+  const studyRow = (id) => saved.study?.rows?.find((r) => r.id === id) || null;
+  // A position to move Nifty under: { id, label, spot, legs, units, b0 }: the example month (the Strategy tab's legs
+  // at Black-Scholes prices), the paper trade's series, the backtest's last month as entered.
+  function animSources() {
+    const ex = exState();
+    const out = [
+      { id: 'ex', label: 'Example month', spot: ex.spot, legs: bsLegs(ex.spot, ex.iv, ex.days), units: unitsFor(params, ex.spot), b0: ex.spot / 100 },
+    ];
+    const c = paper?.paper?.cycle;
+    if (c?.legs?.length)
+      out.push({
+        id: 'paper',
+        label: 'Your paper month',
+        spot: c.spot0,
+        legs: c.legs,
+        units: paper.paper.etfOnce?.qty || out[0].units,
+        b0: c.etf?.b0 || c.spot0 / 100,
+      });
+    const m = saved.backtest?.withAdj?.months?.filter((x) => x.ok).slice(-1)[0];
+    if (m)
+      out.push({
+        id: 'bt',
+        label: `Backtest: ${monthName(m.expiry)} as entered`,
+        spot: m.spot0,
+        legs: m.entry.legs,
+        units: m.etf?.qtyOnce || out[0].units,
+        b0: m.etf?.bees0 || m.spot0 / 100,
+      });
+    return out;
+  }
+  // P&L of each part at expiry with Nifty at x.
+  function parts(src, x) {
+    const lot = params.lotSize;
+    const etf = src.units * src.b0 * (x / src.spot - 1);
+    const call = optAt(of(src.legs, 'CE'), x, lot);
+    const put = optAt(of(src.legs, 'PE'), x, lot);
+    return { etf, call, put, opt: call + put, total: etf + call + put };
+  }
+  // Which legs end in the money at x, and what each side and NIFTYBEES make there.
+  function zoneText(src, x) {
+    const v = parts(src, x);
+    const f = (n) => `<b class="${cls(n)}">${inrS(n)}</b>`;
+    const itm = src.legs.filter((l) => (l.type === 'CE' ? x > l.strike : x < l.strike));
+    const txt = (l) => `${l.side > 0 ? 'bought' : 'sold'} ${l.strike} ${l.type}`;
+    const where = itm.length ? `In the money: ${itm.map(txt).join(', ')}.` : 'No leg ends in the money: every option keeps or loses its premium.';
+    const sold = src.legs.filter((l) => l.type === 'CE').reduce((s, l) => s - l.side * l.lots, 0);
+    const cap = sold > 0 && itm.some((l) => l.type === 'CE' && l.side < 0) ? ' Above the sold calls they give back what NIFTYBEES gain.' : '';
+    return `${where}${cap} Call legs ${f(v.call)}, put legs ${f(v.put)}, NIFTYBEES ${f(v.etf)}: total ${f(v.total)}.`;
+  }
   function riskNotes(S) {
     const net = (t) => params.legs.filter((l) => l.type === t).reduce((s, l) => s - l.side * l.lots * params.lots, 0); // sold − bought
     const cover = params.budget > 0 ? params.budget / (params.lotSize * S) : params.lots;
@@ -414,6 +507,7 @@
     const cash = legs.reduce((s, l) => s - l.side * l.entry * l.lots * lot, 0);
     const notes = riskNotes(ex.spot);
     const name = BT.store.get('nbo-name', '');
+    const mm = BT.store.get('nbo-mm', { mode: 'model', pct: 10, months: 12, iv: 13, swings: true });
     body().innerHTML = `
       <div class="panel cc-doc">
         <h3>Your strategy: NIFTYBEES + options</h3>
@@ -438,15 +532,78 @@
         <div class="cc-pay-chart"><canvas id="nboPay"></canvas></div>
         ${scenarioTable(legs, ex.spot, etf)}
       </div>
+
+      <div class="panel cc-doc">
+        <h3>What happens when Nifty moves</h3>
+        <h4>One expiry: Nifty from −25 % to +25 %</h4>
+        <p class="muted small">Press ▶ Play (or drag the slider, or the ▲ / ▼ buttons) to move Nifty up and down: the P&L at expiry of NIFTYBEES, the call legs and the put legs, the options together and the total with NIFTYBEES.</p>
+        <div class="set-row mcc-anim-ctl">
+          <span class="seg sm" id="nboAnSrc"></span>
+          <button class="btn-sm ghost" id="nboAnPlay">▶ Play</button>
+          ${[-20, -10, -5].map((x) => `<button class="btn-sm ghost" data-nmv="${x}">▼ ${-x} %</button>`).join('')}<button class="btn-sm ghost" data-nmv="0">Back to entry</button>${[5, 10, 20].map((x) => `<button class="btn-sm ghost" data-nmv="${x}">▲ ${x} %</button>`).join('')}
+          <span class="lbl">Nifty move</span><input type="range" id="nboAnRange" min="-25" max="25" step="0.5" value="0" style="width:200px">
+          <b id="nboAnLbl"></b>
+        </div>
+        <div class="muted small" id="nboAnPos"></div>
+        <div class="cc-ex-grid" style="margin-top:8px">
+          <div><div class="mcc-bars" id="nboAnBars"></div><p class="small" id="nboAnZone" style="margin-top:8px"></p></div>
+          <div class="cc-pay"><div class="cc-pay-chart"><canvas id="nboAnPay"></canvas></div></div>
+        </div>
+
+        <h4 style="margin-top:14px">Month by month: the strategy entered again every month</h4>
+        <div class="set-row">
+          <span class="seg sm" id="nboMmMode"><button data-m="model" class="${mm.mode === 'model' ? 'on' : ''}">Model path</button><button data-m="real" class="${mm.mode === 'real' ? 'on' : ''}">Real months (backtest)</button></span>
+          <span class="nbo-mm-model${mm.mode === 'model' ? '' : ' hidden'}">
+            <span class="lbl">Nifty over the period</span><input class="txt num" id="nboMmPct" value="${mm.pct}" style="width:50px"><span class="lbl">% over</span>
+            <select id="nboMmN">${[3, 6, 12, 24].map((n) => `<option value="${n}"${n === mm.months ? ' selected' : ''}>${n} months</option>`).join('')}</select>
+            <span class="lbl">IV %</span><input class="txt num" id="nboMmIv" value="${mm.iv}" style="width:45px">
+            <label class="lbl"><input type="checkbox" id="nboMmSw"${mm.swings ? ' checked' : ''}> weekly swings</label>
+          </span>
+          <button class="btn-sm ghost" id="nboMmPlay">▶ Play the months</button>
+          <span class="lbl">Month</span><input type="range" id="nboMmIdx" min="0" max="0" value="0" style="width:180px">
+        </div>
+        <p class="muted small" id="nboMmNote"></p>
+        <div class="cc-ex-grid">
+          <div><div class="mcc-bars" id="nboMmBars"></div><div class="small" id="nboMmText" style="margin-top:8px"></div></div>
+          <div class="cc-pay"><div class="cc-pay-chart"><canvas id="nboMmChart"></canvas></div></div>
+        </div>
+      </div>
+
+      <div class="panel cc-doc">
+        <h3>When Nifty rises: what you can do</h3>
+        ${risesHtml()}
+      </div>
+
+      <div class="panel cc-doc">
+        <h3>When Nifty falls: what you can do</h3>
+        ${fallsHtml()}
+      </div>
       <div class="panel cc-doc">
         <h3>Adjustments</h3>
         <p class="small">${adjText(params)}</p>
         <p class="muted small">A side's legs (all calls together, all puts together) are closed and opened again at their own distances from the new ATM. The collars' rules are the default: calls follow a fall, puts follow a rise, at a 2 % move. Change them on the Backtest tab; the adjustment study there tries the alternatives.</p>
         <div class="set-row"><button class="btn-sm run" id="nboGoBt">Backtest this ▸</button><button class="btn-sm ghost" id="nboGoCmp">Compare with the Covered call and collars ▸</button></div>
+      </div>
+      <div class="panel cc-doc">
+        <h3>When to adjust: what the backtest says</h3>
+        ${studyLegsNote()}
+        <table class="grid-tbl cc-rules"><tbody>
+          <tr><th>When to adjust (suggested)</th><td>${rulesWhen()}</td></tr>
+          <tr><th>Best rule in the study</th><td>${(() => {
+            const r0 = studyRow('none');
+            const rA = saved.study ? [...saved.study.rows].sort((x, y) => y.summary.opt.total - x.summary.opt.total)[0] : null;
+            return rA && r0
+              ? `<b>${esc(rA.label)}</b>: ${inrS(rA.summary.opt.total)} on the options vs ${inrS(r0.summary.opt.total)} with no adjustments (${inrS(rA.summary.opt.total - r0.summary.opt.total)}), ${rA.summary.adjustments} rolls; worst month ${inr(rA.summary.opt.worst)} vs ${inr(r0.summary.opt.worst)}, drawdown with NIFTYBEES held ${inr(rA.summary.withOnce.maxDD)} vs ${inr(r0.summary.withOnce.maxDD)}. Click it in the study below to open its full backtest.`
+              : 'Run the study on the Backtest tab.';
+          })()}</td></tr>
+        </tbody></table>
+        ${saved.study ? studyTable(saved.study, true) : '<p class="muted">The study has not been run yet. Run it on the Backtest tab ("Run adjustment study").</p>'}
       </div>`;
     const etfPay = legs.length ? etf : null;
     payoffChart($('nboPay'), legs, lot, ex.spot, etfPay);
     bindRules();
+    bindAnim();
+    bindMm();
   }
   function bindRules() {
     const re = () => {
@@ -523,6 +680,387 @@
       ${rows.map((r) => `<tr${r.mv === 0 ? ' class="on"' : ''}><td>${num0(r.x)}</td><td class="${cls(r.mv)}">${r.mv > 0 ? '+' : ''}${r.mv} %</td>${td(r.c)}${td(r.p)}${td(r.o)}${td(r.e)}<td class="${cls(r.t)}"><b>${inrS(Math.round(r.t))}</b></td></tr>`).join('')}
       </tbody></table></div><div class="muted small">Options at their model premiums, before slippage and charges; NIFTYBEES = Nifty ÷ 100 bought at the example level.</div>`;
   }
+  // ----- When Nifty rises / falls: study variants side by side (rows open the rule's full backtest) -----
+  const avgOf = (b, k = 'withOnce') => (b?.n ? b[k] / b.n : 0);
+  function variantTable(list, hiCol) {
+    const r0 = studyRow('none');
+    const rows = list.map(([id, label]) => [studyRow(id), label]).filter(([r]) => r);
+    const hold = (k) => inrS(avgOf(r0.summary.byMove[k], 'hold'));
+    const th = (k, label) => `<th${hiCol === k ? ' class="cc-col-tot"' : ''}>${label}</th>`;
+    const td = (k, v) => `<td class="${hiCol === k ? 'cc-col-tot ' : ''}${cls(v)}">${inrS(v)}</td>`;
+    return `<div class="tbl-wrap"><table class="grid-tbl"><thead><tr><th class="l">Variant</th><th>Whole period</th>${th('up', `Avg up month (hold ${hold('up')})`)}${th('flat', 'Avg flat month')}${th('down', `Avg down month (hold ${hold('down')})`)}<th>Call legs (period)</th><th>Put legs (period)</th><th>Worst month (options)</th><th>Max drawdown (with NIFTYBEES)</th></tr></thead>
+      <tbody>${rows
+        .map(([r, label]) => {
+          const s = r.summary;
+          return `<tr class="cc-click${r.id === 'none' ? ' on' : ''}" data-rule="${r.id}" title="Click: this rule's full backtest on the Backtest tab"><td class="l">${esc(label)}</td><td class="${cls(s.withOnce.total)}">${inrS(s.withOnce.total)}</td>${td('up', avgOf(s.byMove.up))}${td('flat', avgOf(s.byMove.flat))}${td('down', avgOf(s.byMove.down))}<td class="${cls(s.call?.total)}">${s.call ? inrS(s.call.total) : '—'}</td><td class="${cls(s.put?.total)}">${s.put ? inrS(s.put.total) : '—'}</td><td class="neg">${inr(s.opt.worst)}</td><td class="neg">${inr(s.withOnce.maxDD)}</td></tr>`;
+        })
+        .join('')}</tbody></table></div>`;
+  }
+  const perMonth = (id, k) => {
+    const r = studyRow(id);
+    return r ? inrS(avgOf(r.summary.byMove[k])) : '—';
+  };
+  const period = (id) => {
+    const r = studyRow(id);
+    return r ? inrS(r.summary.withOnce.total) : '—';
+  };
+  // the study is run on the legs it was run with: say so when the Strategy tab's legs are different now
+  const studyLegsNote = () => {
+    const p = saved.study?.rows?.[0]?.params;
+    return p && structureText(p) !== structureText(params)
+      ? `<p class="small neg">The study was run on other legs (${esc(structureText(p))}); run it again on the Backtest tab for the legs above.</p>`
+      : '';
+  };
+  function risesHtml() {
+    const r0 = studyRow('none');
+    if (!r0) return '<p class="muted">Run the adjustment study on the Backtest tab: this section is drawn from it.</p>';
+    const up = r0.summary.byMove.up;
+    return `${studyLegsNote()}<p>A rise is NIFTYBEES' month: sold calls above Nifty give back what NIFTYBEES gains over their strikes, bought puts expire worthless. In the backtest's ${up.n} months when Nifty rose more than 2 %, your strategy made <b>${inrS(avgOf(up))}</b> a month on average with NIFTYBEES held, while simply holding the same NIFTYBEES made <b>${inrS(avgOf(up, 'hold'))}</b>.
+      What can be done about it, tested on the same ${r0.summary.months} months (${dayLabel(r0.summary.from)} – ${dayLabel(r0.summary.to)}, NIFTYBEES held, 0.5 % slippage):</p>
+      ${variantTable(
+        [
+          ['none', 'No adjustments (the strategy as entered)'],
+          [REC.user, 'The default rules: rolls at a 2 % move'],
+          ['putsUp2', 'Only the puts follow a rise (2 %)'],
+          ['callsBoth2', 'Calls follow Nifty both ways (2 %)'],
+          ['all2', 'Every side follows Nifty both ways (2 %)'],
+          ['noCalls', 'No call legs (NIFTYBEES + puts only)'],
+        ],
+        'up',
+      )}
+      <ul style="margin-top:8px">
+        <li><b>Move the puts up</b> after a rise: the old ones are nearly worthless, the new ones sit near the money again (${perMonth('putsUp2', 'up')} per up month, ${period('putsUp2')} over the period).</li>
+        <li><b>Let the calls follow a rise</b>: the sold calls are bought back and sold higher, so more of the rally is kept, at a loss each time (${perMonth('callsBoth2', 'up')} per up month, ${period('callsBoth2')} over the period).</li>
+        <li><b>Without the call legs</b>: NIFTYBEES keep their whole rise (${perMonth('noCalls', 'up')} per up month, ${period('noCalls')} over the period). The difference to the first row is what the calls did.</li>
+      </ul>
+      <p class="muted small">One period of history, not a forecast: only ${up.n} rising months. Click a row for its full backtest; the direction switches are on the Backtest tab.</p>`;
+  }
+  function fallsHtml() {
+    const r0 = studyRow('none');
+    if (!r0) return '<p class="muted">Run the adjustment study on the Backtest tab: this section is drawn from it.</p>';
+    const dn = r0.summary.byMove.down;
+    return `${studyLegsNote()}<p>In a fall NIFTYBEES lose; bought puts under Nifty gain a point for every point below their strikes (sold puts under them give that back), sold calls keep their premium. In the backtest's ${dn.n} months when Nifty fell more than 2 %, your strategy made <b>${inrS(avgOf(dn))}</b> a month on average with NIFTYBEES held, against <b>${inrS(avgOf(dn, 'hold'))}</b> for NIFTYBEES alone.
+      Ways to handle a fall, on the same months:</p>
+      ${variantTable(
+        [
+          ['none', 'No adjustments (the strategy as entered)'],
+          [REC.user, 'The default rules: rolls at a 2 % move'],
+          ['callsDn2', 'Only the calls follow a fall (2 %)'],
+          ['putsBoth2', 'Puts follow Nifty both ways (2 %)'],
+          ['all2', 'Every side follows Nifty both ways (2 %)'],
+          ['decay35', 'Roll a side at 35 % of its entry value'],
+          ['noPuts', 'No put legs (NIFTYBEES + calls only)'],
+        ],
+        'down',
+      )}
+      <ul style="margin-top:8px">
+        <li><b>Move the calls down</b> after a fall: more premium as Nifty falls (${perMonth('callsDn2', 'down')} per down month), but a rebound runs into the lower strikes (${perMonth('callsDn2', 'up')} per up month).</li>
+        <li><b>Let the puts follow a fall</b>: books what they made and sets them up again lower (${perMonth('putsBoth2', 'down')} per down month, ${period('putsBoth2')} over the period).</li>
+        <li><b>Without the put legs</b>: ${perMonth('noPuts', 'down')} per down month, ${period('noPuts')} over the period. The difference to the first row is what the puts did.</li>
+      </ul>
+      <p class="muted small">One period of history: ${dn.n} falling months. Click a row for its full backtest.</p>`;
+  }
+  // When to adjust: the study's rules for the checks and the trigger, as on the collar
+  function rulesWhen() {
+    const r0 = studyRow('none');
+    if (!r0) return 'Run the adjustment study on the Backtest tab.';
+    const vs = (id) => {
+      const r = studyRow(id);
+      return r ? inrS(r.summary.opt.total - r0.summary.opt.total) : '—';
+    };
+    const dd = (id) => {
+      const r = studyRow(id);
+      return r ? inr(r.summary.withOnce.maxDD) : '—';
+    };
+    return `<ul style="margin:0;padding-left:18px">
+      <li><b>Check once a day, at 15:00.</b> Checking every hour gave ${vs('move2h')} vs no adjustments, once a day ${vs('move2')}.</li>
+      <li><b>How far Nifty moves before a side is rolled</b>: 1 % ${vs('move1')}, 1.5 % ${vs('move15')}, 2 % ${vs('move2')}, 3 % ${vs('move3')} on the options vs no adjustments (drawdown with NIFTYBEES ${dd('move2')} at 2 % vs ${dd('none')} with none). A premium rule instead: roll a side at 35 % of its entry value ${vs('decay35')}, at 50 % ${vs('decay50')}.</li>
+      <li><b>No rolls in the last 3 trading days</b>: rolling then too gave ${vs('move2l0')}; late rolls buy very little for the slippage.</li>
+    </ul>
+    <span class="muted small">The rolls move money between months more than they add any; their main effect is on the drawdown. One period of history, on the legs the study was run with.</span>`;
+  }
+  // bars: one row per part, centred on zero, scaled to the largest value the section can show
+  function bars(el, rows, scale) {
+    el.innerHTML = rows
+      .map(([label, v, sub, strong]) => {
+        const w = scale ? Math.min(50, (Math.abs(v) / scale) * 50) : 0;
+        return `<div class="mcc-bar-row${strong ? ' strong' : ''}"><span>${label}</span><span class="mcc-bar"><i class="${v >= 0 ? 'pos' : 'neg'}" style="${v >= 0 ? 'left:50%' : `left:${50 - w}%`};width:${w}%"></i></span><b class="${cls(v)}">${inrS(v)}</b>${sub ? `<span class="muted small mcc-bar-sub">${sub}</span>` : ''}</div>`;
+      })
+      .join('');
+  }
+
+  // ----- One expiry -----
+  const anim = { src: BT.store.get('nbo-an-src', 'ex'), move: 0, timer: null, chart: null };
+  function bindAnim() {
+    clearInterval(anim.timer);
+    anim.timer = null;
+    anim.chart = null;
+    const srcs = animSources();
+    if (!srcs.find((s) => s.id === anim.src)) anim.src = 'ex';
+    $('nboAnSrc').innerHTML = srcs.map((s) => `<button data-s="${s.id}" class="${s.id === anim.src ? 'on' : ''}">${esc(s.label)}</button>`).join('');
+    $('nboAnSrc').onclick = (e) => {
+      const id = e.target.closest('[data-s]')?.dataset.s;
+      if (!id) return;
+      anim.src = id;
+      BT.store.set('nbo-an-src', id);
+      bindAnim();
+    };
+    $('nboAnRange').oninput = (e) => {
+      stopAnim();
+      anim.move = Number(e.target.value);
+      drawAnim(false);
+    };
+    body()
+      .querySelectorAll('[data-nmv]')
+      .forEach(
+        (b) =>
+          (b.onclick = () => {
+            stopAnim();
+            anim.move = Number(b.dataset.nmv);
+            drawAnim(false);
+          }),
+      );
+    $('nboAnPlay').onclick = () => {
+      if (anim.timer) return stopAnim();
+      $('nboAnPlay').textContent = '❚❚ Pause';
+      let dir = 1;
+      anim.timer = setInterval(() => {
+        if (!document.body.contains($('nboAnPlay'))) return stopAnim();
+        anim.move += dir * 0.5;
+        if (anim.move >= 25 || anim.move <= -25) dir = -dir;
+        drawAnim(false);
+      }, 80);
+    };
+    drawAnim(true);
+  }
+  function stopAnim() {
+    clearInterval(anim.timer);
+    anim.timer = null;
+    if ($('nboAnPlay')) $('nboAnPlay').textContent = '▶ Play';
+  }
+  function drawAnim(full) {
+    const src = animSources().find((s) => s.id === anim.src);
+    const x = src.spot * (1 + anim.move / 100);
+    $('nboAnRange').value = anim.move;
+    $('nboAnLbl').textContent = `Nifty ${num0(x)} (${anim.move >= 0 ? '+' : ''}${anim.move.toFixed(1)} %) · NIFTYBEES ₹${((src.b0 * x) / src.spot).toFixed(2)}`;
+    const leg = (l) => `${l.side > 0 ? 'B' : 'S'} ${l.lots}× ${l.strike} @${l.entry.toFixed(1)}`;
+    $('nboAnPos').innerHTML =
+      `Position: ${esc(src.label)} — Nifty ${num0(src.spot)}, ${num0(src.units)} NIFTYBEES at ₹${src.b0.toFixed(2)} · <b>call legs</b> ${of(src.legs, 'CE').map(leg).join(', ') || '—'} · <b>put legs</b> ${of(src.legs, 'PE').map(leg).join(', ') || '—'}. Everything at its expiry, before costs.`;
+    const v = parts(src, x);
+    let scale = 0;
+    for (let m = -25; m <= 25; m += 1) {
+      const q = parts(src, src.spot * (1 + m / 100));
+      scale = Math.max(scale, ...Object.values(q).map(Math.abs));
+    }
+    bars(
+      $('nboAnBars'),
+      [
+        ['NIFTYBEES', v.etf],
+        ['Call legs', v.call],
+        ['Put legs', v.put],
+        ['Without NIFTYBEES (options)', v.opt, '', true],
+        ['With NIFTYBEES (total)', v.total, '', true],
+      ],
+      scale,
+    );
+    $('nboAnZone').innerHTML = zoneText(src, x);
+    if (full || !anim.chart) {
+      const xs = [];
+      for (let m = -40; m <= 40; m += 0.5) xs.push(src.spot * (1 + m / 100));
+      const home = [src.spot * 0.75, src.spot * 1.25];
+      const line = (label, f, color, extra = {}) => ({
+        label,
+        data: xs.map((xx) => ({ x: xx, y: Math.round(f(parts(src, xx))) })),
+        borderColor: color,
+        borderWidth: 2,
+        pointRadius: 0,
+        ...extra,
+      });
+      anim.chart = BT.chart($('nboAnPay'), {
+        type: 'line',
+        data: {
+          datasets: [
+            line('With NIFTYBEES', (q) => q.total, '#58a6ff'),
+            line('Without NIFTYBEES (options)', (q) => q.opt, '#b392f0'),
+            line('Call legs', (q) => q.call, '#d6af4c', { borderWidth: 1.5, borderDash: [5, 3] }),
+            line('Put legs', (q) => q.put, '#3fb68b', { borderWidth: 1.5, borderDash: [5, 3] }),
+            line('NIFTYBEES', (q) => q.etf, '#9aa5b1', { borderWidth: 1, borderDash: [2, 3] }),
+            { label: 'Now', type: 'scatter', data: [], pointRadius: 6, backgroundColor: '#58a6ff', borderColor: '#fff', borderWidth: 1.5 },
+          ],
+        },
+        options: {
+          interaction: { mode: 'nearest', axis: 'x', intersect: false },
+          scales: {
+            x: { type: 'linear', min: home[0], max: home[1], title: { display: true, text: 'Nifty at expiry' } },
+            y: { ticks: { callback: (n) => kinr(n) } },
+          },
+          plugins: {
+            payZoom: { on: true, home },
+            tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${inrS(c.parsed.y)}`, title: (c) => 'Nifty ' + num0(c[0].parsed.x) } },
+          },
+        },
+      });
+    }
+    const ds = anim.chart.data.datasets;
+    ds[ds.length - 1].data = [
+      { x, y: Math.round(v.total) },
+      { x, y: Math.round(v.opt) },
+    ];
+    anim.chart.update('none');
+  }
+
+  // ----- Month by month -----
+  const mmState = { rows: [], idx: 0, timer: null, seq: 0 };
+  const mmOpts = () => BT.store.get('nbo-mm', { mode: 'model', pct: 10, months: 12, iv: 13, swings: true });
+  function bindMm() {
+    clearInterval(mmState.timer);
+    mmState.timer = null;
+    const save = () => {
+      BT.store.set('nbo-mm', {
+        ...mmOpts(),
+        pct: Number($('nboMmPct').value) || 0,
+        months: Number($('nboMmN').value) || 12,
+        iv: Number($('nboMmIv').value) || 13,
+        swings: $('nboMmSw').checked,
+      });
+      loadMm();
+    };
+    ['nboMmPct', 'nboMmN', 'nboMmIv', 'nboMmSw'].forEach((id) => ($(id).onchange = save));
+    $('nboMmMode').onclick = (e) => {
+      const m = e.target.closest('[data-m]')?.dataset.m;
+      if (!m) return;
+      BT.store.set('nbo-mm', { ...mmOpts(), mode: m });
+      $('nboMmMode')
+        .querySelectorAll('button')
+        .forEach((b) => b.classList.toggle('on', b.dataset.m === m));
+      body()
+        .querySelector('.nbo-mm-model')
+        .classList.toggle('hidden', m !== 'model');
+      loadMm();
+    };
+    $('nboMmIdx').oninput = (e) => {
+      stopMm();
+      mmState.idx = Number(e.target.value);
+      drawMm();
+    };
+    $('nboMmPlay').onclick = () => {
+      if (mmState.timer) return stopMm();
+      if (mmState.idx >= mmState.rows.length - 1) mmState.idx = -1;
+      $('nboMmPlay').textContent = '❚❚ Pause';
+      mmState.timer = setInterval(() => {
+        if (!document.body.contains($('nboMmPlay')) || mmState.idx >= mmState.rows.length - 1) return stopMm();
+        mmState.idx++;
+        drawMm();
+      }, 700);
+    };
+    loadMm();
+  }
+  function stopMm() {
+    clearInterval(mmState.timer);
+    mmState.timer = null;
+    if ($('nboMmPlay')) $('nboMmPlay').textContent = '▶ Play the months';
+  }
+  async function loadMm() {
+    stopMm();
+    const o = mmOpts();
+    const seq = ++mmState.seq;
+    let rows = [];
+    if (o.mode === 'real') {
+      const B = saved.backtest;
+      if (!B) {
+        $('nboMmNote').textContent = 'No backtest saved yet: run one on the Backtest tab.';
+        mmState.rows = [];
+        return drawMm();
+      }
+      const none = new Map(B.without.months.map((m) => [m.expiry, m]));
+      const one = (x) =>
+        x?.ok ? { opt: x.opt, call: x.callPnl, put: x.putPnl, etf: x.etfOnce, total: x.withOnce, adjustments: x.adjustments, events: x.events } : null;
+      rows = B.withAdj.months
+        .filter((m) => m.ok)
+        .map((m) => ({ label: monthName(m.expiry), spot0: m.spot0, spotE: m.spotE, adj: one(m), none: one(none.get(m.expiry)) }));
+      $('nboMmNote').textContent =
+        `The backtest's months (${rows.length}, ${sizeLabel(B.withAdj.params)}, ${B.withAdj.params.adj.on ? 'with its adjustments' : 'no adjustments'}) next to the same months without adjustments, NIFTYBEES held throughout. Months left out of the backtest are skipped.`;
+    } else {
+      $('nboMmNote').textContent = 'Working…';
+      let r;
+      try {
+        r = await BT.api('/api/nbo/model', { params, opts: { S0: exState().spot, pct: o.pct, months: o.months, iv: o.iv, swings: o.swings } });
+      } catch (e) {
+        $('nboMmNote').textContent = e.message;
+        return;
+      }
+      if (seq !== mmState.seq) return;
+      const one = (x) => ({ opt: x.opt, call: x.callPnl, put: x.putPnl, etf: x.etf, total: x.total, adjustments: x.adjustments, events: x.events });
+      rows = r.withAdj.map((m, i) => ({ label: `Month ${i + 1}`, spot0: m.spot0, spotE: m.spotE, adj: one(m), none: one(r.without[i]) }));
+      $('nboMmNote').textContent =
+        `The strategy is entered afresh every month (the Backtest tab's settings, ${sizeLabel(params)}, ${params.adj.on ? 'with its adjustments' : 'adjustments off'}), priced by Black-Scholes at ${o.iv} % IV, while Nifty moves the same % each month (${o.pct} % over ${o.months} months; type a negative % for a falling market). ${o.swings ? 'With weekly swings Nifty zig-zags about one typical week’s move inside each month, which is what triggers the rolls.' : 'Without weekly swings every month is a straight line: no rolls trigger unless the trend alone moves 2 %.'} A model, not a forecast: real months are uneven (see Real months).`;
+    }
+    mmState.rows = rows;
+    mmState.idx = Math.min(mmState.idx, Math.max(0, rows.length - 1));
+    $('nboMmIdx').max = Math.max(0, rows.length - 1);
+    drawMm();
+  }
+  function drawMm() {
+    const rows = mmState.rows;
+    if (!rows.length) {
+      $('nboMmBars').innerHTML = '';
+      $('nboMmText').innerHTML = '';
+      BT.chart($('nboMmChart'), { type: 'line', data: { labels: [], datasets: [] } });
+      return;
+    }
+    const i = Math.max(0, mmState.idx);
+    $('nboMmIdx').value = i;
+    const cum = (k, upto = i, side = 'adj') => rows.slice(0, upto + 1).reduce((s, r) => s + (r[side]?.[k] || 0), 0);
+    const all = (k, side = 'adj') => rows.reduce((s, r) => s + Math.abs(r[side]?.[k] || 0), 0);
+    const scale = Math.max(...['etf', 'call', 'put', 'opt', 'total'].map((k) => Math.abs(cum(k, rows.length - 1))), all('opt') / 2, 1);
+    const r = rows[i];
+    bars(
+      $('nboMmBars'),
+      [
+        ['NIFTYBEES', cum('etf')],
+        ['Call legs', cum('call'), `not adjusted ${inrS(cum('call', i, 'none'))}`],
+        ['Put legs', cum('put'), `not adjusted ${inrS(cum('put', i, 'none'))}`],
+        ['Without NIFTYBEES (options)', cum('opt'), `not adjusted ${inrS(cum('opt', i, 'none'))}`, true],
+        ['With NIFTYBEES (total)', cum('total'), `not adjusted ${inrS(cum('total', i, 'none'))}`, true],
+      ],
+      scale,
+    );
+    const ev = (r.adj?.events || []).filter((e) => !['entry', 'expiry'].includes(e.kind));
+    $('nboMmText').innerHTML =
+      `<b>${esc(r.label)}</b> · Nifty ${num0(r.spot0)} → ${num0(r.spotE)} (${pct(((r.spotE - r.spot0) / r.spot0) * 100)}) · this month: call legs <b class="${cls(r.adj.call)}">${inrS(r.adj.call)}</b>, put legs <b class="${cls(r.adj.put)}">${inrS(r.adj.put)}</b>, NIFTYBEES <b class="${cls(r.adj.etf)}">${inrS(r.adj.etf)}</b>, total <b class="${cls(r.adj.total)}">${inrS(r.adj.total)}</b>
+      ${ev.length ? `<ul>${ev.map((e) => `<li>${typeof e.day === 'number' ? `day ${e.day}` : dayLabel(e.day)}: ${esc(e.text)}</li>`).join('')}</ul>` : '<div class="muted">No rolls this month.</div>'}
+      <span class="muted">Totals since month 1 in the bars.</span>`;
+    const upto = (f) => rows.map((x, j) => (j <= i ? rows.slice(0, j + 1).reduce((s, y) => s + (f(y) || 0), 0) : null));
+    BT.chart($('nboMmChart'), {
+      type: 'line',
+      data: {
+        labels: rows.map((x) => x.label),
+        datasets: [
+          { label: 'Adjusted + NIFTYBEES', data: upto((y) => y.adj?.total), borderColor: '#58a6ff', borderWidth: 2, pointRadius: 2 },
+          { label: 'Not adjusted + NIFTYBEES', data: upto((y) => y.none?.total), borderColor: '#b392f0', borderWidth: 1.5, pointRadius: 0 },
+          { label: 'NIFTYBEES alone', data: upto((y) => y.adj?.etf), borderColor: '#9aa5b1', borderDash: [4, 4], borderWidth: 1, pointRadius: 0 },
+          { label: 'Call legs', data: upto((y) => y.adj?.call), borderColor: '#d6af4c', borderDash: [5, 3], borderWidth: 1.5, pointRadius: 0 },
+          { label: 'Put legs', data: upto((y) => y.adj?.put), borderColor: '#3fb68b', borderDash: [5, 3], borderWidth: 1.5, pointRadius: 0 },
+          {
+            label: 'Nifty',
+            data: rows.map((x, j) => (j <= i ? x.spotE : null)),
+            borderColor: 'rgba(154,165,177,.5)',
+            borderWidth: 1,
+            pointRadius: 0,
+            yAxisID: 'y2',
+          },
+        ],
+      },
+      options: {
+        interaction: { mode: 'index', intersect: false },
+        scales: { y: { ticks: { callback: (n) => kinr(n) } }, y2: { position: 'right', grid: { display: false }, ticks: { callback: (n) => num0(n) } } },
+        plugins: {
+          tooltip: { callbacks: { label: (c) => (c.dataset.yAxisID === 'y2' ? `Nifty ${num0(c.parsed.y)}` : `${c.dataset.label}: ${inrS(c.parsed.y)}`) } },
+        },
+      },
+    });
+  }
+
   function adjText(p) {
     const a = p.adj;
     if (!a.on) return '<b>No adjustments</b>: every leg is held to expiry.';
@@ -658,6 +1196,7 @@
     if (b) params[a] = { ...params[a], [b]: v };
     else params[a] = v;
     BT.store.set('nbo-params', params);
+    if (path === 'lots' || path === 'budget') drawBees();
   }
   function showProgress(pr) {
     const box = $('nboProg');
@@ -991,6 +1530,268 @@
 
   // ---------- Compare: this strategy against the Covered call and the collars ----------
   const CMP_COLORS = { mine: '#58a6ff', mineOff: '#56d4dd', mcc: '#d6af4c', psc: '#3fb68b', bpc: '#e86fb5', hold: '#9aa5b1' };
+  // ---------- Paper trade ----------
+  async function loadPaper() {
+    try {
+      paper = await BT.api('/api/nbo/paper');
+    } catch (e) {
+      paper = { error: e.message };
+    }
+  }
+  async function renderPaper() {
+    if (!paper) await loadPaper();
+    if (tab !== 'paper') return;
+    const el = body();
+    const P = paper?.paper;
+    const lot = P?.params.lotSize || params.lotSize;
+    if (paper?.error) {
+      el.innerHTML = `<div class="panel empty err">${esc(paper.error)}</div>`;
+      return;
+    }
+    const btns = P
+      ? `${P.status === 'running' ? '<button class="btn-sm ghost" data-a="pause">Pause</button>' : '<button class="btn-sm ghost" data-a="resume">Resume</button>'} <button class="btn-sm ghost danger" data-a="reset">Reset</button>`
+      : '<button class="btn-sm run" data-a="start">Start paper trade</button>';
+    const head = `<div class="panel cc-doc"><h3>Paper trade ${P ? `<span class="cc-kind ${P.status === 'running' ? 'k-book' : 'k-skip'}">${P.status}</span>` : ''}</h3>
+      <div class="set-row">${btns}<span class="muted small">Follows the live chain every 30 s with the Strategy tab's legs and the Backtest tab's settings (${P ? 'as started' : 'current'}): ${esc(settingsLine(P ? P.params : params))}. Paper only: nothing is sent to a broker.${paper.demo ? ' Demo mode: synthetic prices.' : ''}</span></div>
+      ${P?.lastError ? `<div class="muted small neg">Last error ${new Date(P.lastError.at).toLocaleTimeString('en-IN')}: ${esc(P.lastError.message)}</div>` : ''}
+      ${
+        P
+          ? budgetRow(
+              P.params.budget,
+              P.cycle?.spot || P.cycle?.spot0 || exState().spot,
+              `Held now: ${num0(P.etfOnce?.qty)} units. A new budget buys (or sells) the difference in NIFTYBEES now, at its current price: the KPIs, the payoff and the "If Nifty is here at expiry" table count the new holding.`,
+            )
+          : budgetRow(params.budget, exState().spot, 'Bought at Start.')
+      }
+      <div id="nboPapMsg" class="muted small"></div></div>`;
+    if (!P) {
+      el.innerHTML =
+        head +
+        `<div class="panel empty"><h3>No paper trade running</h3><p>Start opens the position now on the current monthly series (next month's when this one has fewer than ${params.minDays ?? 15} days left) at the live prices — ${esc(structureText(params))} — buys NIFTYBEES worth ${params.budget > 0 ? `your budget (${inr(params.budget)})` : 'one lot (65 × Nifty)'}, and then runs month after month: rolls at the check times, settlement at each monthly expiry and a new series at 09:30 on the next trading day.</p></div>`;
+    } else {
+      const c = P.cycle;
+      const done = P.months || [];
+      const tot = (k) => done.reduce((s, m) => s + (m[k] || 0), 0);
+      const scenTop = el.querySelector('.mcc-scen')?.scrollTop;
+      el.innerHTML =
+        head +
+        (c
+          ? `<div class="panel cc-doc"><h3>${monthName(c.expiry)} series · expiry ${dayLabel(c.expiry)} <button class="btn-sm ghost" data-a="builder" title="Open this series' open option legs in the Builder as a live paper position at their paper entry prices. Options only (the Builder holds no NIFTYBEES); the paper trade itself carries on unchanged.">▶ Open in Builder</button></h3>
+          <div class="kpis cc-kpis-main">
+            <div class="kpi"><span class="k-l">Nifty</span><span class="k-v">${num0(c.spot)}</span><span class="muted small">entry ${num0(c.spot0)} · ${pct(((c.spot - c.spot0) / c.spot0) * 100)}</span></div>
+            <div class="kpi"><span class="k-l">Call legs</span><span class="k-v ${cls(c.callPnl)}">${inrS(c.callPnl)}</span><span class="muted small">at LTP, its costs included</span></div>
+            <div class="kpi"><span class="k-l">Put legs</span><span class="k-v ${cls(c.putPnl)}">${inrS(c.putPnl)}</span><span class="muted small">at LTP, its costs included</span></div>
+            <div class="kpi"><span class="k-l">Options now</span><span class="k-v ${cls(c.opt)}">${inrS(c.opt)}</span><span class="muted small">at LTP, costs so far ${inr(c.costs)}${c.priced === false ? ' · a leg has no LTP' : ''}</span></div>
+            <div class="kpi"><span class="k-l">NIFTYBEES held</span><span class="k-v ${cls(c.etfOnce)}">${inrS(c.etfOnce)}</span><span class="muted small">${num0(P.etfOnce?.qty)} units · this series</span></div>
+            <div class="kpi"><span class="k-l">Total (held)</span><span class="k-v ${cls((c.opt || 0) + (c.etfOnce || 0))}">${inrS((c.opt || 0) + (c.etfOnce || 0))}</span><span class="muted small">rebought: ${inrS((c.opt || 0) + (c.etfMonthly || 0))}</span></div>
+          </div>
+          <div class="cc-pos-grid">
+            <div class="tbl-wrap"><table class="grid-tbl"><thead><tr><th class="l">Leg</th><th>Entry</th><th>LTP</th><th>P&L</th></tr></thead><tbody>
+              ${groupedRows(
+                c.legs,
+                (l) =>
+                  `<tr><td class="l">${legLine(l)}</td><td>${l.entry.toFixed(1)}</td><td>${l.ltp != null ? l.ltp.toFixed(1) : '—'}</td><td class="${cls(l.ltp != null ? (l.ltp - l.entry) * l.side : 0)}">${l.ltp != null ? inrS((l.ltp - l.entry) * l.side * l.lots * lot) : '—'}</td></tr>`,
+                4,
+                (g) => {
+                  const v = g[0].type === 'CE' ? c.callPnl : c.putPnl;
+                  return v != null ? `<td class="${cls(v)}" title="with legs closed by rolls and costs">${inrS(v)}</td>` : '';
+                },
+              )}
+              ${c.closed.length ? `<tr><td class="l muted">Closed by rolls: call legs ${inrS(c.closed.filter((x) => x.type === 'CE').reduce((s, x) => s + x.pnl, 0))}, put legs ${inrS(c.closed.filter((x) => x.type === 'PE').reduce((s, x) => s + x.pnl, 0))}</td><td></td><td></td><td class="${cls(c.closed.reduce((s, x) => s + x.pnl, 0))}">${inrS(c.closed.reduce((s, x) => s + x.pnl, 0))}</td></tr>` : ''}
+            </tbody></table>
+            <div class="muted small">Updated ${c.markAt ? new Date(c.markAt).toLocaleTimeString('en-IN') : '—'} · rolls this month: put legs ${c.n.put}, call legs ${c.n.call}${c.n.up ? `, call up ${c.n.up}` : ''}</div></div>
+            <div class="cc-pay"><div class="cc-pay-chart"><canvas id="nboPapPay"></canvas></div><div class="muted small">At expiry, entry premiums included.</div></div>
+          </div>
+          ${c.legs.length && c.etf ? scenarioHtml(P, c, lot) : ''}
+          <h4>Events</h4><table class="grid-tbl cc-ev"><tbody>${c.events.map((e) => `<tr><td>${dayLabel(e.day)} ${e.time}</td><td><span class="cc-kind">${KIND[e.kind] || e.kind}</span></td><td>${num0(e.spot)}</td><td class="cc-ev-text">${esc(e.text)}</td></tr>`).join('')}</tbody></table>
+        </div>`
+          : `<div class="panel empty"><h3>Between series</h3><p>The last series expired ${P.lastExpiry ? dayLabel(P.lastExpiry) : ''}. The next one opens at 09:30 on the next trading day.</p></div>`) +
+        (done.length
+          ? `<div class="panel cc-doc"><h3>Finished months</h3><div class="tbl-wrap"><table class="grid-tbl"><thead><tr><th class="l">Expiry</th><th>Nifty</th><th>Rolls</th><th>Call legs</th><th>Put legs</th><th>Options</th><th>NIFTYBEES held</th><th>Total held</th><th>Total rebought</th></tr></thead><tbody>
+            ${done.map((m) => `<tr><td class="l">${monthName(m.expiry)}</td><td>${num0(m.spot0)} → ${num0(m.spotE)}</td><td>${m.adjustments}</td><td class="${cls(m.callPnl)}">${inrS(m.callPnl)}</td><td class="${cls(m.putPnl)}">${inrS(m.putPnl)}</td><td class="${cls(m.opt)}">${inrS(m.opt)}</td><td class="${cls(m.etfOnce)}">${inrS(m.etfOnce)}</td><td class="${cls(m.withOnce)}">${inrS(m.withOnce)}</td><td class="${cls(m.withMonthly)}">${inrS(m.withMonthly)}</td></tr>`).join('')}
+            </tbody><tfoot><tr><th class="l">Total</th><td></td><td></td><th class="${cls(tot('callPnl'))}">${inrS(tot('callPnl'))}</th><th class="${cls(tot('putPnl'))}">${inrS(tot('putPnl'))}</th><th class="${cls(tot('opt'))}">${inrS(tot('opt'))}</th><th class="${cls(tot('etfOnce'))}">${inrS(tot('etfOnce'))}</th><th class="${cls(tot('withOnce'))}">${inrS(tot('withOnce'))}</th><th class="${cls(tot('withMonthly'))}">${inrS(tot('withMonthly'))}</th></tr></tfoot></table></div></div>`
+          : '');
+      if (c?.legs.length)
+        payoffChart($('nboPapPay'), c.legs, lot, c.spot || c.spot0, { qty: P.etfOnce?.qty || 0, b0: c.etf.b0, s0: c.spot0, adj: c.etf.monthlyAdj });
+      const scen = el.querySelector('.mcc-scen');
+      const now = scen?.querySelector('tr.sel');
+      if (scen) scen.scrollTop = scenTop ?? (now ? now.offsetTop - (scen.clientHeight - now.offsetHeight) / 2 : 0);
+    }
+    el.querySelectorAll('[data-a]').forEach((b) => b.addEventListener('click', () => paperAction(b.dataset.a)));
+    bindBudget(async (v) => {
+      useBudget(v);
+      if (!P) return renderPaper();
+      try {
+        paper = await BT.api('/api/nbo/paper/budget', { budget: v });
+        renderPaper();
+      } catch (e) {
+        $('nboBudgetNote').innerHTML = `<span class="neg">${esc(e.message)}</span>`;
+      }
+    });
+  }
+  // The paper series at its expiry with Nifty every 100 points, 2,000 either way: NIFTYBEES moving with Nifty from its
+  // live price, the open legs at intrinsic value, each structure's P&L as the paper counts it and the total.
+  function scenarioHtml(P, c, lot) {
+    const intr = (l, x) => Math.max(0, l.type === 'CE' ? x - l.strike : l.strike - x);
+    const closed = (t) => c.closed.filter((x) => x.type === t).reduce((s, x) => s + x.pnl, 0);
+    const pnlOf = (t, x) =>
+      closed(t) + c.legs.filter((l) => l.type === t).reduce((s, l) => s + l.side * (intr(l, x) - l.entry) * l.lots * lot, 0) - (c.costsBy?.[t] || 0);
+    const qty = P.etfOnce?.qty || 0;
+    const spot = c.spot || c.spot0;
+    const beesNow = c.bees || spot / 100;
+    const base = Math.round(spot / 100) * 100;
+    const rows = [];
+    for (let i = 20; i >= -20; i--) {
+      const x = base + i * 100;
+      const bees = (beesNow * x) / spot;
+      const etf = qty * (bees - c.etf.onceFrom) + (c.etf.onceAdj || 0) - (c.etf.onceCost ?? (c.etf.firstOnce ? P.etfOnce.cost : 0));
+      const value = c.legs.reduce((s, l) => s + l.side * intr(l, x) * l.lots * lot, 0);
+      const call = pnlOf('CE', x);
+      const put = pnlOf('PE', x);
+      rows.push({ x, bees, beesValue: qty * bees, etf, value, call, put, opt: call + put, total: etf + call + put });
+    }
+    const td = (v) => `<td class="${cls(v)}">${inrS(Math.round(v))}</td>`;
+    const move = (x) => (x === base ? 'now' : `${x > spot ? '+' : '−'}${num0(Math.abs(x - spot))} · ${pct(((x - spot) / spot) * 100)}`);
+    return `<h4>If Nifty is here at expiry <span class="muted small">every 100 points, 2,000 either way · NIFTYBEES ${num0(qty)} units moving with Nifty from ₹${beesNow.toFixed(2)} · options at intrinsic value · P&amp;L as above (rolls and costs so far included), before the costs of closing at expiry</span></h4>
+      <div class="tbl-wrap mcc-scen"><table class="grid-tbl"><thead><tr><th>Nifty</th><th class="l">Move</th><th>NIFTYBEES price</th><th>NIFTYBEES value</th><th>NIFTYBEES bought</th><th>NIFTYBEES P&amp;L</th><th>Options value</th><th>Call legs P&amp;L</th><th>Put legs P&amp;L</th><th>Options P&amp;L</th><th>Combined P&amp;L</th></tr></thead><tbody>
+      ${rows
+        .map(
+          (r) =>
+            `<tr class="${r.x === base ? 'sel' : ''}"><td><b>${num0(r.x)}</b></td><td class="l muted small">${move(r.x)}</td><td>₹${r.bees.toFixed(2)}</td><td>${inr(Math.round(r.beesValue))}</td><td>${num0(qty)}</td>${td(r.etf)}<td class="${cls(r.value)}">${inrS(Math.round(r.value))}</td>${td(r.call)}${td(r.put)}${td(r.opt)}<td class="${cls(r.total)}"><b>${inrS(Math.round(r.total))}</b></td></tr>`,
+        )
+        .join('')}
+      </tbody></table></div>`;
+  }
+  function settingsLine(p) {
+    return `${structureText(p)}, next month's series when this one has under ${p.minDays ?? 15} days left, ${adjDesc(p)}, NIFTYBEES ${p.etf === 'real' ? 'live price' : '= Nifty ÷ 100'}, ${p.budget > 0 ? `budget ${inr(p.budget)}` : "one lot's worth"}`;
+  }
+  // The series' open legs in the Builder as a live paper position at their paper entry prices (options only).
+  function toBuilder() {
+    const P = paper?.paper;
+    const c = P?.cycle;
+    if (!c?.legs.length) return;
+    const sb = BT.store.get('sb', {});
+    if (sb.legs?.some((l) => l.open) && !sb.tradeId && !confirm('The Builder holds a position that is not saved. Replace it with this one?')) return;
+    BT.emit('open-builder', {
+      idea: NAME, // the Trading Ideas strategy, named in the Builder's Positions heading
+      src: 'live',
+      expiry: c.expiry,
+      note: `${NAME} paper trade · ${monthName(c.expiry)} series (options only; ${num0(P.etfOnce?.qty)} NIFTYBEES not in the Builder)`,
+      legs: c.legs.map((l) => ({ action: l.side > 0 ? 'B' : 'S', type: l.type, strike: l.strike, expiry: c.expiry, lots: l.lots, px: l.entry })),
+    });
+  }
+  async function paperAction(a) {
+    if (a === 'builder') return toBuilder();
+    const msg = $('nboPapMsg');
+    try {
+      if (a === 'reset' && !confirm(`Delete the ${NAME} paper trade and its history?`)) return;
+      if (msg) msg.textContent = 'Working…';
+      paper = await BT.api('/api/nbo/paper/' + a, a === 'start' ? { params } : a === 'reset' ? { confirm: true } : {});
+      renderPaper();
+    } catch (e) {
+      if (msg) {
+        msg.textContent = e.message;
+        msg.classList.add('neg');
+      }
+    }
+  }
+
+  // ---------- Trades screen: the paper trade's months (as the collars list theirs) ----------
+  async function renderNboTrades() {
+    const el = $('nboTrades');
+    if (!el) return;
+    try {
+      paper = await BT.api('/api/nbo/paper');
+    } catch (e) {
+      el.innerHTML = `<div class="panel-head"><h3>${NAME} paper trade</h3></div><div class="err small pad">${esc(e.message)}</div>`;
+      return;
+    }
+    const P = paper.paper;
+    // nothing started: one line, not a whole panel
+    el.classList.toggle('hidden', !P);
+    if (!P) {
+      el.innerHTML = '';
+      return;
+    }
+    const head = `<div class="panel-head"><h3>${NAME} paper trade <span class="muted small">${P.status === 'running' ? 'running' : 'paused'} since ${dayLabel(new Date(P.startedAt).toISOString().slice(0, 10))} · ${sizeLabel(P.params)}${P.cycle?.markAt ? ` · marked ${new Date(P.cycle.markAt).toLocaleTimeString('en-IN')}${paper.marketOpen ? '' : ' (market closed: last traded prices)'}` : ''}</span></h3>
+        <span class="spacer"></span><button class="btn-sm ghost danger" data-nct="delete" title="Delete this paper trade and its history (the same as Reset in Trading Ideas)">✕ Delete</button><button class="btn-sm ghost" data-nct="open" title="Open the paper trade in Trading Ideas">Open in Trading Ideas ▸</button></div>`;
+    const lot = P.params.lotSize;
+    const legHtml = (l, open) => {
+      const now = open ? l.ltp : l.exit;
+      const pnl = open ? (now == null ? null : (now - l.entry) * l.side * l.lots * lot) : l.pnl;
+      return `<div class="cc-leg"><b class="${l.side < 0 ? 'neg' : 'pos'}">${l.side < 0 ? 'Sold' : 'Bought'}</b> ${l.lots}× ${l.strike} ${l.type} <span class="mono">${l.entry.toFixed(1)} → ${now == null ? '—' : now.toFixed(1)}${open ? ' now' : ''}</span>${pnl == null ? '' : ` <span class="${cls(pnl)}">${inrS(pnl)}</span>`}</div>`;
+    };
+    const legsCell = (open, closed, t) => {
+      const o = open.filter((l) => l.type === t).map((l) => legHtml(l, true));
+      const c = closed.filter((l) => l.type === t).map((l) => legHtml(l, false));
+      return (
+        o.join('') + (c.length ? `${o.length ? '<div class="muted small">closed by rolls</div>' : ''}${c.join('')}` : '') || '<span class="muted">—</span>'
+      );
+    };
+    const money = (v, b) => `<td class="${cls(v)}${b ? ' b' : ''}">${v == null ? '—' : inrS(v)}</td>`;
+    const rows = [];
+    const c = P.cycle;
+    if (c) {
+      const total = (c.opt ?? 0) + (c.etfOnce ?? 0);
+      rows.push(`<tr><td class="l"><b>${NAME}</b></td><td class="l"><b>${monthName(c.expiry)}</b><div class="muted small">to ${dayLabel(c.expiry)}</div></td>
+        <td class="l"><span class="cat-pill c-bullish">open</span></td><td class="muted">${dayLabel(c.entry.day)} ${c.entry.time}<div>Nifty ${num0(c.spot0)}${c.spot ? ' → ' + num0(c.spot) : ''}</div></td>
+        <td class="l cc-legs"><div class="cc-leg"><b class="pos">Held</b> ${num0(P.etfOnce?.qty)} units <span class="mono">₹${c.etf.onceFrom.toFixed(2)} → ${c.bees ? '₹' + c.bees.toFixed(2) + ' now' : '—'}</span></div></td>
+        <td class="l cc-legs">${legsCell(c.legs, c.closed, 'CE')}</td><td class="l cc-legs">${legsCell(c.legs, c.closed, 'PE')}</td>
+        ${money(c.callPnl)}${money(c.putPnl)}${money(c.opt)}${money(c.etfOnce)}${money(c.opt == null ? null : total, true)}
+        <td><button class="btn-sm ghost" data-nct="builder" title="Open this series' open option legs in the Builder as a live paper position at their paper entry prices">▶ Open in Builder</button></td></tr>`);
+    }
+    for (const m of [...(P.months || [])].reverse())
+      rows.push(`<tr><td class="l"><b>${NAME}</b></td><td class="l"><b>${monthName(m.expiry)}</b><div class="muted small">to ${dayLabel(m.expiry)}</div></td>
+        <td class="l"><span class="cat-pill">closed</span></td><td class="muted">${m.entry ? dayLabel(m.entry.day) : ''}<div>Nifty ${num0(m.spot0)} → ${num0(m.spotE)}</div></td>
+        <td class="l cc-legs"><div class="cc-leg"><b class="pos">Held</b> NIFTYBEES</div></td>
+        <td class="l cc-legs">${legsCell([], m.closed, 'CE')}</td><td class="l cc-legs">${legsCell([], m.closed, 'PE')}</td>
+        ${money(m.callPnl)}${money(m.putPnl)}${money(m.opt)}${money(m.etfOnce)}${money(m.withOnce, true)}<td></td></tr>`);
+    const sum = (k) => (P.months || []).reduce((n, m) => n + (m[k] || 0), 0);
+    const all = { opt: sum('opt') + (c?.opt || 0), etf: sum('etfOnce') + (c?.etfOnce || 0) };
+    el.innerHTML =
+      head +
+      `<div class="tbl-wrap sb-trades-wrap"><table class="grid-tbl sb-trades-tbl cc-trades-tbl"><thead><tr><th class="l">Strategy</th><th class="l">Month</th><th class="l">Status</th><th>Entered</th>
+        <th class="l">NIFTYBEES<br><span class="muted">units · price at the series start → now</span></th><th class="l">Call legs<br><span class="muted">lots × strike · entry → now / exit</span></th><th class="l">Put legs</th>
+        <th>Call legs</th><th>Put legs</th><th>Options</th><th>NIFTYBEES</th><th>Total</th><th></th></tr></thead><tbody>${rows.join('') || '<tr><td colspan="13" class="muted l">No series open yet: the next one opens at 09:30 on the next trading day.</td></tr>'}</tbody></table></div>
+      <div class="muted small pad">Whole paper trade: total <b class="${cls(all.opt + all.etf)}">${inrS(all.opt + all.etf)}</b> · options ${inrS(all.opt)} · NIFTYBEES held ${inrS(all.etf)}. P&amp;L after costs; the open series at the last traded prices. Paper only: nothing is sent.</div>`;
+    el.querySelector('[data-nct="open"]')?.addEventListener('click', () => {
+      tab = 'paper';
+      BT.store.set('nbo-tab', tab);
+      window.app.setView(VIEW);
+      if (started && params) render();
+    });
+    el.querySelector('[data-nct="delete"]')?.addEventListener('click', async () => {
+      if (!confirm(`Delete the ${NAME} paper trade and its history?`)) return;
+      try {
+        paper = await BT.api('/api/nbo/paper/reset', { confirm: true });
+      } catch (e) {
+        alert('Could not delete: ' + e.message);
+      }
+      renderNboTrades();
+    });
+    el.querySelector('[data-nct="builder"]')?.addEventListener('click', toBuilder);
+  }
+
+  function poll() {
+    clearTimeout(pollT);
+    if (tab !== 'paper' || window.app?.state.view !== VIEW || !started) return;
+    pollT = setTimeout(async () => {
+      if (!document.hidden && tab === 'paper' && window.app?.state.view === VIEW && document.activeElement?.id !== 'pscBudget') {
+        await loadPaper();
+        renderPaper();
+      }
+      poll();
+    }, 15_000);
+  }
+  let trT = null;
+  function pollTrades() {
+    clearTimeout(trT);
+    if (window.app?.state.view !== 'tr') return;
+    trT = setTimeout(async () => {
+      if (!document.hidden && window.app?.state.view === 'tr') await renderNboTrades();
+      pollTrades();
+    }, 30_000);
+  }
   function renderCompare() {
     const months = meta.monthly || [];
     const range = BT.store.get('nbo-range', { from: months[1] || '', to: months[months.length - 1] || '' });
@@ -1183,7 +1984,12 @@
   }
 
   window.addEventListener('viewchange', (e) => {
-    if (e.detail === VIEW) init();
+    if (e.detail === VIEW) {
+      init();
+      drawBees();
+    } else poll();
+    if (e.detail === 'tr') renderNboTrades().then(pollTrades);
   });
   if (window.app?.state.view === VIEW) init();
+  if (window.app?.state.view === 'tr') renderNboTrades().then(pollTrades);
 })();

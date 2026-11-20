@@ -70,6 +70,7 @@
     params.budget = v;
     BT.store.set('bpc-params', params);
     rebudgetAll();
+    drawBees();
   }
   // Saved results at another budget: the options do not depend on it, the NIFTYBEES P&L is in proportion to the units.
   const worth = (p, budget, S0) => (budget > 0 ? budget : S0 > 0 ? p.lotSize * p.lots * S0 : null);
@@ -180,6 +181,7 @@
   function applyIdea() {
     init();
     poll();
+    drawBees();
   }
   async function init() {
     if (started) return;
@@ -207,6 +209,29 @@
     else if (tab === 'live') live.render(body());
     else renderPaper();
     poll();
+    drawBees();
+  }
+
+  // NIFTYBEES to buy for a new trade (public/bees-need.js), under the tab bar on every tab but Live trade (as on the Put
+  // spread collar): the Backtest tab budget and lots, at Nifty and NIFTYBEES now (as Enter new trade sizes them). The Live
+  // trade tab shows its own (with no trade: large, and Enter new trade takes the same units and price to the Builder).
+  // Refreshed every 30 s.
+  let beesT = null;
+  async function drawBees() {
+    clearTimeout(beesT);
+    const el = $('bpcBees');
+    if (!el || !params) return;
+    if (tab === 'live' || window.app?.state.view !== VIEW) {
+      el.innerHTML = '';
+      return;
+    }
+    await window.BeesNeed?.fill(el, {
+      budget: params.budget,
+      lots: params.lots,
+      title: `NIFTYBEES to buy for a new ${NAME}`,
+      note: params.budget > 0 ? 'set on the Backtest tab (NIFTYBEES budget)' : 'a NIFTYBEES budget on the Backtest tab changes it',
+    });
+    beesT = setTimeout(drawBees, 30_000);
   }
   // The Live trade tab: the Covered call's (mcc-view.js / mcclive-view.js) on this strategy's routes and names.
   // "Enter new trade" builds the legs at the Backtest tab's distances and lots.
@@ -220,6 +245,8 @@
     shapeText: 'sell 1 CE ATM + 100, sell 1 PE ATM − 100, buy 1 PE 100 under it',
     shapeShort: 'sold call + sold put spread',
     flag: { kind: 'bpc' },
+    adjust: true, // Legs and payoff › Adjustments (loss-less changes), as on the Put spread collar
+    guide: true, // 🧭 the guided new trade: expiry → NIFTYBEES → strikes (💡 Suggestion) → Builder
     planBody: () => ({ params: params && { lots: params.lots, ce: params.ce, pe: params.pe, budget: params.budget } }),
   });
   body().addEventListener('click', (e) => {
@@ -1150,6 +1177,7 @@
     if (b) params[a] = { ...params[a], [b]: v };
     else params[a] = v;
     BT.store.set('bpc-params', params);
+    if (path === 'lots' || path === 'budget') drawBees();
   }
   function showProgress(pr) {
     const box = $('bpcProg');

@@ -44,6 +44,7 @@ module.exports = defineConfig([
         SBAdjust: 'readonly',
         Costs: 'readonly',
         Chart: 'readonly',
+        BeesNeed: 'readonly',
       },
     },
     rules: {

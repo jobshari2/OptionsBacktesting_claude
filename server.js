@@ -806,7 +806,8 @@ const bestUnits = (b, auto) => {
 };
 // The Live trade tabs with a Suggestion, and the legs its search builds: the collars' (sold call + put spread), or the
 // Modified covered call's (call ratio + put butterfly, in the tab's ratios: 1 × 2 and 2-3-1 by default).
-const BEST_KINDS = new Set(['psc', 'bpc', 'mcc', 'pbs']);
+// NIFTYBEES + options (nbo): the collars' search, with the Strategy tab's own legs priced on the same chain shown first.
+const BEST_KINDS = new Set(['psc', 'bpc', 'mcc', 'pbs', 'nbo']);
 // The search a Suggestion runs: the Put back spread's (bt/mcclive.js bestBackSpreads: b.maxLoss ₹ the options may lose at
 // expiry anywhere, b.rank, the tab's search settings b.params, the rules' pick first) or the collars' / covered call's.
 // base: { lot, lots, beesQty, beesPx, expiry, slip, day, settle? } and the floors.
@@ -841,7 +842,12 @@ const bestShape = (L, prm, b, plan) =>
         peakTol: bestPeakTol(b),
         fixed: plan?.pick?.legs?.length ? { label: 'By the rules', note: plan.shapeText || '', open: plan.pick.legs.map((l) => ({ type: l.type, strike: l.strike, side: l.side, lots: l.lots })) } : null,
       }
-    : { shape: 'collar' };
+    : L.kind === 'nbo'
+      ? {
+          shape: 'collar',
+          fixed: plan?.pick?.legs?.length ? { label: 'Your legs', note: plan.shapeText || '', open: plan.pick.legs.map((l) => ({ type: l.type, strike: l.strike, side: l.side, lots: l.lots })) } : null,
+        }
+      : { shape: 'collar' };
 async function bestHist(L, expiry, day, time, { minDown, minUp, minMid, midBand }, b) {
   const d = backtester.data;
   const series = (await bestHistSeries(L.defaults.minDays)).find((s) => s.expiry === expiry);
@@ -945,19 +951,21 @@ async function liveNow() {
 async function liveState(L, key, fresh = false) {
   const cfg = readJson(L.file) || {};
   const all = liveTrades(L);
+  // this strategy's: marked as it, its own paper series (whatever legs it has: NIFTYBEES + options), or shaped like it
+  const isOwn = (x) => Boolean(x.flag) || x.src === 'paper' || L.looks(x.legs.length ? x.legs : x.closed);
   const trades = all.map((x) => ({
     key: x.key,
     name: x.name,
     src: x.src,
     expiry: x.expiry,
-    mcc: Boolean(x.flag) || L.looks(x.legs.length ? x.legs : x.closed), // this strategy (marked, or its shape)
+    mcc: isOwn(x), // this strategy (marked, its own paper trade, or its shape)
     closed: Boolean(x.done),
     legs: x.legs.map(mccLive.legText).join(', '),
   }));
   const marketNow = () => liveNow().catch(() => null);
   // the newest open one of this strategy (saved trades are kept in the order they were first saved)
   const ownOpen = () =>
-    all.findLast((x) => x.src === 'builder' && !x.done && (x.flag || L.looks(x.legs))) || all.find((x) => !x.done && (x.flag || L.looks(x.legs)));
+    all.findLast((x) => x.src === 'builder' && !x.done && isOwn(x)) || all.find((x) => !x.done && isOwn(x));
   // None picked on the tab: no trade shown (the list still sent, to pick one or enter a new one)
   // newest: the newest open trade (a trade just entered from this tab and saved in the Builder)
   const want = key === 'newest' ? null : key || cfg.selected;
@@ -1210,7 +1218,7 @@ async function handleLive(req, res, url, p, L) {
   // Suggestion: the 5 best strikes for a new collar on an expiry's live chain (bt/mcclive.js bestCollars), each with
   // its P&L for Nifty moves from now. Nothing is sent to a broker.
   if (p === '/live/best' && req.method === 'POST') {
-    if (!BEST_KINDS.has(L.kind)) throw new Error('Suggestions of strikes are for the collars, the covered call and the put back spread only');
+    if (!BEST_KINDS.has(L.kind)) throw new Error('Suggestions of strikes are for the Trading Ideas strategies only');
     if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the strikes are priced on the live chain`);
     const b = JSON.parse((await readBody(req, 10_000)).toString('utf8') || '{}');
     const expiry = String(b.expiry || '');
@@ -1244,11 +1252,11 @@ async function handleLive(req, res, url, p, L) {
   // (the cached 1-minute option candles, downloading what the cache lacks), plus what each pick actually made at the
   // expiry. expiries: the expired monthly series (newest first) with their trading days.
   if (p === '/live/best-hist/expiries') {
-    if (!BEST_KINDS.has(L.kind)) throw new Error('Suggestions of strikes are for the collars, the covered call and the put back spread only');
+    if (!BEST_KINDS.has(L.kind)) throw new Error('Suggestions of strikes are for the Trading Ideas strategies only');
     return sendJson(res, 200, { expiries: await bestHistSeries(L.defaults.minDays), minDays: L.defaults.minDays });
   }
   if (p === '/live/best-hist' && req.method === 'POST') {
-    if (!BEST_KINDS.has(L.kind)) throw new Error('Suggestions of strikes are for the collars, the covered call and the put back spread only');
+    if (!BEST_KINDS.has(L.kind)) throw new Error('Suggestions of strikes are for the Trading Ideas strategies only');
     const b = JSON.parse((await readBody(req, 10_000)).toString('utf8') || '{}');
     return sendJson(res, 200, await bestHist(L, String(b.expiry || ''), String(b.day || ''), String(b.time || '09:30'), bestFloors(b), b));
   }
@@ -1696,14 +1704,36 @@ const nboCompact = (r) => ({
     costs: m.costs,
   })),
 });
+// Its paper trade: the Strategy tab's legs entered on the live chain every monthly series and rolled by its rules
+// (mccpaper.js on bt/nbo.js, as the collars'), kept in bt-data/nbo-paper(-demo).json.
+const nboPaper = createMccPaper({
+  file: path.join(__dirname, 'bt-data', DEMO ? 'nbo-paper-demo.json' : 'nbo-paper.json'),
+  demo: DEMO,
+  isMarketOpen: () => DEMO || isMarketOpen(),
+  getExpiries,
+  getChain: (expiry) => restChain(expiry, 30_000),
+  closeOf: async (day) => {
+    await backtester.data.loadIndex(day, day);
+    const a = backtester.data.spotDay(day);
+    return a ? a[a.length - 1] : null;
+  },
+  beesPrice: ccBeesPrice,
+  getLot: () => contracts.lot,
+  logError,
+  engine: nbo,
+  tag: 'nbo-paper',
+});
+setInterval(() => {
+  if (liveLoggedIn()) nboPaper.tick();
+}, 30_000);
 // Its Live trade tab (handleLive): a saved Builder trade marked as this strategy (snap.mcc.kind 'nbo', set by "Enter new
-// trade" or the Builder's selector), with its NIFTYBEES; other open trades can be picked. No paper trade here. "Enter new
-// trade" builds the legs the page sends (b.params: the Strategy tab's legs, lots and budget).
+// trade" or the Builder's selector), with its NIFTYBEES, or the paper trade's series; other open trades can be picked.
+// "Enter new trade" builds the legs the page sends (b.params: the Strategy tab's legs, lots and budget).
 LIVE.nbo = {
   kind: 'nbo',
   name: 'NIFTYBEES + options',
   file: path.join(__dirname, 'bt-data', DEMO ? 'nbo-live-demo.json' : 'nbo-live.json'),
-  paper: () => ({ state: () => ({ paper: null }) }),
+  paper: () => nboPaper,
   looks: () => false, // any legs can be this strategy: only the trades marked as it are its own
   strict: true,
   studyFile: () => NBO_FILES.study,
@@ -1786,6 +1816,39 @@ async function handleNbo(req, res, url, p0) {
       return sendJson(res, 200, { id: job.id, status: job.status });
     }
     if (p.startsWith('/live')) return await handleLive(req, res, url, p, LIVE.nbo);
+    if (p === '/model' && req.method === 'POST') {
+      // Strategy › Month by month: the model path, every month priced by Black-Scholes (nothing saved)
+      const b = await body();
+      const o = b.opts || {};
+      const clamp = (v, lo, hi, d) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d);
+      const params = nbo.merge(b.params || {});
+      if (!params.legs.some((l) => l.lots > 0)) throw new Error('Add at least one option leg with lots above 0');
+      const opts = {
+        S0: clamp(o.S0, 5000, 100000, 24000),
+        pct: clamp(o.pct, -60, 100, 10),
+        months: Math.round(clamp(o.months, 1, 36, 12)),
+        iv: clamp(o.iv, 5, 60, 13),
+        swings: o.swings !== false,
+      };
+      return sendJson(res, 200, nbo.runNboModel(params, opts));
+    }
+    if (p === '/paper') return sendJson(res, 200, { ...nboPaper.state(), demo: DEMO });
+    if (p.startsWith('/paper/') && req.method === 'POST') {
+      const b = await body();
+      if (p === '/paper/start') {
+        if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the paper trade follows the live chain`);
+        const prm = nbo.merge(b.params || {});
+        if (!prm.legs.some((l) => l.lots > 0)) throw new Error('Add at least one option leg with lots above 0 on the Strategy tab');
+        await nboPaper.start(b.params || {});
+      } else if (p === '/paper/pause') nboPaper.pause();
+      else if (p === '/paper/resume') await nboPaper.resume();
+      else if (p === '/paper/budget') await nboPaper.setBudget(b.budget);
+      else if (p === '/paper/reset') {
+        if (b.confirm !== true) throw new Error('Resetting deletes the paper trade: it needs confirmation');
+        nboPaper.reset();
+      } else return sendJson(res, 404, { error: 'Not found' });
+      return sendJson(res, 200, { ...nboPaper.state(), demo: DEMO });
+    }
     if (p === '/job') {
       const job = nboJobs.get(url.searchParams.get('id'));
       if (!job) return sendJson(res, 404, { error: 'Job not found (the server may have restarted): run it again' });

@@ -22,6 +22,7 @@
     skip: 'Not done',
     budget: 'NIFTYBEES',
   };
+  const NAME = 'Modified covered call';
   const ROLE = { ceL: 'Buy call', ceS: 'Sell call', peL: 'Buy put', peS: 'Sell put', peW: 'Buy put (wing)', ceH: 'Buy call (hedge)' };
   // study rows the rules text quotes
   const REC = { base: 'none', user: 'move2', all: 'all15' };
@@ -70,6 +71,7 @@
     params.budget = v;
     BT.store.set('mcc-params', params);
     rebudgetAll();
+    drawBees();
   }
 
   // ---------- saved results at the budget ----------
@@ -189,6 +191,7 @@
   function applyIdea() {
     init();
     poll();
+    drawBees();
   }
 
   async function init() {
@@ -218,6 +221,29 @@
     else if (tab === 'live') window.MccLive.render($('mccBody'));
     else renderPaper();
     poll();
+    drawBees();
+  }
+
+  // NIFTYBEES to buy for a new trade (public/bees-need.js), under the tab bar on every tab but Live trade (as on the Put
+  // spread collar): the Backtest tab budget and lots, at Nifty and NIFTYBEES now (as Enter new trade sizes them). The Live
+  // trade tab shows its own (with no trade: large, and Enter new trade takes the same units and price to the Builder).
+  // Refreshed every 30 s.
+  let beesT = null;
+  async function drawBees() {
+    clearTimeout(beesT);
+    const el = $('mccBees');
+    if (!el || !params) return;
+    if (tab === 'live' || window.app?.state.view !== 'cc') {
+      el.innerHTML = '';
+      return;
+    }
+    await window.BeesNeed?.fill(el, {
+      budget: params.budget,
+      lots: params.lots,
+      title: `NIFTYBEES to buy for a new ${'Modified covered call'}`,
+      note: params.budget > 0 ? 'set on the Backtest tab (NIFTYBEES budget)' : 'a NIFTYBEES budget on the Backtest tab changes it',
+    });
+    beesT = setTimeout(drawBees, 30_000);
   }
   // A click on a study rule (Backtest or Strategy & rules tab) opens its full backtest; a click on an adjustment
   // opens its month.
@@ -510,6 +536,11 @@
       <div class="panel cc-doc">
         <h3>When Nifty rises: what you can do</h3>
         ${risesHtml()}
+      </div>
+
+      <div class="panel cc-doc">
+        <h3>When Nifty falls: what you can do</h3>
+        ${fallsHtml()}
       </div>
 
       <div class="panel cc-doc cc-ex">
@@ -863,6 +894,59 @@
     });
   }
 
+  // ----- When Nifty rises / falls: study variants side by side (rows open the rule's full backtest) -----
+  const avgOf = (b, k = 'withOnce') => (b?.n ? b[k] / b.n : 0);
+  function variantTable(list, hiCol) {
+    const r0 = studyRow('none');
+    const rows = list.map(([id, label]) => [studyRow(id), label]).filter(([r]) => r);
+    const hold = (k) => inrS(avgOf(r0.summary.byMove[k], 'hold'));
+    const th = (k, label) => `<th${hiCol === k ? ' class="cc-col-tot"' : ''}>${label}</th>`;
+    const td = (k, v) => `<td class="${hiCol === k ? 'cc-col-tot ' : ''}${cls(v)}">${inrS(v)}</td>`;
+    return `<div class="tbl-wrap"><table class="grid-tbl"><thead><tr><th class="l">Variant</th><th>Whole period</th>${th('up', `Avg up month (hold ${hold('up')})`)}${th('flat', 'Avg flat month')}${th('down', `Avg down month (hold ${hold('down')})`)}<th>Call ratio (period)</th><th>Butterfly (period)</th><th>Worst month (options)</th><th>Max drawdown (with NIFTYBEES)</th></tr></thead>
+      <tbody>${rows
+        .map(([r, label]) => {
+          const s = r.summary;
+          return `<tr class="cc-click${r.id === 'none' ? ' on' : ''}" data-rule="${r.id}" title="Click: this rule's full backtest on the Backtest tab"><td class="l">${esc(label)}</td><td class="${cls(s.withOnce.total)}">${inrS(s.withOnce.total)}</td>${td('up', avgOf(s.byMove.up))}${td('flat', avgOf(s.byMove.flat))}${td('down', avgOf(s.byMove.down))}<td class="${cls(s.call?.total)}">${s.call ? inrS(s.call.total) : '—'}</td><td class="${cls(s.put?.total)}">${s.put ? inrS(s.put.total) : '—'}</td><td class="neg">${inr(s.opt.worst)}</td><td class="neg">${inr(s.withOnce.maxDD)}</td></tr>`;
+        })
+        .join('')}</tbody></table></div>`;
+  }
+  const perMonth = (id, k) => {
+    const r = studyRow(id);
+    return r ? inrS(avgOf(r.summary.byMove[k])) : '—';
+  };
+  const period = (id) => {
+    const r = studyRow(id);
+    return r ? inrS(r.summary.withOnce.total) : '—';
+  };
+  function fallsHtml() {
+    const r0 = studyRow('none');
+    if (!r0) return '<p class="muted">Run the adjustment study on the Backtest tab: this section is drawn from it.</p>';
+    const dn = r0.summary.byMove.down;
+    const p = params;
+    return `<p>Below the bought puts the 2-3-1 butterfly gains as Nifty falls toward its sold strike (ATM − ${p.pe.buyOff + p.pe.sellGap}), is at its best there and, with the far wing bought, keeps a fixed amount below it, while NIFTYBEES falls on unprotected. The call ratio keeps its net premium in a fall. In the backtest's ${dn.n} months when Nifty fell more than 2 %, the strategy made <b>${inrS(avgOf(dn))}</b> a month on average with NIFTYBEES held, against <b>${inrS(avgOf(dn, 'hold'))}</b> for NIFTYBEES alone.
+      Ways to handle a fall, on the same months:</p>
+      ${variantTable(
+        [
+          ['none', 'No adjustments (the strategy as entered)'],
+          [REC.user, 'Your rule: sold strikes rolled at 2 %'],
+          ['move1', 'Sold strikes rolled at 1 %'],
+          ['move3', 'Sold strikes rolled at 3 %'],
+          ['move15nc', '1.5 % rolls, sold puts may pass the bought puts'],
+          ['decay35', 'Roll a sold leg at 35 % of its premium'],
+          [REC.all, 'Whole spread / butterfly follows Nifty at 1.5 %'],
+          ['all2', 'Whole spread / butterfly follows Nifty at 2 %'],
+          ['allDecay35', 'Whole spread / butterfly at 35 % premium'],
+        ],
+        'down',
+      )}
+      <ul style="margin-top:8px">
+        <li><b>Roll the sold calls down</b> (in your rule): more premium as Nifty falls (${perMonth(REC.user, 'down')} per down month), but a rebound runs into the lower strike and is capped there (${perMonth(REC.user, 'up')} per up month).</li>
+        <li><b>Move the whole butterfly with the fall</b>: books what it made and sets it up again under the new ATM (${perMonth(REC.all, 'down')} per down month, ${period(REC.all)} over the period at 1.5 %; ${perMonth('all2', 'down')} / ${period('all2')} at 2 %).</li>
+        <li><b>Roll sooner or later</b>: at 1 % ${perMonth('move1', 'down')} per down month (${period('move1')} over the period), at 3 % ${perMonth('move3', 'down')} (${period('move3')}).</li>
+        <li><b>Let the sold puts pass the bought puts</b>: ${perMonth('move15nc', 'down')} per down month, ${period('move15nc')} over the period; 3 sold over 2 bought when the market turns.</li>
+      </ul>
+      <p class="muted small">One period of history: ${dn.n} falling months. Click a row for its full backtest.</p>`;
+  }
   // ----- When Nifty rises -----
   function risesHtml() {
     const r0 = studyRow('none');
@@ -884,10 +968,7 @@
       .filter(([r]) => r);
     const avg = (b, k = 'withOnce') => (b.n ? b[k] / b.n : 0);
     const holdUp = avg(up, 'hold');
-    const row = ([r, label]) => {
-      const s = r.summary;
-      return `<tr${r.id === 'none' ? ' class="cc-click on"' : ''}><td class="l">${esc(label)}</td><td class="${cls(s.withOnce.total)}">${inrS(s.withOnce.total)}</td><td class="${cls(avg(s.byMove.up))}">${inrS(avg(s.byMove.up))}</td><td class="${cls(avg(s.byMove.flat))}">${inrS(avg(s.byMove.flat))}</td><td class="${cls(avg(s.byMove.down))}">${inrS(avg(s.byMove.down))}</td><td class="${cls(s.call.total)}">${inrS(s.call.total)}</td><td class="${cls(s.put.total)}">${inrS(s.put.total)}</td><td class="neg">${inr(s.opt.worst)}</td></tr>`;
-    };
+    const ROWS = ids.map(([r, label]) => [r.id, label]);
     const f = (id) => {
       const r = studyRow(id);
       return r ? inrS(avg(r.summary.byMove.up)) : '—';
@@ -898,8 +979,7 @@
     };
     return `<p>Above the sold call strike the second sold call loses what NIFTYBEES gains, so a rally is capped there (the animation above shows it). In the backtest's ${up.n} months when Nifty rose more than 2 %, the strategy made <b>${inrS(avg(up))}</b> a month on average with NIFTYBEES held, while simply holding the same NIFTYBEES made <b>${inrS(holdUp)}</b>.
       What can be done about it, tested on the same ${r0.summary.months} months (${dayLabel(r0.summary.from)} – ${dayLabel(r0.summary.to)}, with NIFTYBEES held, 0.5 % slippage):</p>
-      <div class="tbl-wrap"><table class="grid-tbl"><thead><tr><th class="l">Variant</th><th>Whole period</th><th>Avg up month (hold ${inrS(holdUp)})</th><th>Avg flat month</th><th>Avg down month</th><th>Call ratio (period)</th><th>Butterfly (period)</th><th>Worst month (options)</th></tr></thead>
-      <tbody>${ids.map(row).join('')}</tbody></table></div>
+      ${variantTable(ROWS, 'up')}
       <ul style="margin-top:8px">
         <li><b>Roll the call ratio up</b> (close all three calls, open 1 × 2 again around the new ATM) when Nifty reaches the sold strike: keeps the next leg of a rally (${f('upRoll')} per up month) but pays the loss on the sold calls every time Nifty touches the strike and falls back. Over the whole period ${tot('upRoll')}.</li>
         <li><b>Buy one sold call back</b> at the sold strike, so NIFTYBEES runs free above it: the most per up month (${f('upBuy')}) and the most expensive overall (${tot('upBuy')}).</li>
@@ -907,7 +987,7 @@
         <li><b>Sell 1 call instead of 2</b>: no extra sold call, so NIFTYBEES keeps its gain above the sold strike — the most of a rally kept (${f('ratio11')} per up month) — but the second sold call is where most of the income comes from, so over the whole period it lost (${tot('ratio11')}). Only worth it in a month you are confident will rise: a decision at entry, not an adjustment.</li>
         <li><b>Already in your rule:</b> when Nifty rises the sold puts are moved up, collecting more premium (${f(REC.user)} per up month).</li>
       </ul>
-      <p class="muted small">One period of history, not a forecast: only ${up.n} rising months. Each variant can be re-tested on the Backtest tab (Up-market extra, call lots).</p>`;
+      <p class="muted small">One period of history, not a forecast: only ${up.n} rising months. Click a row for its full backtest; each variant can be re-tested on the Backtest tab (Up-market extra, call lots).</p>`;
   }
 
   // ----- Payoff diagram of the month -----
@@ -1156,6 +1236,7 @@
     if (b) params[a] = { ...params[a], [b]: v };
     else params[a] = v;
     BT.store.set('mcc-params', params);
+    if (path === 'lots' || path === 'budget') drawBees();
   }
   function showProgress(pr) {
     const box = $('mccProg');
@@ -1249,7 +1330,7 @@
           : ''
       }
       <div class="panel cc-doc">
-        <h3>Result: ${dayLabel(sa.from)} – ${dayLabel(sa.to)}, ${sa.months} monthly series, ${sizeLabel(A.params)}</h3>
+        <h3>Result: ${dayLabel(sa.from)} – ${dayLabel(sa.to)}, ${sa.months} monthly series, ${sizeLabel(A.params)}, ${A.params.target?.on ? `ideal trade (flat zone ₹${num0(A.params.target.amount)})` : `calls ATM+${A.params.ce.buyOff}/+${A.params.ce.buyOff + A.params.ce.sellGap}, puts ATM−${A.params.pe.buyOff}/−${A.params.pe.buyOff + A.params.pe.sellGap}/−${A.params.pe.buyOff + A.params.pe.sellGap + A.params.pe.wingGap}`}</h3>
         ${B.withAdj !== (viewing?.raw || raw.backtest)?.withAdj ? `<div class="muted small" style="margin-bottom:6px">Run with ${sizeLabel((viewing?.raw || raw.backtest).withAdj.params)}; shown for your budget: the options are the same, the NIFTYBEES figures scaled to it.</div>` : ''}
         ${kpiBlock('With adjustments', sa, adjDesc(A.params) + upDesc(A.params) + ` · ${sa.adjustments} adjustments · costs ${inr(sa.costs)}`)}
         ${kpiBlock('Without adjustments', sn, `costs ${inr(sn.costs)}`)}
@@ -1266,7 +1347,7 @@
             const n = byExp.get(m.expiry);
             if (!m.ok) return `<tr><td class="l">${monthName(m.expiry)}</td><td colspan="11" class="muted l">${esc(m.skip)}</td></tr>`;
             const open = all || openMonth === m.expiry;
-            return `<tr class="cc-click${open ? ' on' : ''}" data-m="${m.expiry}"><td class="l">${monthName(m.expiry)}</td><td>${num0(m.spot0)} → ${num0(m.spotE)}</td><td class="${cls(m.move)}">${pct(m.move)}</td><td>${m.adjustments}</td>
+            return `<tr class="cc-click${open ? ' on' : ''}" data-m="${m.expiry}"><td class="l">${monthName(m.expiry)}<div><button class="btn-sm ghost" style="margin-top:3px;white-space:nowrap" data-mbld="${m.expiry}" title="Replay this month in the Builder (Historical replay): the legs at the backtest's entry, its ${m.adjustments} roll${m.adjustments === 1 ? '' : 's'} made again as the replay reaches them">Open in Builder ▸</button></div></td><td>${num0(m.spot0)} → ${num0(m.spotE)}</td><td class="${cls(m.move)}">${pct(m.move)}</td><td>${m.adjustments}</td>
               <td class="${cls(m.callPnl)}">${m.callPnl != null ? inrS(m.callPnl) : '—'}</td><td class="${cls(m.putPnl)}">${m.putPnl != null ? inrS(m.putPnl) : '—'}</td>
               <td class="cc-col-opt ${cls(m.opt)}">${inrS(m.opt)}</td><td class="cc-col-opt ${cls(n?.opt)}">${n?.ok ? inrS(n.opt) : '—'}</td>
               <td class="${cls(m.etfOnce)}">${inrS(m.etfOnce)}</td><td class="${cls(m.etfMonthly)}">${inrS(m.etfMonthly)}</td>
@@ -1280,7 +1361,13 @@
       <div class="panel cc-doc" id="mccStudyPanel"><h3>Adjustment study</h3>${saved.study ? studyTable(saved.study) + `<div class="muted small pad">Run ${new Date(saved.study.at).toLocaleString('en-IN')} with ${sizeLabel(saved.study.rows[0]?.params)}. The rules tab explains what to take from it.</div>` : '<p class="muted">Not run yet: "Run adjustment study" above.</p>'}</div>`;
     drawEquity(A, N);
     el.querySelectorAll('tr[data-m]').forEach((tr) =>
-      tr.addEventListener('click', () => {
+      tr.addEventListener('click', (e) => {
+        const b = e.target.closest('button[data-mbld]');
+        if (b)
+          return monthToBuilder(
+            A.months.find((m) => m.expiry === b.dataset.mbld),
+            A.params,
+          );
         openMonth = openMonth === tr.dataset.m ? null : tr.dataset.m;
         renderResults();
       }),
@@ -1318,6 +1405,64 @@
   }
   // Every roll / extra of a backtest, month by month, with the structure it touched.
   const SIDE = { rollPut: 'PE', rollCall: 'CE', upRoll: 'CE', buyBack: 'CE', upHedge: 'CE' };
+  // One month of the backtest replayed in the Builder (Historical replay, multi-day): the legs at the backtest's entry
+  // fills, and every roll it made as the Builder's plan, made again at the backtest's fills when the replay reaches
+  // that minute. Both are rebuilt from the month's legs (m.closed: when each was opened and, unless held to expiry,
+  // closed). The NIFTYBEES are left to the Builder's "Held against NIFTYBEES" box (ticked on a replay: the recorded
+  // NIFTYBEES price at the entry, ₹16 L by default); only the strategy is marked, so the box names the Modified covered call.
+  function monthToBuilder(m, p) {
+    if (!m?.ok) return;
+    const sb = BT.store.get('sb', {});
+    if (sb.legs?.some((l) => l.open) && !sb.tradeId && !confirm('The Builder holds a position that is not saved. Replace it with this month of the backtest?'))
+      return;
+    const lot = p.lotSize;
+    const act = (side) => (side > 0 ? 'B' : 'S');
+    const key = (x) => `${x.day} ${x.time}`;
+    const at0 = m.entry || m.events.find((e) => e.kind === 'entry');
+    const atExp = (c) => c.exitAt.day === m.expiry && c.exitAt.time === '15:30';
+    // a leg partly closed is listed once per part (same id): its lots add up again
+    const add = (map, id, op) => map.set(id, map.has(id) ? { ...op, qty: map.get(id).qty + op.qty } : op);
+    const entry = new Map();
+    const steps = new Map(); // 'day time' -> { day, time, close: [ops], open: Map(id -> op) }
+    const stepAt = (x) => {
+      if (!steps.has(key(x))) steps.set(key(x), { day: x.day, time: x.time, close: [], open: new Map() });
+      return steps.get(key(x));
+    };
+    for (const c of m.closed) {
+      const op = { action: act(c.side), type: c.type, strike: c.strike, expiry: m.expiry, lot };
+      if (!c.at || key(c.at) === key(at0)) add(entry, c.id, { ...op, qty: c.lots * lot, px: c.entry });
+      else add(stepAt(c.at).open, c.id, { ...op, op: 'open', qty: c.lots * lot, px: c.entry });
+      if (!atExp(c)) stepAt(c.exitAt).close.push({ ...op, op: 'close', qty: c.lots * lot, px: c.exit });
+    }
+    const plan = [...steps.values()]
+      .sort((a, b) => (key(a) < key(b) ? -1 : 1))
+      .map((s) => {
+        const ev = m.events.filter((e) => e.day === s.day && e.time === s.time && SIDE[e.kind]);
+        return {
+          day: s.day,
+          time: s.time,
+          title: ev.map((e) => KIND[e.kind] || e.kind).join(' + ') || 'Roll',
+          why: ev.map((e) => e.text).join(' · '),
+          ops: [...s.close, ...s.open.values()],
+        };
+      });
+    BT.emit('open-builder', {
+      idea: NAME, // the Trading Ideas strategy, named in the Builder's Positions heading
+      src: 'hist',
+      expiry: m.expiry,
+      day: at0.day,
+      time: at0.time,
+      session: 'multi',
+      lot,
+      strategy: { name: NAME, mode: 'positional', expiry: 'monthly', entry: { time: at0.time, after: 1 }, exit: { time: '15:30', dteDays: 0 }, legs: [] },
+      fromLabel: `backtest month: entered ${at0.time} on ${dayLabel(at0.day)}, held to the ${dayLabel(m.expiry)} expiry`,
+      note: `${monthName(m.expiry)} series${viewing ? ` (study rule: ${viewing.label})` : ''} · Nifty ${num0(m.spot0)} → ${num0(m.spotE)} · options ${inrS(m.opt)} after costs in the backtest`,
+      bt: { costs: m.costs, net: m.opt },
+      plan,
+      legs: [...entry.values()].map((l) => ({ action: l.action, type: l.type, strike: l.strike, expiry: l.expiry, lots: Math.round(l.qty / lot), px: l.px })),
+      mcc: { on: false, kind: 'mcc' },
+    });
+  }
   function adjustmentList(A) {
     const rows = A.months.filter((m) => m.ok).flatMap((m) => m.events.filter((e) => SIDE[e.kind] || e.kind === 'skip').map((e) => ({ m, e })));
     if (!rows.length) return '<p class="muted">No adjustments in this run.</p>';

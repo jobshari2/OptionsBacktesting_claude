@@ -78,6 +78,7 @@
     params.budget = v;
     BT.store.set('pbs-params', params);
     rebudgetAll();
+    drawBees();
   }
   // Saved results at another budget: the options do not depend on it, the NIFTYBEES P&L is in proportion to the units.
   const worth = (p, budget, S0) => (budget > 0 ? budget : S0 > 0 ? p.lotSize * p.lots * S0 : null);
@@ -176,6 +177,7 @@
   function applyIdea() {
     init();
     poll();
+    drawBees();
   }
   async function init() {
     if (started) return;
@@ -203,6 +205,29 @@
     else if (tab === 'live') live.render(body());
     else renderPaper();
     poll();
+    drawBees();
+  }
+
+  // NIFTYBEES to buy for a new trade (public/bees-need.js), under the tab bar on every tab but Live trade (as on the Put
+  // spread collar): the Backtest tab budget and lots, at Nifty and NIFTYBEES now (as Enter new trade sizes them). The Live
+  // trade tab shows its own (with no trade: large, and Enter new trade takes the same units and price to the Builder).
+  // Refreshed every 30 s.
+  let beesT = null;
+  async function drawBees() {
+    clearTimeout(beesT);
+    const el = $('pbsBees');
+    if (!el || !params) return;
+    if (tab === 'live' || window.app?.state.view !== VIEW) {
+      el.innerHTML = '';
+      return;
+    }
+    await window.BeesNeed?.fill(el, {
+      budget: params.budget,
+      lots: params.lots,
+      title: `NIFTYBEES to buy for a new ${NAME}`,
+      note: params.budget > 0 ? 'set on the Backtest tab (NIFTYBEES budget)' : 'a NIFTYBEES budget on the Backtest tab changes it',
+    });
+    beesT = setTimeout(drawBees, 30_000);
   }
   // The Live trade tab: the collars' (mcclive-view.js) on this strategy's routes and names. "Enter new trade" runs the
   // search on the expiry's live chain with the Backtest tab's search settings and lots.
@@ -216,6 +241,8 @@
     shapeText: 'sell 1 PE / buy 2 PE + put butterflies, strikes searched on the live chain within the options loss limit',
     shapeShort: 'put back spread',
     flag: { kind: 'pbs' },
+    adjust: true, // Legs and payoff › Adjustments (loss-less changes), as on the Put spread collar
+    guide: true, // 🧭 the guided new trade: expiry → NIFTYBEES → strikes (💡 Suggestion) → Builder
     planBody: () => ({
       params: params && { lots: params.lots, bs: params.bs, pick: params.pick, fixed: params.fixed, costs: params.costs, budget: params.budget },
     }),
@@ -506,6 +533,16 @@
           <div><div class="mcc-bars" id="pbsMmBars"></div><div class="small" id="pbsMmText" style="margin-top:8px"></div></div>
           <div class="cc-pay"><div class="cc-pay-chart"><canvas id="pbsMmChart"></canvas></div></div>
         </div>
+      </div>
+
+      <div class="panel cc-doc">
+        <h3>When Nifty rises: what you can do</h3>
+        ${risesHtml()}
+      </div>
+
+      <div class="panel cc-doc">
+        <h3>When Nifty falls: what you can do</h3>
+        ${fallsHtml()}
       </div>
 
       <div class="panel cc-doc">
@@ -922,18 +959,81 @@
 
   // ----- The study's variants side by side -----
   const avgOf = (b, k = 'withOnce') => (b?.n ? b[k] / b.n : 0);
-  function variantTable(list) {
+  // hiCol: 'up' | 'down' marks the column a section is about (When Nifty rises / falls)
+  function variantTable(list, hiCol) {
     const r0 = studyRow('none');
     const rows = list.map(([id, label]) => [studyRow(id), label]).filter(([r]) => r);
     if (!rows.length) return '';
     const hold = (k) => inrS(avgOf(r0.summary.byMove[k], 'hold'));
-    return `<div class="tbl-wrap"><table class="grid-tbl"><thead><tr><th class="l">Variant</th><th class="cc-col-tot">Whole period, + NIFTYBEES held</th><th>Options</th><th>Avg up month (hold ${hold('up')})</th><th>Avg flat month</th><th>Avg down month (hold ${hold('down')})</th><th>Worst month (options)</th><th>Max drawdown (+ NIFTYBEES)</th><th>Re-picks</th></tr></thead>
+    const hi = (k) => (hiCol === k ? ' class="cc-col-tot"' : '');
+    return `<div class="tbl-wrap"><table class="grid-tbl"><thead><tr><th class="l">Variant</th><th class="cc-col-tot">Whole period, + NIFTYBEES held</th><th>Options</th><th${hi('up')}>Avg up month (hold ${hold('up')})</th><th>Avg flat month</th><th${hi('down')}>Avg down month (hold ${hold('down')})</th><th>Worst month (options)</th><th>Max drawdown (+ NIFTYBEES)</th><th>Re-picks</th></tr></thead>
       <tbody>${rows
         .map(([r, label]) => {
           const s = r.summary;
           return `<tr class="cc-click${r.id === 'none' ? ' on' : ''}" data-rule="${r.id}" title="Click: this rule's full backtest on the Backtest tab"><td class="l">${esc(label)}</td><td class="cc-col-tot ${cls(s.withOnce.total)}">${inrS(s.withOnce.total)}</td><td class="${cls(s.opt.total)}">${inrS(s.opt.total)}</td><td class="${cls(avgOf(s.byMove.up))}">${inrS(avgOf(s.byMove.up))}</td><td class="${cls(avgOf(s.byMove.flat))}">${inrS(avgOf(s.byMove.flat))}</td><td class="${cls(avgOf(s.byMove.down))}">${inrS(avgOf(s.byMove.down))}</td><td class="neg">${inr(s.opt.worst)}</td><td class="neg">${inr(s.withOnce.maxDD)}</td><td>${s.adjustments}</td></tr>`;
         })
         .join('')}</tbody></table></div>`;
+  }
+  const perMonth = (id, k) => {
+    const r = studyRow(id);
+    return r ? inrS(avgOf(r.summary.byMove[k])) : '—';
+  };
+  const period = (id) => {
+    const r = studyRow(id);
+    return r ? inrS(r.summary.withOnce.total) : '—';
+  };
+  // When Nifty rises / falls: what the study's variants did in the up and the down months (as on the Put spread collar)
+  function risesHtml() {
+    const r0 = studyRow('none');
+    if (!r0) return '<p class="muted">Run the study on the Backtest tab: this section is drawn from it.</p>';
+    const up = r0.summary.byMove.up;
+    return `<p>No call is sold, so NIFTYBEES keep their whole rise; above the strikes every put expires worthless and the options end at what the back spread and the butterflies cost or took in (the search keeps that within the loss limit). In the backtest's ${up.n} months when Nifty rose more than 2 %, the strategy made <b>${inrS(avgOf(up))}</b> a month on average with NIFTYBEES held, while the same NIFTYBEES alone made <b>${inrS(avgOf(up, 'hold'))}</b>: the gap is what the puts cost in a rising month.
+      What can be done about it, on the same ${r0.summary.months} months (${dayLabel(r0.summary.from)} – ${dayLabel(r0.summary.to)}, NIFTYBEES held, 0.5 % slippage):</p>
+      ${variantTable(
+        [
+          ['none', 'Hold to expiry (the strategy as entered)'],
+          ['move2', 'Re-pick at a 2 % move (default)'],
+          ['move2up', 'Re-pick only after a 2 % rise'],
+          ['rankCredit', 'Rank by P&L if Nifty stays'],
+          ['loss0', 'Loss limit ₹0 (least loss)'],
+          ['noFly', 'Back spread alone (no flies)'],
+          ['put', 'Plain bought put ATM−300'],
+        ],
+        'up',
+      )}
+      <ul style="margin-top:8px">
+        <li><b>Re-pick after a rise</b>: the old puts are nearly worthless, the new search sits under the new Nifty (${perMonth('move2up', 'up')} per up month, ${period('move2up')} over the period).</li>
+        <li><b>Rank by Nifty staying</b> or <b>a ₹0 loss limit</b>: the trades that cost least if Nifty does not fall (${perMonth('rankCredit', 'up')} and ${perMonth('loss0', 'up')} per up month).</li>
+        <li><b>A plain bought put</b> pays its whole premium away in a rise (${perMonth('put', 'up')} per up month): the back spread is cheaper to hold in a rally.</li>
+      </ul>
+      <p class="muted small">One period of history, not a forecast: only ${up.n} rising months. Click a row for its full backtest.</p>`;
+  }
+  function fallsHtml() {
+    const r0 = studyRow('none');
+    if (!r0) return '<p class="muted">Run the study on the Backtest tab: this section is drawn from it.</p>';
+    const dn = r0.summary.byMove.down;
+    return `<p>Between the sold put and the two bought puts the back spread loses (its dip); the butterflies inside that stretch are what fill it. Below the bought puts the extra bought put gains a point for every point Nifty falls and hedges the NIFTYBEES. In the backtest's ${dn.n} months when Nifty fell more than 2 %, the strategy made <b>${inrS(avgOf(dn))}</b> a month on average with NIFTYBEES held, against <b>${inrS(avgOf(dn, 'hold'))}</b> for NIFTYBEES alone.
+      Ways to handle a fall, on the same months:</p>
+      ${variantTable(
+        [
+          ['none', 'Hold to expiry (the strategy as entered)'],
+          ['move2', 'Re-pick at a 2 % move (default)'],
+          ['move2dn', 'Re-pick only after a 2 % fall'],
+          ['move1', 'Re-pick at a 1 % move'],
+          ['loss5k', 'Loss limit ₹5,000 (more protection allowed)'],
+          ['loss10k', 'Loss limit ₹10,000'],
+          ['oneFly', 'At most 1 fly'],
+          ['ideas', 'Live Ideas shape (fixed geometry)'],
+          ['put', 'Plain bought put ATM−300'],
+        ],
+        'down',
+      )}
+      <ul style="margin-top:8px">
+        <li><b>Re-pick after a fall</b>: books what the puts made and searches again under the new Nifty (${perMonth('move2dn', 'down')} per down month, ${period('move2dn')} over the period); at 1 % both ways ${perMonth('move1', 'down')}.</li>
+        <li><b>Allow a bigger loss limit</b>: the search can buy protection nearer the money (${perMonth('loss5k', 'down')} per down month at ₹5,000, ${perMonth('loss10k', 'down')} at ₹10,000).</li>
+        <li><b>A plain bought put</b> protects all the way down from its strike (${perMonth('put', 'down')} per down month, ${period('put')} over the period) but costs its whole premium when Nifty does not fall.</li>
+      </ul>
+      <p class="muted small">One period of history (Nifty fell over it): ${dn.n} falling months. Click a row for its full backtest.</p>`;
   }
   function variantsHtml() {
     const r0 = studyRow('none');
@@ -1125,6 +1225,7 @@
     if (b) params[a] = { ...params[a], [b]: v };
     else params[a] = v;
     BT.store.set('pbs-params', params);
+    if (path === 'lots' || path === 'budget') drawBees();
   }
   function showProgress(pr) {
     const box = $('pbsProg');

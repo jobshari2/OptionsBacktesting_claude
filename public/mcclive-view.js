@@ -236,7 +236,7 @@
 
       el.innerHTML =
         head +
-        `<div class="panel cc-doc"><h3>Legs and payoff <button class="btn-sm ghost" id="mclToSb" title="${P.src === 'builder' ? 'Open this saved trade in the Builder: its open and closed legs, log and P&amp;L, to adjust it there' : "Open the paper series's open legs in the Builder as a live paper position at their entry prices"}">Load in Builder ▸</button>${ADJ ? ' <button class="btn-sm ghost" id="mclAdjBtn" title="Options only: how much profit the sold call (or the put spread) needs before closing or covering it leaves the options with no loss at expiry, up or down; whether it is there now, and at which Nifty levels and days it would be. Builder ▸ makes the change there.">Adjustments</button>' : ''}</h3><div class="cc-pos-grid">
+        `<div class="panel cc-doc"><h3>Legs and payoff <button class="btn-sm ghost" id="mclToSb" title="${P.src === 'builder' ? 'Open this saved trade in the Builder: its open and closed legs, log and P&amp;L, to adjust it there' : "Open the paper series's open legs in the Builder as a live paper position at their entry prices"}">Load in Builder ▸</button>${ADJ ? ' <button class="btn-sm ghost" id="mclAdjBtn" title="Options only: how much profit the legs (the sold call, the put side) need before closing or covering them leaves the options with no loss at expiry, up or down; whether it is there now, and at which Nifty levels and days it would be. Builder ▸ makes the change there.">Adjustments</button>' : ''}</h3><div class="cc-pos-grid">
         <div class="tbl-wrap"><table class="grid-tbl mcl-legs"><thead><tr><th class="l">Leg</th><th class="l">Status</th><th>Entry</th><th title="Open legs: their last traded price (LTP) now; hover a price for its bid / ask. Closed legs: the price they were closed at">Now / exit</th><th title="Implied volatility at this strike now (used for the 'if today' P&amp;L)">IV</th><th>P&amp;L</th></tr></thead><tbody id="mclLegsBody">${legsBodyHtml(n)}</tbody></table><div class="muted small">ATM IV ${(st.market.atmIv * 100).toFixed(1)} % · lot ${lot()}${P.closed.length ? ' · closed legs count with the P&amp;L they were closed at, in every figure on this screen (a fixed amount at any Nifty)' : ''}</div></div>
         <div class="cc-pay"><div class="cc-pay-chart"><canvas id="mclPay"></canvas></div><div class="muted small">Solid: at expiry. Dotted: if Nifty moved there today.${st.pos.closed.length ? ' Closed legs included at their booked P&amp;L.' : ''} ${pick ? `Red: after “${esc(pick.title)}”.` : 'Pick a suggestion below to see it here.'}</div></div>
       </div></div>` +
@@ -1722,7 +1722,7 @@
         const top = Math.max(...P.legs.filter((l) => l.type === 'CE' && l.side < 0).map((l) => l.strike), 0);
         const beforeTxt = `<p class="small"><b>Options only</b>: the NIFTYBEES are left out. <b>Loss-less</b> = the options’ P&amp;L at expiry is ₹0 or more at <b>every</b> Nifty level, up and down (legs closed before at what they booked, slippage ${r.slipPct} % and charges on every order). As they are: options P&amp;L now <b class="${cls(b.optNow)}">${inrS(Math.round(b.optNow))}</b> (at the LTPs); at expiry they ${
           b.unboundedUp ? `<b class="neg">lose without limit if Nifty rises</b> above ${top ? num0(top) : 'the sold call'}` : `end no lower than ${inrS(Math.round(b.min))}`
-        }. So the sold call has to be closed or covered first; each adjustment below shows the profit it needs, whether it is there now, and the Nifty levels and days at which it would be.</p>`;
+        }. ${b.unboundedUp ? 'So the sold call has to be closed or covered first; each' : 'Each'} adjustment below shows the profit it needs, whether it is there now, and the Nifty levels and days at which it would be.</p>`;
         const never = r.never.length ? `<h4>Not loss-less on their own</h4><ul class="small">${r.never.map((n) => `<li><b>${esc(n.title)}</b>: ${esc(n.why)}</li>`).join('')}</ul>` : '';
         const pk = picked();
         const chartBox = pk
@@ -1895,7 +1895,11 @@
     // <api>/live/best: every trade of the shape on the expiry's live chain, scored at expiry on Nifty moves of 1 … 8 %
     // up and down from now (NIFTYBEES + options, slippage and charges in); the 5 best in both directions in a popup, each
     // with its P&L for Nifty moves table. Nothing is sent to a broker.
-    const BEST = ['psc', 'bpc', 'mcc', 'pbs'].includes(cfg.flag?.kind);
+    const BEST = ['psc', 'bpc', 'mcc', 'pbs', 'nbo'].includes(cfg.flag?.kind);
+    // NIFTYBEES + options: the collars' search, the Strategy tab's own legs priced on the same chain first ('Your legs')
+    const NBO_BEST = cfg.flag?.kind === 'nbo';
+    const RULES_PILL = NBO_BEST ? 'Yours' : 'Rules';
+    const RULES_TIP = NBO_BEST ? 'Your legs from the Strategy tab, on this chain (the same as ＋ Enter new trade)' : `The legs the ${cfg.name} rules pick on this chain (the same as ＋ Enter new trade)`;
     // the Put back spread's own search (bestBackSpreads): a loss limit on the options anywhere at expiry and a rank, not
     // the collars' floors
     const PBS = cfg.flag?.kind === 'pbs';
@@ -2207,9 +2211,9 @@
         const off = r.rules && !r.rules.missing ? 1 : 0;
         const rows = picks()
           .map(
-            (v, i) => `<tr class="${i === sel ? 'sel' : ''}" data-best="${i}" style="cursor:pointer"><td class="mcl-best-act">${sbBtn(i)}</td><td>${v.rules ? '<span class="pill" title="The legs the Covered call rules pick on this chain (the same as ＋ Enter new trade)">Rules</span>' : i + 1 - off}</td><td class="l"><b>${esc(v.title)}</b>${
+            (v, i) => `<tr class="${i === sel ? 'sel' : ''}" data-best="${i}" style="cursor:pointer"><td class="mcl-best-act">${sbBtn(i)}</td><td>${v.rules ? `<span class="pill" title="${esc(RULES_TIP)}">${RULES_PILL}</span>` : i + 1 - off}</td><td class="l"><b>${esc(v.title)}</b>${
               v.rules
-                ? `<div class="small"><b>By the rules</b>${v.note ? ` · ${esc(v.note)}` : ''}${missOf(v).length ? ` · <span class="neg">misses ${missOf(v).join(', ')}</span>` : ' · <span class="pos">meets every floor</span>'}${v.thin?.length ? ` · <span class="muted">thin: ${esc(v.thin.join(', '))}</span>` : ''}</div>`
+                ? `<div class="small"><b>${esc(v.label || 'By the rules')}</b>${v.note ? ` · ${esc(v.note)}` : ''}${missOf(v).length ? ` · <span class="neg">misses ${missOf(v).join(', ')}</span>` : ' · <span class="pos">meets every floor</span>'}${v.thin?.length ? ` · <span class="muted">thin: ${esc(v.thin.join(', '))}</span>` : ''}</div>`
                 : ''
             }<div class="muted small">${v.legs.map((l) => `${l.side > 0 ? 'buy' : 'sell'} ${l.lots > 1 ? `${l.lots}× ` : ''}${l.strike} ${l.type} ~${l.fill.toFixed(1)}`).join(' · ')}</div></td>
             <td class="${cls(v.credit)}">${inrS(Math.round(v.credit))}</td><td class="${cls(v.up)}"><b>${inrS(Math.round(v.up))}</b></td><td class="${cls(v.downOpt)}"><b>${inrS(Math.round(v.downOpt))}</b></td><td class="${cls(v.flat)}"><b>${inrS(Math.round(v.flat))}</b></td><td class="${cls(v.mid)}"><b>${inrS(Math.round(v.mid))}</b></td><td class="${cls(v.down)}">${inrS(Math.round(v.down))}</td>${
@@ -2224,7 +2228,7 @@
             ? ` Only trades whose <b>two peaks are equal</b> are searched: the options at expiry with Nifty at the sold calls and at the sold puts within ₹${num0(r.peakTol)} of each other (${num0(r.peaked)} of ${num0(r.tried)}; at 1 × 2 and 2-3-1 that is a call ratio twice as wide as the gap from the bought puts to the sold ones).`
             : ' Peaks not matched (the box is empty): every shape is searched.'
           : '';
-        const rulesNote = r.rules?.missing ? ` <span class="neg">The rules’ trade (${esc(r.rules.title)}) could not be priced on this chain.</span>` : r.rules ? ' The <b>Rules</b> row is the trade the Covered call rules pick on this chain (as ＋ Enter new trade), scored the same way, shown whatever the floors.' : '';
+        const rulesNote = r.rules?.missing ? ` <span class="neg">The rules’ trade (${esc(r.rules.title)}) could not be priced on this chain.</span>` : r.rules ? (NBO_BEST ? ' The <b>Yours</b> row is your legs from the Strategy tab on this chain (as ＋ Enter new trade), scored the same way, shown whatever the floors: compare it with the collars found.' : ` The <b>Rules</b> row is the trade the ${esc(cfg.name)} rules pick on this chain (as ＋ Enter new trade), scored the same way, shown whatever the floors.`) : '';
         const flatWhy = r.flat?.auto ? ` (auto: ${r.flat.pct} % of ₹${num0(r.flat.invested)} invested)` : '';
         const note = r.within
           ? `<b>${num0(r.within)}</b> of them meet all four: the options earn at least ₹${num0(r.minDown)} on average when Nifty falls 1–${BEST_TO} %, options + NIFTYBEES earn at least ₹${num0(r.minUp)} on average when it goes up 1–${BEST_TO} %, at least ₹${num0(r.minMid)} anywhere with Nifty within ±${r.midBand} %, and the options alone earn at least ₹${num0(r.minFlat)} if Nifty stays${flatWhy}. Ranked by <b>Nifty goes up + Nifty stays in the range</b> (the rise's average plus the range's lowest point, same weight).`
@@ -2452,6 +2456,7 @@
     // units and the price the search used. Inline with no trade on the tab; a popup (🧭 Guided new trade) when a trade is
     // shown. Nothing is sent to a broker.
     const GUIDE = Boolean(cfg.guide);
+    const GUIDE_CALL = cfg.flag?.kind !== 'pbs'; // the shape sells a call that the NIFTYBEES cover (the Put back spread sells none)
     const G = { step: 1, max: 1, exp: null, units: '', res: null, pick: null }; // res: the popup's search, pick: the row used
     let gEl = null; // the element the guide is drawn in (the tab, or the popup)
     const G_STEPS = ['Expiry', 'NIFTYBEES', 'Strikes', 'Builder'];
@@ -2469,7 +2474,7 @@
     const gWarnHtml = (u) => {
       const by = gShortBy(u);
       if (!by) return '';
-      return `<div class="mg-warn">⚠ <b>${num0(u)} NIFTYBEES is ${num0(by)} fewer than the minimum suggested (${num0(gMin().qty)})</b>, one lot of Nifty's worth against the sold call. With fewer, the sold call is not fully covered: if Nifty rises past it, the uncovered part loses with no NIFTYBEES gain to set against it.${u === 0 ? ' With 0 the sold call is naked.' : ''} You can still go on.</div>`;
+      return `<div class="mg-warn">⚠ <b>${num0(u)} NIFTYBEES is ${num0(by)} fewer than the minimum suggested (${num0(gMin().qty)})</b>, ${GUIDE_CALL ? "one lot of Nifty's worth against the sold call. With fewer, the sold call is not fully covered: if Nifty rises past it, the uncovered part loses with no NIFTYBEES gain to set against it." + (u === 0 ? ' With 0 the sold call is naked.' : '') : "one lot of Nifty's worth per lot of the options. With fewer, the trade holds less NIFTYBEES than the options were sized for: the totals here and in the Builder use the units you type."} You can still go on.</div>`;
     };
     function guideHtml() {
       const steps = G_STEPS.map((t, i) => {
@@ -2948,5 +2953,7 @@
     shapeText: 'call ratio 1 × 2 and put 2-3-1',
     shapeShort: 'call ratio + put butterfly',
     flag: { kind: 'mcc' },
+    adjust: true, // Legs and payoff › Adjustments (loss-less changes), as on the Put spread collar
+    guide: true, // 🧭 the guided new trade: expiry → NIFTYBEES → strikes → Builder
   });
 })();
