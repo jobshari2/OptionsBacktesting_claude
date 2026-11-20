@@ -54,7 +54,13 @@ export function createUpstox({ getToken, fetchImpl = (...a) => globalThis.fetch(
     return parseCandles(data?.candles);
   }
 
-  return { get, quotes, contracts, chain, intraday };
+  // Daily candles between two days (YYYY-MM-DD), oldest first: [{ t, o, h, l, c }]
+  async function daily(key, from, to) {
+    const data = await get(`/v2/historical-candle/${encodeURIComponent(key)}/day/${to}/${from}`);
+    return parseCandles(data?.candles);
+  }
+
+  return { get, quotes, contracts, chain, intraday, daily };
 }
 
 export function parseQuotes(data) {

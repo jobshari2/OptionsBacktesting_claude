@@ -70,6 +70,8 @@ export const DEFAULT_SETTINGS = {
   brokerage: 20,
   theme: 'system', // 'system' | 'light' | 'dark'
   strikes: 10, // strikes either side of ATM on the Chain screen
+  tradesRepo: '', // the portal's GitHub repository (owner/name) the Trades screen reads; empty = the app's own
+  tradesBranch: 'main',
 };
 
 export const settings = () => ({ ...DEFAULT_SETTINGS, ...(get('settings') || {}) });

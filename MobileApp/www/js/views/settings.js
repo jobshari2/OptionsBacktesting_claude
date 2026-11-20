@@ -2,6 +2,7 @@
 import * as store from '../store.js';
 import * as positions from '../positions.js';
 import { loginUrl } from '../upstox.js';
+import { repoOf } from '../trades.js';
 import { tokenInfo, saveToken } from '../market.js';
 import { esc, toast, confirmSheet } from '../ui.js';
 import { fmtClock, fmtDate, ist } from '../time.js';
@@ -51,6 +52,15 @@ function render(ctx) {
       <label class="field"><span>Lot size (0 = from Upstox)</span><input id="seLot" type="number" inputmode="numeric" min="0" max="500" value="${s.lotSize}"></label>
       <label class="field"><span>Slippage % of premium</span><input id="seSlip" type="number" inputmode="decimal" step="0.1" min="0" max="5" value="${s.slipPct}"></label>
       <label class="field"><span>Brokerage ₹ / order</span><input id="seBrk" type="number" inputmode="decimal" min="0" max="100" value="${s.brokerage}"></label>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Trades (from the portal)</h2>
+    <p class="muted small">The Trades screen reads the portal's saved trades and ledger (bt-data/paper-trades.json, bt-data/ledger.json) from this GitHub repository. Push the portal's repository to see new trades here.</p>
+    <div class="form-grid">
+      <label class="field"><span>Repository (owner/name)</span><input id="seRepo" autocapitalize="off" spellcheck="false" placeholder="${esc(repoOf(location, ''))}" value="${esc(s.tradesRepo)}"></label>
+      <label class="field"><span>Branch</span><input id="seBranch" autocapitalize="off" spellcheck="false" value="${esc(s.tradesBranch)}"></label>
     </div>
   </section>
 
@@ -113,6 +123,14 @@ function render(ctx) {
       brokerage: Math.min(100, Math.max(0, +root.querySelector('#seBrk').value || 0)),
     });
   ['#seRefresh', '#seLot', '#seSlip', '#seBrk'].forEach((id) => root.querySelector(id).addEventListener('change', nums));
+  const repo = () => {
+    const r = root.querySelector('#seRepo').value.trim();
+    if (r && !/^[\w.-]+\/[\w.-]+$/.test(r)) return toast('Repository: owner/name, e.g. ' + repoOf(location, ''));
+    store.saveSettings({ tradesRepo: r, tradesBranch: root.querySelector('#seBranch').value.trim() || 'main' });
+    store.remove('tradesData');
+    toast('Saved — the Trades screen reads it next');
+  };
+  ['#seRepo', '#seBranch'].forEach((id) => root.querySelector(id).addEventListener('change', repo));
   root.querySelector('#seTheme').onclick = (e) => {
     const t = e.target.closest('[data-theme]')?.dataset.theme;
     if (!t) return;

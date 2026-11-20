@@ -4,7 +4,8 @@ import { mockUpstox } from './upstox-fixture.js';
 
 const tab = (page, name) => page.locator('.tabbar a', { hasText: name });
 
-// Every request that leaves the phone must go to the app's own files or to api.upstox.com.
+// Every request that leaves the phone must go to the app's own files, api.upstox.com, or the portal's saved trades on
+// GitHub (raw.githubusercontent.com, the Trades screen).
 let foreign = [];
 test.beforeEach(async ({ page, baseURL }) => {
   foreign = [];
@@ -12,7 +13,7 @@ test.beforeEach(async ({ page, baseURL }) => {
   page.on('request', (r) => {
     const u = new URL(r.url());
     if (u.protocol === 'blob:' || u.protocol === 'data:') return;
-    if (u.origin !== origin && u.origin !== 'https://api.upstox.com') foreign.push(u.origin);
+    if (u.origin !== origin && u.origin !== 'https://api.upstox.com' && u.origin !== 'https://raw.githubusercontent.com') foreign.push(u.origin);
   });
 });
 test.afterEach(() => expect(foreign, 'requests to hosts other than the app and Upstox').toEqual([]));
@@ -254,7 +255,7 @@ test('Installable PWA: manifest, icons, service worker, and it starts offline', 
 
   await context.setOffline(true);
   await page.reload();
-  await expect(page.locator('.tabbar a')).toHaveCount(5);
+  await expect(page.locator('.tabbar a')).toHaveCount(6);
   await expect(page.locator('.quote.big .q-ltp')).toHaveText(/\d/); // demo data needs no network
   await tab(page, 'Chain').tap();
   await expect(page.locator('#chBody tr.atm')).toHaveCount(1);
@@ -279,4 +280,19 @@ test('Offline on Upstox: last saved prices are shown and marked', async ({ page,
   await expect(page.locator('#status')).toHaveText(/OFFLINE|ERROR/);
   await expect(page.locator('.quote.big .q-ltp')).toHaveText(/\d{2},\d{3}/);
   await context.setOffline(false);
+});
+
+test('Trades: the portal’s Live trades, Ledger and Portfolio P&L (CE + PE as one options item)', async ({ page }) => {
+  await page.goto('./#trades');
+  await expect(page.locator('#trTabs button')).toHaveCount(4);
+  await expect(page.locator('.tr-card').first()).toBeVisible();
+  // each trade: NIFTYBEES and one options row, never a CE row and a PE row
+  for (const t of await page.locator('table.tr-items').all()) await expect(t.locator('tbody tr', { hasText: /^Options/ })).toHaveCount(1);
+  await page.locator('#trTabs button', { hasText: 'Ledger' }).tap();
+  await expect(page.locator('#trBody h2', { hasText: 'NIFTYBEES' })).toBeVisible();
+  await page.locator('#trTabs button', { hasText: 'Portfolio' }).tap();
+  await expect(page.locator('#trBody .section-title', { hasText: '1. Portfolio summary' })).toBeVisible();
+  await expect(page.locator('.tr-rows .tr-row.last')).toContainText('Current value');
+  await expect(page.locator('#trGrowth svg')).toBeVisible();
+  await noHorizontalScroll(page);
 });

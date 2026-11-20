@@ -1,5 +1,6 @@
-// A static file server for trying the app on this PC or on a phone on the same Wi-Fi. It only hands out the files in
-// www/: the app itself never talks to it again once installed, and it plays no part in market data.
+// A static file server for trying the app on this PC or on a phone on the same Wi-Fi. It hands out the files in www/
+// and the portal's bt-data/paper-trades.json and ledger.json (the Trades screen reads them from here when served from
+// this PC, else from GitHub); it plays no part in market data.
 //   node tools/serve.js                 http://localhost:8080
 //   node tools/serve.js --lan           also on this PC's Wi-Fi address (for a phone on the same network)
 //   node tools/serve.js --port 9000
@@ -10,6 +11,9 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join, normalize, extname, sep } from 'node:path';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', 'www');
+// the portal's saved trades and ledger, for the Trades screen (only these two files)
+const DATA = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'bt-data');
+const DATA_FILES = new Set(['paper-trades.json', 'ledger.json']);
 const args = process.argv.slice(2);
 const port = Number(args[args.indexOf('--port') + 1]) || Number(process.env.PORT) || 8080;
 const lan = args.includes('--lan');
@@ -30,6 +34,13 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x');
     let rel = decodeURIComponent(url.pathname);
     if (rel.endsWith('/')) rel += 'index.html';
+    const dm = /^\/bt-data\/([\w.-]+)$/.exec(rel);
+    if (dm && DATA_FILES.has(dm[1])) {
+      const body = await readFile(join(DATA, dm[1])).catch(() => null);
+      if (!body) return void res.writeHead(404).end();
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      return void res.end(req.method === 'HEAD' ? undefined : body);
+    }
     const file = normalize(join(ROOT, rel));
     if (!file.startsWith(ROOT + sep) && file !== ROOT) {
       res.writeHead(403).end();

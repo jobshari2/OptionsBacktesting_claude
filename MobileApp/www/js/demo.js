@@ -147,5 +147,8 @@ export function createDemo({ now = () => Date.now() } = {}) {
     return out;
   }
 
-  return { quotes, contracts, chain, intraday, demo: true };
+  // made-up prices have no past days: the Trades screen falls back to the trades' own prices
+  const daily = async () => [];
+
+  return { quotes, contracts, chain, intraday, daily, demo: true };
 }

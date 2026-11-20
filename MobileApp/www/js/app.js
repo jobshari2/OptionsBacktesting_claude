@@ -8,15 +8,17 @@ import market from './views/market.js';
 import chain from './views/chain.js';
 import strategies from './views/strategies.js';
 import positions from './views/positions.js';
+import trades from './views/trades.js';
 import settings, { appUrl } from './views/settings.js';
 
 export const VERSION = '1.0.0';
-const VIEWS = { market, chain, strategies, positions, settings };
+const VIEWS = { market, chain, strategies, positions, trades, settings };
 const ICONS = {
   market: '<path d="M3 17l5-6 4 4 8-9"/><path d="M3 21h18"/>',
   chain: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M12 4v16"/>',
   strategies: '<path d="M3 18c4 0 5-12 9-12s5 12 9 12"/><path d="M3 12h18" stroke-dasharray="2 3"/>',
   positions: '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>',
+  trades: '<path d="M4 19V9M10 19V5M16 19v-7M22 19H2"/>',
   settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
 };
 

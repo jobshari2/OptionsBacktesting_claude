@@ -64,6 +64,7 @@ export function createMarket({ now = () => Date.now(), fetchImpl } = {}) {
     contracts: () => cached('contracts', () => api().contracts()),
     chain: (expiry) => cached('chain.' + expiry, () => api().chain(expiry)),
     intraday: () => cached('intraday', () => api().intraday(NIFTY, 5)),
+    daily: (key, from, to) => cached(`daily.${key}.${from}.${to}`, () => api().daily(key, from, to)),
     // Lot size: the setting when given, else what Upstox reports, else 65.
     lotSize: (reported) => store.settings().lotSize || reported || 65,
   };
