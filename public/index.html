@@ -564,7 +564,7 @@
         <div class="chart-box sb-pay-chart"><canvas id="sbPayChart"></canvas></div>
       </section>
       <section class="panel sb-pos empty" id="sbPosPanel">
-        <div class="panel-head"><h3>Positions &amp; P&amp;L</h3><span class="muted small pos-hint">No positions yet: click <b>B</b> or <b>S</b> in the chain, or <b>Apply</b> a strategy.</span></div>
+        <div class="panel-head"><h3>Positions &amp; P&amp;L <span class="sb-pos-strat" id="sbPosStrat"></span></h3><span class="muted small pos-hint">No positions yet: click <b>B</b> or <b>S</b> in the chain, or <b>Apply</b> a strategy.</span></div>
         <div class="sb-pos-body">
           <div id="sbPos"></div>
           <div id="sbPnlHead" class="sb-pnl-row"></div>
@@ -580,10 +580,12 @@
 
   <!-- ===== Saved trades (from the Builder) ===== -->
   <main id="tr" class="sb-screen tr-screen hidden">
-    <!-- left menu: Live (real-money trades, the total P&L) / Paper (paper trades and the strategies' paper trades) -->
+    <!-- tabs across the top: Live (real-money trades, the total P&L) / Paper (paper trades and the strategies' paper trades) / Ledger (capital, P&L of every trade, entries; Excel export) / Portfolio P&L (dashboard of the Live trades). Each tab has its own Export. -->
     <nav class="tr-nav" id="trNav">
       <button data-trtab="live" title="Live (real-money) trades saved in the Builder, with the total P&amp;L"><span class="tr-dot live"></span>Live <span class="tr-n" id="trNLive"></span></button>
       <button data-trtab="paper" title="Paper trades and replays saved in the Builder, and the strategies' paper trades (not in the total P&amp;L)"><span class="tr-dot paper"></span>Paper <span class="tr-n" id="trNPaper"></span></button>
+      <button data-trtab="ledger" title="The ledger: initial capital, the money invested and the profit or loss of every trade, deposits and withdrawals; edit rows, add entries, export to Excel"><span class="tr-dot ledger"></span>Ledger</button>
+      <button data-trtab="portfolio" title="Portfolio P&amp;L of the Live trades (closed and open): NIFTYBEES + options value, growth, allocation, the detailed ledger and the profit by month"><span class="tr-dot pf"></span>Portfolio P&amp;L</button>
     </nav>
     <div class="tr-body">
       <div class="tr-pane" data-trpane="live">
@@ -595,6 +597,12 @@
         <section class="panel sb-trades cc-trades hidden" id="pscTrades"></section>
         <section class="panel sb-trades cc-trades hidden" id="bpcTrades"></section>
         <section class="panel sb-trades cc-trades hidden" id="pbsTrades"></section>
+      </div>
+      <div class="tr-pane hidden" data-trpane="ledger">
+        <section class="panel ledger" id="trLedger"></section>
+      </div>
+      <div class="tr-pane hidden" data-trpane="portfolio">
+        <section class="pf" id="trPortfolio"></section>
       </div>
     </div>
   </main>
@@ -625,6 +633,7 @@
   <main id="psc" class="bt-screen cc-screen hidden">
     <section class="bt-main">
       <div class="panel cc-tabs-panel"><div class="seg" id="pscTabs"></div></div>
+      <div id="pscBees" class="bees-need-wrap"></div>
       <div id="pscBody" class="bt-results"></div>
     </section>
   </main>
@@ -688,8 +697,12 @@
   <script src="payoff.js"></script>
   <script src="lib-view.js"></script>
   <script src="data-view.js"></script>
+  <script src="bees-need.js"></script>
   <script src="sb-adjust.js"></script>
   <script src="sb-view.js"></script>
+  <script src="xlsx-lite.js"></script>
+  <script src="ledger-view.js"></script>
+  <script src="portfolio-view.js"></script>
   <script src="ideas-view.js"></script>
   <script src="mcclive-view.js"></script>
   <script src="mcc-view.js"></script>

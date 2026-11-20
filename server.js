@@ -673,6 +673,8 @@ const MCC_LIVE_FILE = path.join(__dirname, 'bt-data', DEMO ? 'mcc-live-demo.json
 // The Builder's saved trades (bt/index.js keeps them; written here only by the Live trade's NIFTYBEES entry, close and
 // undo, compact like bt/index.js writes them).
 const SB_TRADES_FILE = path.join(__dirname, 'bt-data', 'paper-trades.json');
+// Trades › Ledger: initial capital, row edits and typed-in entries (see /api/ledger)
+const LEDGER_FILE = path.join(__dirname, 'bt-data', DEMO ? 'ledger-demo.json' : 'ledger.json');
 // Saved trades with open legs, and closed ones marked as this strategy (L.kind) in the Builder (their final result
 // is shown), and the strategy's paper trade series.
 function liveTrades(L) {
@@ -1375,6 +1377,21 @@ async function handleMcc(req, res, url, p) {
     if (p === '/api/mcc/bees') {
       const b = liveLoggedIn() ? await mccBeesNow().catch(() => null) : null;
       return sendJson(res, 200, { px: b?.px || null, how: b?.how || null, at: b?.at || null });
+    }
+    // NIFTYBEES to buy against a strategy (public/bees-need.js): as Enter new trade sizes them (bt/mcc.js etfQty) —
+    // the budget's worth, else lot × lots × Nifty's — at Nifty and NIFTYBEES now. ?budget=&lots=&lot= (lot: the sender's
+    // own lot size, e.g. a replay's; else the live contracts'). Prices null when not read (not logged in).
+    if (p === '/api/mcc/bees-need') {
+      const q = url.searchParams;
+      const n = liveLoggedIn() ? await liveNow().catch(() => null) : null;
+      const lot = Number(q.get('lot')) > 0 ? Number(q.get('lot')) : contracts.lot || 65;
+      const prm = { budget: Math.max(0, Number(q.get('budget')) || 0), lots: Math.max(1, Number(q.get('lots')) || 1), lotSize: lot };
+      const spot = n?.spot > 0 ? n.spot : null;
+      const px = n?.bees > 0 ? n.bees : null;
+      const est = !px && spot > 0; // no NIFTYBEES price: Nifty ÷ 100, as the plan does
+      const price = px || (est ? spot / 100 : null);
+      const qty = price ? mccEtfQty(prm, spot || 0, price) : null;
+      return sendJson(res, 200, { ...prm, lot, spot, px: price, est, how: n?.beesHow || null, at: n?.beesAt || n?.at || null, qty, cost: qty ? Math.round(qty * price) : null, loggedIn: liveLoggedIn(), demo: DEMO });
     }
     if (p.startsWith('/api/mcc/live')) return await handleLive(req, res, url, p.slice(8), LIVE.mcc);
     if (p === '/api/mcc/paper') return sendJson(res, 200, { ...mccPaper.state(), demo: DEMO });
@@ -2224,6 +2241,37 @@ const server = http.createServer(async (req, res) => {
     } catch (e) {
       logError('orderflow', e);
       return sendJson(res, 500, { error: e.message });
+    }
+  }
+
+  // Trades › Ledger (public/ledger-view.js): the initial capital, the user's edits of each saved trade's row (invested,
+  // charges, P&L, dates, notes) and the entries typed in (deposits, withdrawals, trades made elsewhere, charges).
+  // GET → the ledger; POST { ledger } → saved whole (the page keeps the state). The trades' own figures are not kept
+  // here: they come from the saved trades. Demo mode has its own file.
+  if (p === '/api/ledger') {
+    try {
+      if (req.method === 'POST') {
+        const b = JSON.parse((await readBody(req, 2_000_000)).toString('utf8') || '{}');
+        const L = b.ledger;
+        if (!L || typeof L !== 'object' || Array.isArray(L)) throw new Error('No ledger sent');
+        const doc = {
+          capital: Number(L.capital) >= 0 ? Number(L.capital) : 0,
+          capitalDate: /^\d{4}-\d{2}-\d{2}$/.test(L.capitalDate || '') ? L.capitalDate : null,
+          scope: ['live', 'paper', 'all'].includes(L.scope) ? L.scope : 'live',
+          rows: L.rows && typeof L.rows === 'object' && !Array.isArray(L.rows) ? L.rows : {},
+          entries: Array.isArray(L.entries) ? L.entries.slice(0, 5000) : [],
+          // options profit reinvested in NIFTYBEES (default on), and the NIFTYBEES closing price used for each day
+          // ({ day: { px, src: 'auto' | 'user', day } }: read once from the history or typed in)
+          reinvest: L.reinvest !== false,
+          px: L.px && typeof L.px === 'object' && !Array.isArray(L.px) ? L.px : {},
+          updatedAt: Date.now(),
+        };
+        writeJson(LEDGER_FILE, doc);
+        return sendJson(res, 200, { ledger: doc });
+      }
+      return sendJson(res, 200, { ledger: readJson(LEDGER_FILE) || null, demo: DEMO });
+    } catch (e) {
+      return sendJson(res, 400, { error: e.message });
     }
   }
 

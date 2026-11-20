@@ -638,6 +638,7 @@
     S.pay = { daysAhead: o.pay?.daysAhead || 0, ivShift: o.pay?.ivShift || 0 }; // a new position starts from today's market unless the sender had a what-if
     // a Modified covered call (Trading Ideas › Live trade › Enter new trade): marked so, with its NIFTYBEES
     if (o.mcc) S.mcc = { ...o.mcc };
+    S.idea = o.idea || null; // sent from Trading Ideas: the strategy's name (Positions & P&L heading)
     pending = o;
     save();
     window.app.setView('sb'); // fires 'viewchange' -> init() -> activate(), which places the pending position
@@ -702,6 +703,7 @@
     'lotFix',
     'pay',
     'mcc', // { on, qty, price, day, exitPx, exitDay, exitAt }: a Modified covered call and its NIFTYBEES (Live trade tab)
+    'idea', // the Trading Ideas strategy it was opened from (its name), for the Positions heading
   ];
   const legsText = (legs) => legs.map((l) => `${l.action === 'B' ? 'B' : 'S'} ${l.lots}× ${l.strike} ${l.type} ${dayShort(legExp(l))}`).join(', ');
   async function loadTrades() {
@@ -821,6 +823,8 @@
   }
   // The row whose delete waits for its confirmation (Yes, delete / Keep); asked again after DEL_ASK_MS.
   let delAsk = null;
+  // The Trades screen tab shown in each account panel (Live / Paper): Active first, Closed when picked.
+  const trSub = { live: 'active', paper: 'active' };
   let delAskT = null;
   const DEL_ASK_MS = 10_000;
   function askDelete(id) {
@@ -832,10 +836,17 @@
     }, DEL_ASK_MS);
     renderTrades();
   }
+  // A closed live (real-money) trade is the record of what was made or lost: it cannot be deleted (no button on
+  // Trades › Live › Closed, and refused here).
+  const lockedClosed = (t) => !(t?.summary?.open > 0) && accountOf(t) === 'live';
   async function deleteTrade(id) {
     const t = trades.find((x) => x.id === id);
     delAsk = null;
     if (!t) return;
+    if (lockedClosed(t)) {
+      renderTrades();
+      return alert('A closed live trade cannot be deleted: it is kept for the record.');
+    }
     await BT.api('/api/sb/trades/delete', { id });
     if (S.tradeId === id) {
       S.tradeId = null;
@@ -923,11 +934,13 @@
       const lot = t.summary.lot || BT.meta.calendar?.liveLot || 65;
       let total = 0;
       let ok = true;
+      const legPx = {};
       for (const l of t.snap.legs) {
         let px = l.exitPx;
         if (l.open) {
           const r = chains[l.expiry || t.snap.liveExpiry]?.find((x) => x.strike === l.strike);
           px = r && (l.type === 'CE' ? r.ce : r.pe).ltp;
+          if (px > 0) legPx[l.id] = px;
         }
         if (!(px > 0) && l.open) {
           ok = false;
@@ -935,7 +948,7 @@
         }
         total += dir(l) * l.lots * lot * (px - l.entryPx);
       }
-      tradesNow[t.id] = { total: Math.round(total), ok };
+      tradesNow[t.id] = { total: Math.round(total), ok, legPx };
     }
     renderTrades();
   }
@@ -1090,7 +1103,7 @@
         <div class="trl-main"><div class="trl-name"><b>${esc(t.name)}</b> ${x.mcc ? MCC_PILL[mccKind(x.m, t.snap.legs)] : ''}${u.src === 'live' ? '' : ' ' + modePill(u)}</div>
           <div class="trl-meta">${exps(u)} · ${u.closed || 0} leg${u.closed === 1 ? '' : 's'} · closed ${whenTxt(t.closedAt || t.savedAt)}</div></div>
         <div class="trl-pnl"><span class="${cls(x.overall)}">${money(x.overall)}</span>${split}</div>
-        <div class="trl-acts">${acts(t, u)}${del(t)}</div>
+        <div class="trl-acts">${acts(t, u)}${lockedClosed(t) ? '<span class="muted small trl-lock" title="A closed live trade is kept for the record (Ledger, total P&amp;L): it cannot be deleted">🔒 kept</span>' : del(t)}</div>
       </li>`;
     }
     // One account's panel (the Live / Paper tab of the Trades screen): its P&L cards, then two columns: the active
@@ -1100,16 +1113,19 @@
       const act = ts.filter(isActive);
       const cl = ts.filter((t) => !isActive(t)).sort((a, b) => (b.closedAt || b.savedAt) - (a.closedAt || a.savedAt));
       const priced = ts.some((t) => t.summary.src === 'live' && isActive(t));
-      const colHead = (title, n, r, dot) =>
-        `<div class="tr-col-head"><span class="tr-col-dot ${dot}"></span><h4>${title}</h4><span class="tr-n">${n}</span><span class="spacer"></span>${
-          n ? `<span class="${cls(r.sum)} b">${inrS(r.sum)}</span>` : ''
-        }</div>`;
+      // The Active / Closed tabs: Active shows first; Closed is a click away (the pick holds until the page reloads).
+      const sub = trSub[acct] || 'active';
+      const subTab = (key, title, n, r, dot) =>
+        `<button data-trsub="${key}" data-sub-acct="${acct}" class="${sub === key ? 'on' : ''}" title="${key === 'active' ? 'Trades with a leg still open' : 'Trades with all their legs closed'}"><span class="tr-col-dot ${dot}"></span>${title} <span class="tr-n">${n}</span>${
+          n ? ` <span class="${cls(r.sum)} b">${inrS(r.sum)}</span>` : ''
+        }</button>`;
       return `<div class="panel-head sb-acct-head"><h3>${isLive ? 'Live trades' : 'Paper trades (saved in the Builder)'} <span class="muted small">${ts.length} · ${
         isLive ? 'real-money positions: only these make the total P&amp;L' : 'practice trades and replays: not counted in the total P&amp;L'
       }</span></h3>
         <span class="spacer"></span>
         ${cur && ts.includes(cur) ? `<span class="muted small">in the Builder: <b>${esc(cur.name)}</b></span>` : ''}
-        ${priced ? '<button class="btn-sm ghost" data-t="refresh" title="Price the trades with open legs at the current chain">↻ Live P&amp;L</button>' : ''}</div>
+        ${priced ? '<button class="btn-sm ghost" data-t="refresh" title="Price the trades with open legs at the current chain">↻ Live P&amp;L</button>' : ''}
+        ${ts.length ? `<button class="btn-sm ghost tr-export" data-export="${acct}" title="Download the ${isLive ? 'live' : 'paper'} trades as a CSV for Excel: each strike and the NIFTYBEES held, with entry / exit prices and dates">⬇ Export</button>` : ''}</div>
       ${
         !ts.length
           ? `<div class="muted small pad">${
@@ -1118,19 +1134,17 @@
                 : 'No paper trades saved in the Builder. <b>→ Paper</b> on a live trade moves it here; replays saved in the Builder are listed here too.'
             }</div>`
           : `<div class="kpis sb-trades-kpis" title="Overall P&amp;L = options + NIFTYBEES of each trade (before costs and slippage)">
-          ${kpi(isLive ? 'Total P&amp;L · live trades' : 'Paper P&amp;L · not in the total', ts, '')}
           ${kpi('Active', act, '')}
           ${kpi('Closed', cl, '')}
+          ${kpi(isLive ? 'Total P&amp;L · live trades' : 'Paper P&amp;L · not in the total', ts, '')}
         </div>
-        <div class="tr-cols">
-          <section class="tr-col tr-col-act">
-            ${colHead('Active', act.length, totalOf(act), 'act')}
-            ${act.length ? `<div class="trc-list">${act.map(card).join('')}</div>` : `<div class="tr-empty">${isLive ? 'No live trade has an open leg.' : 'No paper trade has an open leg.'}</div>`}
-          </section>
-          <section class="tr-col tr-col-closed">
-            ${colHead('Closed', cl.length, totalOf(cl), 'closed')}
-            ${cl.length ? `<ul class="trl-list">${cl.map(closedRow).join('')}</ul>` : '<div class="tr-empty">None yet: a trade moves here once all its legs are closed.</div>'}
-          </section>
+        <div class="tr-cols tr-cols-tabs">
+          <nav class="tr-sub">${subTab('active', 'Active', act.length, totalOf(act), 'act')}${subTab('closed', 'Closed', cl.length, totalOf(cl), 'closed')}</nav>
+          ${
+            sub === 'active'
+              ? `<section class="tr-col tr-col-act">${act.length ? `<div class="trc-list">${act.map(card).join('')}</div>` : `<div class="tr-empty">${isLive ? 'No live trade has an open leg.' : 'No paper trade has an open leg.'}</div>`}</section>`
+              : `<section class="tr-col tr-col-closed">${cl.length ? `<ul class="trl-list">${cl.map(closedRow).join('')}</ul>` : '<div class="tr-empty">None yet: a trade moves here once all its legs are closed.</div>'}</section>`
+          }
         </div>`
       }`;
     };
@@ -1138,6 +1152,7 @@
     $('sbTradesPaper').innerHTML = group('paper', paper);
     $('trNLive').textContent = live.length;
     $('trNPaper').textContent = paper.length;
+    BT.emit('trades-render'); // Trades › Ledger (ledger-view.js) redraws with the new figures
   }
 
   // ---------- replay ----------
@@ -1948,9 +1963,71 @@
     return px > 0 ? { px, day, time: first.entryClock || hhmm(min) } : null;
   }
 
+  // The fewest NIFTYBEES the strategy is held against: one lot of Nifty's worth per lot of the strategy, as Trading
+  // Ideas' ＋ Enter new trade sizes them with no budget (bt/mcc.js etfQty). Lots of the strategy: its net sold calls
+  // (the collars' sold call, the covered call's 1 × 2 ratio), else (no sold call) its smallest leg.
+  function stratLots() {
+    const all = S.legs.filter((l) => l.lots > 0);
+    const open = all.filter((l) => l.open);
+    const ls = open.length ? open : all;
+    if (!ls.length) return 1;
+    const ce = ls.filter((l) => l.type === 'CE').reduce((n, l) => n + (l.action === 'S' ? l.lots : -l.lots), 0);
+    return ce > 0 ? ce : Math.max(1, Math.min(...ls.map((l) => l.lots)));
+  }
+  // At Nifty and NIFTYBEES now (live), or at the position's entry (a replay: Nifty when the legs were entered, NIFTYBEES'
+  // recorded price then). No NIFTYBEES price: Nifty ÷ 100. BeesNeed result or null.
+  let entBees = null; // replay: { key, px, day } NIFTYBEES at the entry (beesAtEntry), read once per entry
+  function minBees() {
+    if (!window.BeesNeed || !S.legs.length) return null;
+    const M = market();
+    const o = { lots: stratLots(), lot: M?.lot || 65 };
+    if (S.src === 'live') {
+      const px = sbBeesPx();
+      const spot = M?.spot;
+      return BeesNeed.calc({ ...o, est: !(px > 0), how: px > 0 ? 'NIFTYBEES live' : null }, spot, px > 0 ? px : spot / 100);
+    }
+    const spots = S.legs.filter((l) => l.spotIn > 0).map((l) => l.spotIn);
+    const s0 = spots.length ? spots.reduce((a, b) => a + b, 0) / spots.length : S.spotEntry;
+    const key = S.legs.map((l) => `${l.entryDay}:${l.entryMin}`).join(',');
+    if (entBees?.key !== key) {
+      entBees = { key, px: null, day: null };
+      beesAtEntry()
+        .then((e) => {
+          if (entBees?.key !== key || !e) return;
+          entBees.px = e.px;
+          entBees.day = e.day;
+          renderMcc(lastMccP);
+        })
+        .catch(() => {});
+    }
+    const px = entBees.px;
+    return BeesNeed.calc({ ...o, est: !(px > 0), how: px > 0 ? 'NIFTYBEES recorded at the entry' : null }, s0, px > 0 ? px : s0 / 100);
+  }
+  // Fewer NIFTYBEES entered than the minimum: by more than 1 % (Nifty and NIFTYBEES drift apart a little as prices move)
+  const beesShort = (m, need) => !(m?.qty >= need.qty * 0.99);
+  // Positions & P&L heading: (the strategy) when the position came from Trading Ideas or is marked Held against
+  // NIFTYBEES, and with the box ticked the fewest NIFTYBEES it needs (red when fewer are entered).
+  function renderPosStrat(m, kind) {
+    const el = $('sbPosStrat');
+    if (!el) return;
+    const name = m ? MCC_NAME[kind] : S.idea;
+    if (!name || !S.legs.length) {
+      el.innerHTML = '';
+      return;
+    }
+    const need = m?.on ? minBees() : null;
+    const short = need && beesShort(m, need);
+    el.innerHTML = `(${esc(name)})${
+      need
+        ? ` <span class="sps-bees${short ? ' short' : ''}" title="The fewest NIFTYBEES this ${esc(name)} is held against: one lot of Nifty's worth per lot of the strategy (${need.lots} × ${need.lot} × Nifty ${Math.round(need.spot || 0).toLocaleString('en-IN')} ÷ ₹${need.px.toFixed(2)})${m.qty > 0 ? `. Entered: ${Math.round(m.qty).toLocaleString('en-IN')}` : ''}">min ${need.qty.toLocaleString('en-IN')} NIFTYBEES ≈ ${inr(need.cost)}${short && m.qty > 0 ? ` · ${(need.qty - Math.round(m.qty)).toLocaleString('en-IN')} short` : ''}</span>`
+        : ''
+    }`;
+  }
+
   let lastMccP = null;
   function renderMcc(P = lastMccP, force = false) {
     lastMccP = P;
+    renderPosStrat(S.mcc, S.mcc ? mccKind(S.mcc, S.legs) : null);
     const el = $('sbMcc');
     if (!el) return;
     if (!force && el.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
@@ -1982,6 +2059,18 @@
           ? ` · NIFTYBEES <b class="${cls(sold)}">${inrS(Math.round(sold))}</b>${P ? ` · with the options <b class="${cls(P.total + sold)}">${inrS(Math.round(P.total + sold))}</b>` : ''}`
           : ''
       }</span>
+      ${(() => {
+        const need = minBees();
+        if (!need) return '';
+        const short = beesShort(m, need);
+        const held = m.qty > 0 ? `you entered ${Math.round(m.qty).toLocaleString('en-IN')}: ${short ? `<b class="neg">${(need.qty - Math.round(m.qty)).toLocaleString('en-IN')} short</b>` : '<b class="pos">covered</b>'}` : 'none entered yet';
+        return BeesNeed.html(need, {
+          title: `Minimum NIFTYBEES for this ${MCC_NAME[kind]}`,
+          cls: short ? 'short' : '',
+          note: held,
+          action: short ? `<button class="btn-sm" data-mcc-use="1" title="Fill Units, Bought at and Amount with these ${need.qty.toLocaleString('en-IN')} units at ₹${need.px.toFixed(2)}">Use ${need.qty.toLocaleString('en-IN')}</button>` : '',
+        });
+      })()}
       <span class="muted small">${
         S.src === 'hist'
           ? 'Replay: the NIFTYBEES are valued at their recorded price at each minute the replay reaches (Positions, the P&amp;L bar and the box over the payoff).'
@@ -2010,6 +2099,19 @@
     if (b.day) m.day = b.day;
     mccAmtNote = `${inr(n)} ÷ ₹${b.px.toFixed(2)} (${b.how}) = ${m.qty.toLocaleString('en-IN')} units`;
   }
+  // Use (the minimum NIFTYBEES box): its units and price into Units / Bought at / Amount
+  $('sbMcc')?.addEventListener('click', (e) => {
+    if (!e.target.closest('[data-mcc-use]')) return;
+    const need = minBees();
+    if (!need) return;
+    const m = { ...(S.mcc || {}), on: true, qty: need.qty, price: Math.round(need.px * 100) / 100, amount: need.cost };
+    m.day ||= S.src === 'hist' ? entBees?.day || S.day : new Date(Date.now() + 5.5 * 3600_000).toISOString().slice(0, 10);
+    mccAmtNote = `${need.qty.toLocaleString('en-IN')} units at ₹${need.px.toFixed(2)}: the minimum for the strategy`;
+    S.mcc = m;
+    save();
+    render();
+    renderMcc(lastMccP, true);
+  });
   $('sbMcc')?.addEventListener('change', async (e) => {
     const k = e.target.dataset?.mcc;
     if (!k) return;
@@ -2119,6 +2221,7 @@
     S.tradeId = null;
     S.tradeSavedAt = null;
     S.mcc = null;
+    S.idea = null;
     renderTrades();
   }
   const onTradesClick = (e) => {
@@ -2130,24 +2233,97 @@
     else if (b.dataset.delNo) {
       delAsk = null;
       renderTrades();
+    } else if (b.dataset.export) {
+      exportTrades(b.dataset.export);
+    } else if (b.dataset.trsub) {
+      trSub[b.dataset.subAcct] = b.dataset.trsub;
+      renderTrades();
     } else if (b.dataset.t === 'refresh') refreshTrades();
     else if (b.dataset.acct) setAccount(b.dataset.id, b.dataset.acct, b);
   };
   $('sbTrades').addEventListener('click', onTradesClick);
   $('sbTradesPaper').addEventListener('click', onTradesClick);
-  // The Trades screen's left menu: Live (the live saved trades) / Paper (the paper ones and the strategies' paper
+  // The Trades screen's tabs (top): Live (the live saved trades) / Paper (the paper ones and the strategies' paper
   // trades). The tab picked is remembered.
   function showTradesTab(tab) {
-    const t = tab === 'paper' ? 'paper' : 'live';
+    const t = ['paper', 'ledger', 'portfolio'].includes(tab) ? tab : 'live';
     for (const b of document.querySelectorAll('#trNav [data-trtab]')) b.classList.toggle('on', b.dataset.trtab === t);
     for (const p of document.querySelectorAll('#tr [data-trpane]')) p.classList.toggle('hidden', p.dataset.trpane !== t);
     BT.store.set('trTab', t);
+    if (t === 'ledger') BT.emit('ledger-show');
+    if (t === 'portfolio') BT.emit('portfolio-show');
   }
+  // Trades › Ledger (ledger-view.js): the saved trades and their figures, as this screen counts them
+  window.SBTrades = {
+    list: () => trades,
+    split: (t) => splitOf(t),
+    account: (t) => accountOf(t),
+    strategy: (t) => {
+      const m = t.snap?.mcc;
+      return m?.on || m?.kind ? MCC_NAME[mccKind(m, t.snap.legs)] || '' : t.snap?.idea || '';
+    },
+    load: () => loadTrades(),
+    refresh: () => refreshTrades(),
+    shown: () => window.app?.state.view === 'tr' && BT.store.get('trTab', 'live') === 'ledger',
+    tabShown: (tab) => window.app?.state.view === 'tr' && BT.store.get('trTab', 'live') === tab,
+  };
   $('trNav').addEventListener('click', (e) => {
     const b = e.target.closest('[data-trtab]');
     if (b) showTradesTab(b.dataset.trtab);
   });
   showTradesTab(BT.store.get('trTab', 'live'));
+  // Export (top right of the Trades screen): every saved trade, Live and Paper, as a CSV for Excel. One row per
+  // strike (side, lots, expiry, entry / exit price, date and time, P&L), one for the NIFTYBEES held against it, and a
+  // total row per trade. Open legs show their price now (live trades priced at the chain) and P&L at that price.
+  function exportTrades(acct) {
+    const head = ['Account', 'Trade', 'Status', 'Market', 'Instrument', 'Side', 'Type', 'Strike', 'Expiry', 'Lots', 'Quantity',
+      'Entry date', 'Entry time', 'Entry price', 'Exit date', 'Exit time', 'Exit price', 'Price now', 'Leg status', 'Nifty at entry', 'P&L (Rs)', 'Note'];
+    const rows = [];
+    const clock = (s) => (s == null ? '' : String(s).replace(/^Live\s+/i, ''));
+    const num = (v, d = 2) => (v > 0 || v < 0 ? +(+v).toFixed(d) : v === 0 ? 0 : '');
+    const list = trades
+      .filter((t) => !acct || accountOf(t) === acct)
+      .sort((a, b) => (accountOf(a) === accountOf(b) ? a.createdAt - b.createdAt : accountOf(a) === 'live' ? -1 : 1));
+    if (!list.length) return alert('No saved trades to export.');
+    for (const t of list) {
+      const u = t.summary || {};
+      const x = splitOf(t);
+      const lot = u.lot || BT.meta.calendar?.liveLot || 65;
+      const now = tradesNow[t.id];
+      const base = [accountOf(t) === 'live' ? 'Live' : 'Paper', t.name, u.open > 0 ? 'Active' : 'Closed', u.src === 'live' ? 'Live market' : 'Replay'];
+      const legs = t.snap.legs.slice().sort((a, b) => (a.entryDay || '').localeCompare(b.entryDay || '') || (a.entryMin ?? 0) - (b.entryMin ?? 0) || a.id - b.id);
+      for (const l of legs) {
+        const pxNow = l.open ? now?.legPx?.[l.id] : null;
+        const out = l.open ? pxNow : l.exitPx;
+        const pnl = out > 0 ? dir(l) * l.lots * lot * (out - l.entryPx) : null;
+        rows.push([...base, 'NIFTY option', l.action === 'B' ? 'Buy' : 'Sell', l.type, l.strike, l.expiry || t.snap.liveExpiry || t.snap.expiry || '', l.lots, l.lots * lot,
+          l.entryDay || '', clock(l.entryAt), num(l.entryPx), l.open ? '' : l.exitDay || '', l.open ? '' : clock(l.exitClock || l.exitAt), l.open ? '' : num(l.exitPx),
+          pxNow > 0 ? num(pxNow) : '', l.open ? 'Open' : 'Closed', num(l.spotIn), pnl == null ? '' : Math.round(pnl), l.open && !(pxNow > 0) ? 'no price now' : '']);
+      }
+      const m = t.snap.mcc;
+      if (m?.on && m.qty > 0) {
+        const entryDay = m.day || legs.find((l) => l.entryDay)?.entryDay || '';
+        const sold = m.exitPx > 0;
+        rows.push([...base, 'NIFTYBEES', 'Buy', 'ETF', '', '', '', m.qty, entryDay, clock(m.at || ''), num(m.price), sold ? m.exitDay || '' : '', sold ? clock(m.exitAt) : '',
+          sold ? num(m.exitPx) : '', !sold && beesNow?.px > 0 ? num(beesNow.px) : '', sold ? 'Sold' : 'Held', '', x.bees == null ? '' : Math.round(x.bees),
+          x.beesHow === 'est' ? 'estimated from Nifty' : '']);
+      }
+      rows.push([...base, 'TOTAL', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', x.overall == null ? '' : Math.round(x.overall),
+        `options ${x.opt == null ? '-' : Math.round(x.opt)}${x.mcc ? ` + NIFTYBEES ${x.bees == null ? '-' : Math.round(x.bees)}` : ''} · ${x.optNow ? 'options at prices now' : 'options as saved'}`]);
+    }
+    const cell = (v) => {
+      const s = v == null ? '' : String(v);
+      return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+    const csv = '\ufeff' + [head, ...rows].map((r) => r.map(cell).join(',')).join('\r\n') + '\r\n';
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    a.download = `trades-${acct ? acct + '-' : ''}${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
   // Mark a saved trade live (real money) or paper (bt-data/paper-trades.json keeps it as trade.account).
   async function setAccount(id, account, btn) {
     btn.disabled = true;

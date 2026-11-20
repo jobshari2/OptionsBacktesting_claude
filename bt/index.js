@@ -548,7 +548,15 @@ function createBacktester({ getToken, upstox, getRestChain, cacheDir, storeFile,
       if (p === '/api/sb/trades/account' && req.method === 'POST') return sendJson(res, 200, { trade: setTradeAccount(await readJson(req)) });
       if (p === '/api/sb/trades/delete' && req.method === 'POST') {
         const id = (await readJson(req)).id;
-        writeTrades(readTrades().filter((x) => x.id !== id));
+        const list = readTrades();
+        // a closed live (real-money) trade is kept for the record (Trades › Live › Closed, the Ledger): not deleted.
+        // Its account as the Trades screen reads it (sb-view.js accountOf): a replay is paper, else as marked, else
+        // "paper" in the name, else live.
+        const t = list.find((x) => x.id === id);
+        const legs = t?.snap?.legs || [];
+        const acct = t?.snap?.src !== 'live' ? 'paper' : t.account === 'live' || t.account === 'paper' ? t.account : /paper/i.test(t.name || '') ? 'paper' : 'live';
+        if (t && legs.length && !legs.some((l) => l.open) && acct === 'live') return sendJson(res, 400, { error: 'A closed live trade cannot be deleted: it is kept for the record' });
+        writeTrades(list.filter((x) => x.id !== id));
         return sendJson(res, 200, { ok: true });
       }
       if (p === '/api/bt/levels') {

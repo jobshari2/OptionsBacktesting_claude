@@ -1359,6 +1359,7 @@
         };
       });
     BT.emit('open-builder', {
+      idea: NAME, // the Trading Ideas strategy, named in the Builder's Positions heading
       src: 'hist',
       expiry: m.expiry,
       day: at0.day,
@@ -1621,6 +1622,7 @@
     const sb = BT.store.get('sb', {});
     if (sb.legs?.some((l) => l.open) && !sb.tradeId && !confirm('The Builder holds a position that is not saved. Replace it with this one?')) return;
     BT.emit('open-builder', {
+      idea: NAME, // the Trading Ideas strategy, named in the Builder's Positions heading
       src: 'live',
       expiry: c.expiry,
       note: `${NAME} paper trade · ${monthName(c.expiry)} series (options only; ${num0(P.etfOnce?.qty)} NIFTYBEES not in the Builder)`,

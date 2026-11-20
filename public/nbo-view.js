@@ -870,6 +870,7 @@
         };
       });
     BT.emit('open-builder', {
+      idea: NAME, // the Trading Ideas strategy, named in the Builder's Positions heading
       src: 'hist',
       expiry: m.expiry,
       day: at0.day,

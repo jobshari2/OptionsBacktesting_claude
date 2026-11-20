@@ -1261,7 +1261,8 @@ function bestCollars(M, { lot, lots = 1, beesQty = 0, beesPx, expiry, slip = 0.0
   const out1 = (o, legs, r) => ({
     id: o.id,
     title: titleOf(legs),
-    legs: legs.map((l) => ({ type: l.type, strike: l.strike, side: l.side, lots: l.lots, fill: l.entry, ltp: M.px(l.type, l.strike) })),
+    // iv: the strike's IV now (the guided new trade's payoff chart prices the legs between now and the expiry with it)
+    legs: legs.map((l) => ({ type: l.type, strike: l.strike, side: l.side, lots: l.lots, fill: l.entry, ltp: M.px(l.type, l.strike), iv: M.iv(l.type, l.strike) })),
     credit: sum(legs, (l) => -l.side * l.entry * l.lots * lot),
     charges: r.charges,
     up: o.up,
@@ -1314,6 +1315,8 @@ function bestCollars(M, { lot, lots = 1, beesQty = 0, beesPx, expiry, slip = 0.0
   }
   return {
     tried,
+    T: M.T, // years to the expiry and the ATM IV (payoff curves before the expiry)
+    atmIv: M.atmIv,
     peakTol: tol,
     peaked: peaks ? peaked : null,
     rules,

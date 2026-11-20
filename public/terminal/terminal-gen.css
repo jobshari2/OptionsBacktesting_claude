@@ -264,6 +264,28 @@
 :root[data-design="terminal"] .sb-pnl-row .tot b { font-size: var(--fs-6); }
 :root[data-design="terminal"] .sb-pnl-row .tot.total b { font-size: var(--fs-7); }
 :root[data-design="terminal"] .sb-mcc { border-radius: var(--r); font-size: var(--fs-4); }
+:root[data-design="terminal"] .bees-need { border-radius: var(--r); font-size: var(--fs-4); }
+:root[data-design="terminal"] .bees-need .bn-ico { font-size: var(--fs-7); }
+:root[data-design="terminal"] .bees-need .bn-qty, :root[data-design="terminal"] .bees-need .bn-cost { font-size: var(--fs-6); }
+:root[data-design="terminal"] .bees-need .bn-sub { font-size: var(--fs-2); }
+:root[data-design="terminal"] .bees-need.big { font-size: var(--fs-5); }
+:root[data-design="terminal"] .bees-need.big .bn-qty, :root[data-design="terminal"] .bees-need.big .bn-cost { font-size: var(--fs-8); }
+:root[data-design="terminal"] .bees-need.big .bn-ico { font-size: var(--fs-8); }
+:root[data-design="terminal"] .mcl-guide { border-radius: var(--r); }
+:root[data-design="terminal"] .mg-head h3 { font-size: var(--fs-6); }
+:root[data-design="terminal"] .mg-step { border-radius: var(--r); font-size: var(--fs-3); font-weight: var(--w-semi); }
+:root[data-design="terminal"] .mg-step .mg-n, :root[data-design="terminal"] .mg-done .mg-n { font-size: var(--fs-2); }
+:root[data-design="terminal"] .mg-done { font-size: var(--fs-3); }
+:root[data-design="terminal"] .mg-done .mg-n { font-size: var(--fs-1); }
+:root[data-design="terminal"] .btn-link { font-size: var(--fs-3); }
+:root[data-design="terminal"] .mg-body h4 { font-size: var(--fs-5); }
+:root[data-design="terminal"] .mg-warn { border-radius: var(--r); font-size: var(--fs-3); }
+:root[data-design="terminal"] .mg-leg { border-radius: var(--r); font-size: var(--fs-3); font-family: var(--font-mono); }
+:root[data-design="terminal"] .mg-review th { font-weight: var(--w-semi); }
+:root[data-design="terminal"] .mg-pickhead { font-weight: var(--w-semi); }
+:root[data-design="terminal"] .mg-sub { font-size: var(--fs-4); }
+:root[data-design="terminal"] .sb-pos-strat { font-size: var(--fs-3); font-weight: var(--w-semi); }
+:root[data-design="terminal"] .sb-pos-strat .sps-bees { border-radius: var(--r); font-size: var(--fs-3); }
 :root[data-design="terminal"] .sb-held .k-v { font-size: var(--fs-7); }
 :root[data-design="terminal"] .sb-held .sb-held-tot { background: color-mix(in srgb, var(--accent) 10%, transparent); }
 :root[data-design="terminal"] .sb-held .sb-held-tot .k-v { font-size: var(--fs-8); }
@@ -285,6 +307,7 @@
 :root[data-design="terminal"] .tr-nav button { border-radius: var(--r); font-size: var(--fs-4); }
 :root[data-design="terminal"] .tr-nav button.on { font-weight: var(--w-semi); }
 :root[data-design="terminal"] .tr-nav .tr-n { border-radius: var(--r); font-size: var(--fs-2); font-weight: var(--w-semi); }
+:root[data-design="terminal"] .tr-nav button.tr-export { font-size: var(--fs-3); }
 :root[data-design="terminal"] .sb-trades-sec h4 { font-size: var(--fs-3); }
 :root[data-design="terminal"] .tr-col-head h4 { font-size: var(--fs-4); }
 :root[data-design="terminal"] .tr-col-head .tr-n { border-radius: var(--r); font-size: var(--fs-2); font-weight: var(--w-semi); }
@@ -304,10 +327,27 @@
 :root[data-design="terminal"] .trl-meta { font-size: var(--fs-2); }
 :root[data-design="terminal"] .trl-pnl { font-weight: var(--w-semi); font-size: var(--fs-4); }
 :root[data-design="terminal"] .trl-split { font-size: var(--fs-1); }
+:root[data-design="terminal"] .tr-sub button { border-radius: var(--r) var(--r) 0 0; font-size: var(--fs-4); font-weight: var(--w-semi); }
+:root[data-design="terminal"] .tr-sub .tr-n { border-radius: var(--r); font-size: var(--fs-2); font-weight: var(--w-semi); }
 :root[data-design="terminal"] .sb-trades-tbl tbody tr.sel td { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 :root[data-design="terminal"] .ch-btn { border-radius: var(--r); }
 :root[data-design="terminal"] .chain tr.atm td.strike .ch-btn { color: var(--on-atm); }
 :root[data-design="terminal"] .nc-title .btn-sm { font-size: var(--fs-4); }
+:root[data-design="terminal"] .lg-card { border-radius: var(--r); }
+:root[data-design="terminal"] .lg-cl { font-size: var(--fs-2); font-weight: var(--w-semi); }
+:root[data-design="terminal"] .lg-cv { font-size: var(--fs-8); }
+:root[data-design="terminal"] .lg-cs { font-size: var(--fs-3); }
+:root[data-design="terminal"] .lg-cs.muted { font-size: var(--fs-2); }
+:root[data-design="terminal"] .lg-form { border-radius: var(--r); }
+:root[data-design="terminal"] .lg-form h4 { font-size: var(--fs-5); }
+:root[data-design="terminal"] .lg-fl > span:first-child { font-size: var(--fs-2); }
+:root[data-design="terminal"] .lg-fl em { font-size: var(--fs-2); }
+:root[data-design="terminal"] .lg-tbl td.lg-bal { font-weight: var(--w-semi); }
+:root[data-design="terminal"] .lg-tbl .lg-sub { font-size: var(--fs-2); }
+:root[data-design="terminal"] .lg-side { border-radius: var(--r); }
+:root[data-design="terminal"] .lg-side-h h4 { font-size: var(--fs-5); }
+:root[data-design="terminal"] .lg-tag { font-size: var(--fs-1); border-radius: var(--r); font-weight: var(--w-semi); }
+:root[data-design="terminal"] .lg-st { border-radius: var(--r); font-size: var(--fs-2); font-weight: var(--w-semi); }
 
 /* ---------- ideas.css ---------- */
 :root[data-design="terminal"] .id-titlebox h2 { font-size: var(--fs-7); }

@@ -69,6 +69,7 @@
     params.budget = v;
     BT.store.set('psc-params', params);
     rebudgetAll();
+    drawBees();
   }
   // Saved results at another budget: the options do not depend on it, the NIFTYBEES P&L is in proportion to the units.
   const worth = (p, budget, S0) => (budget > 0 ? budget : S0 > 0 ? p.lotSize * p.lots * S0 : null);
@@ -179,6 +180,7 @@
   function applyIdea() {
     init();
     poll();
+    drawBees();
   }
   async function init() {
     if (started) return;
@@ -206,6 +208,27 @@
     else if (tab === 'live') live.render(body());
     else renderPaper();
     poll();
+    drawBees();
+  }
+  // NIFTYBEES to buy for a new trade (public/bees-need.js), under the tab bar on every tab: the Backtest tab's budget
+  // and lots, at Nifty and NIFTYBEES now (as Enter new trade sizes them). The Live trade tab shows its own (with no
+  // trade: large, and Enter new trade takes the same units and price to the Builder). Refreshed every 30 s.
+  let beesT = null;
+  async function drawBees() {
+    clearTimeout(beesT);
+    const el = $('pscBees');
+    if (!el || !params) return;
+    if (tab === 'live' || window.app?.state.view !== VIEW) {
+      el.innerHTML = '';
+      return;
+    }
+    await window.BeesNeed?.fill(el, {
+      budget: params.budget,
+      lots: params.lots,
+      title: `NIFTYBEES to buy for a new ${NAME}`,
+      note: params.budget > 0 ? 'set on the Backtest tab (NIFTYBEES budget)' : 'a NIFTYBEES budget on the Backtest tab changes it',
+    });
+    beesT = setTimeout(drawBees, 30_000);
   }
   // The Live trade tab: the Covered call's (mcc-view.js / mcclive-view.js) on this strategy's routes and names.
   // "Enter new trade" builds the legs at the Backtest tab's distances and lots.
@@ -220,6 +243,7 @@
     shapeShort: 'sold call + put spread',
     flag: { kind: 'psc' },
     adjust: true, // Legs and payoff › Adjustments (loss-less changes)
+    guide: true, // 🧭 the guided new trade: expiry → NIFTYBEES → strikes → Builder
     planBody: () => ({ params: params && { lots: params.lots, ce: params.ce, pe: params.pe, budget: params.budget } }),
   });
   body().addEventListener('click', (e) => {
@@ -1147,6 +1171,7 @@
     if (b) params[a] = { ...params[a], [b]: v };
     else params[a] = v;
     BT.store.set('psc-params', params);
+    if (path === 'lots' || path === 'budget') drawBees();
   }
   function showProgress(pr) {
     const box = $('pscProg');
@@ -1356,6 +1381,7 @@
         };
       });
     BT.emit('open-builder', {
+      idea: NAME, // the Trading Ideas strategy, named in the Builder's Positions heading
       src: 'hist',
       expiry: m.expiry,
       day: at0.day,
@@ -1618,6 +1644,7 @@
     const sb = BT.store.get('sb', {});
     if (sb.legs?.some((l) => l.open) && !sb.tradeId && !confirm('The Builder holds a position that is not saved. Replace it with this one?')) return;
     BT.emit('open-builder', {
+      idea: NAME, // the Trading Ideas strategy, named in the Builder's Positions heading
       src: 'live',
       expiry: c.expiry,
       note: `${NAME} paper trade · ${monthName(c.expiry)} series (options only; ${num0(P.etfOnce?.qty)} NIFTYBEES not in the Builder)`,

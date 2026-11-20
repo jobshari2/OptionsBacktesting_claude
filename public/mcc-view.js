@@ -1583,6 +1583,7 @@
     const sb = BT.store.get('sb', {});
     if (sb.legs?.some((l) => l.open) && !sb.tradeId && !confirm('The Builder holds a position that is not saved. Replace it with this one?')) return;
     BT.emit('open-builder', {
+      idea: 'Modified covered call', // the Trading Ideas strategy, named in the Builder's Positions heading
       src: 'live',
       expiry: c.expiry,
       note: `Modified covered call paper trade · ${monthName(c.expiry)} series (options only; ${num0(P.etfOnce?.qty)} NIFTYBEES not in the Builder)`,
