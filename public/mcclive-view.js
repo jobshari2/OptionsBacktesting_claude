@@ -131,7 +131,7 @@
       const nowEl = $('mclNow'); // no open trade on screen: Nifty and NIFTYBEES now
       if (nowEl) nowEl.innerHTML = nowHtml();
       if (st?.error && st.error === el.dataset.err) return; // the same error is on screen: its trade picker is left open
-      if (st?.closed) return shape() !== drawnShape ? draw() : undefined; // a closed trade: nothing moves
+      if (st?.closed) return shape() !== drawnShape ? draw() : refreshClosed(); // a closed trade: only Nifty now moves
       if (!st?.pos && !st?.error && el.dataset.nopos === String(st?.trades?.length ?? 0)) return; // no trade (None): left as drawn
       if (!st?.pos || st.error || shape() !== drawnShape || !$('mclKpis')) return draw();
       const n = nowPnl();
@@ -462,9 +462,8 @@
     }
 
     // Where it started and where it is: the strikes on a line with the entry and Nifty now marked.
-    function trackHtml() {
-      const P = st.pos;
-      const S = st.market.spot;
+    // P, S: a closed trade passes its legs as held (closed legs as open ones) and Nifty now from st.now
+    function trackHtml(P = st.pos, S = st.market.spot) {
       const E = st.entrySpot;
       const ks = P.legs.map((l) => l.strike);
       const all = [...ks, ...P.closed.map((l) => l.strike)];
@@ -1157,6 +1156,8 @@
         line(N.pe, (x) => optAt(P.legs, P.realised, x, false, ['PE']), '#3fb68b', { borderWidth: 1.5, borderDash: [5, 3] }),
       ];
       if (st.bees.qty > 0) {
+        // the NIFTYBEES held on their own: units × (price at Nifty x − buy price), as the grid's NIFTYBEES P&L
+        sets.push(line('NIFTYBEES at expiry', bees, '#39c5cf', { borderWidth: 1.5 }));
         sets.push(line('NIFTYBEES + options at expiry', (x) => optAt(P.legs, P.realised, x, false) + bees(x), '#58a6ff'));
         sets.push(line('NIFTYBEES + options today', (x) => optAt(P.legs, P.realised, x, true) + bees(x), '#58a6ff', { borderWidth: 1.5, borderDash: [2, 3] }));
       } else sets.push(line('Options today', (x) => optAt(P.legs, P.realised, x, true), '#b392f0', { borderWidth: 1.5, borderDash: [2, 3] }));
@@ -1861,11 +1862,28 @@
     // <api>/live/best: every trade of the shape on the expiry's live chain, scored at expiry on Nifty moves of 1 … 8 %
     // up and down from now (NIFTYBEES + options, slippage and charges in); the 5 best in both directions in a popup, each
     // with its P&L for Nifty moves table. Nothing is sent to a broker.
-    const BEST = ['psc', 'bpc', 'mcc'].includes(cfg.flag?.kind);
+    const BEST = ['psc', 'bpc', 'mcc', 'pbs'].includes(cfg.flag?.kind);
+    // the Put back spread's own search (bestBackSpreads): a loss limit on the options anywhere at expiry and a rank, not
+    // the collars' floors
+    const PBS = cfg.flag?.kind === 'pbs';
+    const PBS_RANKS = [
+      ['protect', 'options on falls 1–8 %'],
+      ['loss', 'smallest options loss'],
+      ['credit', 'options if Nifty stays'],
+      ['up', 'total on rises 1–8 %'],
+    ];
     // the words for what the search builds: the collars' sold call + put spread, or the covered call's ratio + butterfly
     const MCC_BEST = cfg.flag?.kind === 'mcc';
     const PEAKS = MCC_BEST; // the two peaks (call ratio, put butterfly) are matched and shown
-    const BW = MCC_BEST
+    const BW = PBS
+      ? {
+          one: 'trade',
+          many: 'trades',
+          legs: 'a put back spread (sell 1 PE, buy 2 PE 100–400 points under it) + 0–2 put butterflies inside its loss stretch (any centre, half-width 50–400)',
+          where: 'the sold put from ATM + 300 down to ATM − 1,000, puts only',
+          dip: '',
+        }
+      : MCC_BEST
       ? {
           one: 'trade',
           many: 'trades',
@@ -1892,7 +1910,7 @@
       const ov = document.createElement('div');
       ov.className = 'modal-ov mcl-best';
       ov.innerHTML = `<div class="panel modal"><div class="modal-head"><h3>Suggestion: best strikes for a new ${esc(cfg.name)} <span class="muted small" data-x="sub"></span></h3><button class="icon" data-x="close" title="Close">✕</button></div>
-        <div class="seg sm" data-x="tabs" style="margin:10px 14px 0;flex:none;align-self:flex-start"><button data-tab="live" title="The expiry picked on this tab, at the live prices">Live</button><button data-tab="hist" title="Test the search on a past monthly series: its chain as it was on the day and time you pick, and what each pick actually made at the expiry">Past month</button></div>
+        <div class="seg sm" data-x="tabs" style="margin:10px 14px 0;flex:none;align-self:flex-start"><button data-tab="live" title="An expiry on the live chain (this month's by default), at the live prices">Live</button><button data-tab="hist" title="Test the search on a past monthly series: its chain as it was on the day and time you pick, and what each pick actually made at the expiry">Past month</button></div>
         <div class="cc-doc" data-x="body" style="padding:12px 14px"></div></div>`;
       document.body.appendChild(ov);
       const close = () => ov.remove();
@@ -1904,6 +1922,21 @@
       let r;
       let sel = 0;
       let bestSeq = 0; // only the latest search draws
+      // Live: the expiry searched, picked in the popup; each time it opens: this month's monthly series (else the
+      // nearest monthly, else the nearest listed)
+      let bestExp = null;
+      const monthExp = () => {
+        const L = expList?.expiries || [];
+        const ym = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }).slice(0, 7);
+        return (L.find((e) => e.monthly && e.expiry.slice(0, 7) === ym) || L.find((e) => e.monthly) || L[0])?.expiry || null;
+      };
+      const expInput = () =>
+        `<label class="mini" title="The expiry the ${BW.many} are built on, at its live prices. Each time this opens: the current month's monthly series.">Expiry <select data-x="bexp">${(expList?.expiries || [])
+          .map(
+            (e) =>
+              `<option value="${e.expiry}" ${e.expiry === bestExp ? 'selected' : ''}>${dayLabel(e.expiry)}${e.monthly ? ' · monthly' : ''} · ${e.days} day${e.days === 1 ? '' : 's'}${e.expiry === monthExp() ? ' (this month)' : ''}${e.expiry === expList.dflt ? ' (the rules’ series)' : ''}</option>`,
+          )
+          .join('')}</select></label>`;
       let minDown = Number(BT.store.get('mclBestMinDown', 30000));
       if (!Number.isFinite(minDown)) minDown = 30000;
       let minUp = Number(BT.store.get('mclBestMinUp', 35000));
@@ -1950,8 +1983,18 @@
             .join('')}</select></label>
           <label class="mini" title="The minute of that day the chain is read at (IST)">at <input type="time" data-x="htime" min="09:15" max="15:29" value="${esc(histPick.time || '09:30')}"></label>`;
       };
+      // the Put back spread: the most the options may lose at expiry anywhere ('' = the Backtest tab's limit × lots), the rank
+      let maxLoss = BT.store.get('mclBestMaxLoss', '');
+      if (maxLoss !== '' && !(Number(maxLoss) >= 0)) maxLoss = '';
+      let pbsRank = BT.store.get('mclBestRank', 'protect');
+      if (!PBS_RANKS.some(([k]) => k === pbsRank)) pbsRank = 'protect';
+      const pbsInput = () =>
+        `${tab === 'hist' ? histInputs() + ' ' : expInput() + ' '}<label class="mini" title="The options alone (NIFTYBEES aside) may lose at most this at expiry, at ANY Nifty level, after slippage and charges. Empty: the Backtest tab's loss limit × lots. At market prices 0 is rarely reachable: then the trades with the least loss are shown.">Most the options may lose ₹ <input class="num" type="number" min="0" step="500" data-x="maxloss" value="${esc(String(maxLoss))}" placeholder="${r?.maxLoss != null ? `auto ${num0(r.maxLoss)}` : 'auto'}" style="width:110px"></label>
+        <label class="mini" title="How the trades within the limit are ordered">Rank by <select data-x="rank">${PBS_RANKS.map(([k, l]) => `<option value="${k}" ${k === pbsRank ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+        <label class="mini" title="The Rangebound column: the lowest total (options + NIFTYBEES) at expiry with Nifty within ± this many % of the start">Range ± <input class="num" type="number" min="0.5" max="10" step="0.5" data-x="midband" value="${midBand}" style="width:56px"> %</label>
+        <label class="mini" title="NIFTYBEES units held against the trade, in every number here. Empty: one lot of Nifty's worth at the entry price (auto); 0 = none.">NIFTYBEES units <input class="num" type="number" min="0" step="1" data-x="units" value="${esc(String(units))}" placeholder="${r?.bees?.auto ? `auto ${num0(r.bees.qty)}` : 'auto'}" style="width:110px"></label> <button class="btn-sm ghost" data-x="rerun">${tab === 'hist' ? 'Find' : 'Apply'}</button>`;
       const lossInput = () =>
-        `${tab === 'hist' ? histInputs() + ' ' : ''}<label class="mini" title="The options' average P&amp;L at expiry on Nifty falls of 1 … ${BEST_TO} % (NIFTYBEES aside) must be at least this">Least the options earn if Nifty falls ₹ <input class="num" type="number" step="5000" data-x="mindown" value="${minDown}" style="width:110px"></label>
+        PBS ? pbsInput() : `${tab === 'hist' ? histInputs() + ' ' : expInput() + ' '}<label class="mini" title="The options' average P&amp;L at expiry on Nifty falls of 1 … ${BEST_TO} % (NIFTYBEES aside) must be at least this">Least the options earn if Nifty falls ₹ <input class="num" type="number" step="5000" data-x="mindown" value="${minDown}" style="width:110px"></label>
         <label class="mini" title="The whole trade's (options + NIFTYBEES) average P&amp;L at expiry on Nifty rises of 1 … ${BEST_TO} % must be at least this">Least options + NIFTYBEES earn if Nifty goes up ₹ <input class="num" type="number" step="5000" data-x="minup" value="${minUp}" style="width:110px"></label>
         <label class="mini" title="Rangebound: the whole trade's (options + NIFTYBEES) P&amp;L at expiry must be at least this everywhere with Nifty within ± this many % of the entry (its lowest point there). 0 = no loss anywhere in the range.">Least the trade earns if Nifty stays within ± <input class="num" type="number" min="0.5" max="10" step="0.5" data-x="midband" value="${midBand}" style="width:56px"> % ₹ <input class="num" type="number" step="5000" data-x="minmid" value="${minMid}" style="width:110px"></label>
         <label class="mini" title="The options alone (NIFTYBEES aside) at expiry if Nifty ends where it is ${tab === 'hist' ? 'at the entry' : 'now'} must earn at least this. Leave it empty for 1 % of the money invested (the NIFTYBEES bought).">Least the options earn if Nifty stays ₹ <input class="num" type="number" step="1000" data-x="minflat" value="${esc(String(minFlat))}" placeholder="${r?.flat?.auto ? `auto 1 % = ${num0(r.minFlat)}` : 'auto 1 %'}" style="width:130px"></label>
@@ -1967,9 +2010,10 @@
       async function fetchBest() {
         const wait = tab === 'hist' ? `Pricing every ${BW.one} on that day’s chain (downloading the option prices the cache lacks: the first time can take a minute)…` : `Pricing every ${BW.one} on the live chain…`;
         if (tab === 'live') {
-          if (!expPick) await loadExpiries().catch(() => {});
-          sub.textContent = expPick ? `expiry ${dayLabel(expPick)}` : '';
-          if (!expPick) {
+          if (!expList) await loadExpiries().catch(() => {});
+          if (!expList?.expiries?.some((e) => e.expiry === bestExp)) bestExp = monthExp();
+          sub.textContent = bestExp ? `expiry ${dayLabel(bestExp)}` : '';
+          if (!bestExp) {
             body.innerHTML = '<div class="muted small">No live expiry listed: is the live chain logged in? The Past month tab works without it.</div>';
             return;
           }
@@ -2002,8 +2046,8 @@
         try {
           out =
             t === 'hist'
-              ? await BT.api(cfg.api + '/live/best-hist', { expiry: histPick.expiry, day: histPick.day, time: histPick.time, minDown, minUp, minMid, midBand, minFlat, units, ...(PEAKS ? { peakTol } : {}), ...(cfg.planBody?.() || {}) })
-              : await BT.api(cfg.api + '/live/best', { expiry: expPick, minDown, minUp, minMid, midBand, minFlat, units, ...(PEAKS ? { peakTol } : {}), ...(cfg.planBody?.() || {}) });
+              ? await BT.api(cfg.api + '/live/best-hist', { expiry: histPick.expiry, day: histPick.day, time: histPick.time, minDown, minUp, minMid, midBand, minFlat, units, ...(PEAKS ? { peakTol } : {}), ...(PBS ? { maxLoss, rank: pbsRank } : {}), ...(cfg.planBody?.() || {}) })
+              : await BT.api(cfg.api + '/live/best', { expiry: bestExp, minDown, minUp, minMid, midBand, minFlat, units, ...(PEAKS ? { peakTol } : {}), ...(PBS ? { maxLoss, rank: pbsRank } : {}), ...(cfg.planBody?.() || {}) });
         } catch (e) {
           if (seq === bestSeq) body.innerHTML = `<div class="set-row">${lossInput()}</div><div class="err small">${esc(e.message)}</div>`;
           return;
@@ -2025,8 +2069,12 @@
           .map(
             (g) =>
               `<tr class="${g.mark ? 'sel' : ''}"><td class="l">${g.mark ? '<b>Now</b> <span class="muted">0 %</span>' : sgnPct(g.m, 1)}</td><td><b>${num0(g.x)}</b></td><td>${g.beesPx != null ? '₹' + g.beesPx.toFixed(2) : '—'}</td>${r.bees.qty > 0 ? td(g.bees) : '<td class="muted">—</td>'}
-              <td class="mcl-g1 ${cls(g.callToday)}">${inrS(Math.round(g.callToday))}</td>${td(g.putToday)}${td(g.optToday)}${td(g.totalToday, true)}
-              <td class="mcl-g2 ${cls(g.call)}">${inrS(Math.round(g.call))}</td>${td(g.put)}${td(g.opt)}${td(g.total, true)}</tr>`,
+              ${
+                PBS
+                  ? `<td class="mcl-g1 ${cls(g.optToday)}">${inrS(Math.round(g.optToday))}</td>${td(g.totalToday, true)}<td class="mcl-g2 ${cls(g.opt)}">${inrS(Math.round(g.opt))}</td>${td(g.total, true)}`
+                  : `<td class="mcl-g1 ${cls(g.callToday)}">${inrS(Math.round(g.callToday))}</td>${td(g.putToday)}${td(g.optToday)}${td(g.totalToday, true)}
+              <td class="mcl-g2 ${cls(g.call)}">${inrS(Math.round(g.call))}</td>${td(g.put)}${td(g.opt)}${td(g.total, true)}`
+              }</tr>`,
           )
           .join('');
         const a = v.actual;
@@ -2034,14 +2082,15 @@
           a ? ` · <b>at the expiry ${num0(a.spot)} (${sgnPct((a.spot / r.spot - 1) * 100, 1)})</b>: options <b class="${cls(a.opt)}">${inrS(Math.round(a.opt))}</b>, NIFTYBEES ${inrS(Math.round(a.bees))}, total <b class="${cls(a.total)}">${inrS(Math.round(a.total))}</b>` : ''
         }</span></h4>
         <div class="tbl-wrap mcc-scen mcl-grid"><table class="grid-tbl"><thead>
-        <tr class="mcl-ghead"><th colspan="4"></th><th colspan="4" class="mcl-g1">${r.hist ? 'If Nifty is there on the entry day' : 'If Nifty is there today'}</th><th colspan="4" class="mcl-g2">At expiry (${dayLabel(r.expiry)})</th></tr>
-        <tr><th class="l">From start</th><th>Nifty</th><th>NIFTYBEES</th><th>NIFTYBEES P&amp;L</th><th class="mcl-g1">${N.ce}</th><th>${N.pe}</th><th>Options</th><th>Total</th><th class="mcl-g2">${N.ce}</th><th>${N.pe}</th><th>Options</th><th>Total</th></tr></thead>
+        <tr class="mcl-ghead"><th colspan="4"></th><th colspan="${PBS ? 2 : 4}" class="mcl-g1">${r.hist ? 'If Nifty is there on the entry day' : 'If Nifty is there today'}</th><th colspan="${PBS ? 2 : 4}" class="mcl-g2">At expiry (${dayLabel(r.expiry)})</th></tr>
+        <tr><th class="l">From start</th><th>Nifty</th><th>NIFTYBEES</th><th>NIFTYBEES P&amp;L</th>${PBS ? '<th class="mcl-g1">Options</th><th>Total</th><th class="mcl-g2">Options</th><th>Total</th>' : `<th class="mcl-g1">${N.ce}</th><th>${N.pe}</th><th>Options</th><th>Total</th><th class="mcl-g2">${N.ce}</th><th>${N.pe}</th><th>Options</th><th>Total</th>`}</tr></thead>
         <tbody>${rows}</tbody></table></div>`;
       };
       // the rows: the trade the rules pick (the covered call: shown whatever the floors), then the picks
       const picks = () => (r.rules && !r.rules.missing ? [r.rules, ...r.list] : r.list);
       const missOf = (v) => {
         const m = v.meets || {};
+        if (PBS) return m.loss ? [] : ['the loss limit'];
         const out = [];
         if (!m.down) out.push('the falls floor');
         if (!m.up) out.push('the rises floor');
@@ -2050,7 +2099,46 @@
         if (!m.peaks) out.push('equal peaks');
         return out;
       };
-      const draw = () => {
+      const draw = () => (PBS ? drawPbs() : drawCollar());
+      // the Put back spread's rows and note: the loss limit and the rank instead of the collars' floors
+      const drawPbs = () => {
+        const off = r.rules && !r.rules.missing ? 1 : 0;
+        const td = (x, b) => `<td class="${cls(x)}">${b ? '<b>' : ''}${x == null ? '—' : inrS(Math.round(x))}${b ? '</b>' : ''}</td>`;
+        const legTxt = (l) => `${l.side > 0 ? 'buy' : 'sell'} ${l.lots > 1 ? `${l.lots}× ` : ''}${l.strike} ${l.type} ~${l.fill.toFixed(1)}`;
+        const rows = picks()
+          .map(
+            (v, i) => `<tr class="${i === sel ? 'sel' : ''}" data-best="${i}" style="cursor:pointer"><td>${v.rules ? '<span class="pill" title="The legs the Put back spread rules pick on this chain (as ＋ Enter new trade: the Backtest tab’s search settings)">Rules</span>' : i + 1 - off}</td><td class="l"><b>${esc(v.title)}</b>${
+              v.rules ? `<div class="small"><b>By the rules</b>${missOf(v).length ? ' · <span class="neg">over the loss limit</span>' : ' · <span class="pos">within the loss limit</span>'}${v.thin?.length ? ` · <span class="muted">thin: ${esc(v.thin.join(', '))}</span>` : ''}</div>` : ''
+            }${v.over ? `<div class="small neg">over the ₹${num0(r.maxLoss)} loss limit (the least loss of the rest)</div>` : ''}<div class="muted small">${v.legs.map(legTxt).join(' · ')}</div></td>
+            ${td(v.credit)}${td(v.optWorst, true)}${td(v.downOpt, true)}${td(v.up, true)}${td(v.flat)}${td(v.mid)}${td(v.down)}<td>${v.lowBE ? `${num0(v.lowBE)} <span class="muted small">${sgnPct((v.lowBE / r.spot - 1) * 100, 1)}</span>` : '—'}</td>${
+              v.actual ? `<td class="mcl-g2 ${cls(v.actual.opt)}"><b>${inrS(Math.round(v.actual.opt))}</b></td><td class="${cls(v.actual.total)}"><b>${inrS(Math.round(v.actual.total))}</b></td>` : ''
+            }
+            <td><button class="btn-sm ${i === sel ? '' : 'ghost'}" data-sb="${i}" title="${r.hist ? `Replay these legs in the Builder from ${dayLabel(r.day)} ${r.time} to the expiry, at that minute's prices, with the NIFTYBEES` : 'Open these legs in the Builder with the NIFTYBEES, to check and save as a trade'}">Builder ▸</button></td></tr>`,
+          )
+          .join('');
+        const rankTxt = PBS_RANKS.find(([k]) => k === r.rank)?.[1] || r.rank;
+        const note = r.within
+          ? `<b>${num0(r.within)}</b> of them keep the options' loss at expiry within <b>₹${num0(r.maxLoss)}</b> at every Nifty level (after slippage and charges). Ranked by <b>${esc(rankTxt)}</b>; one per sold put strike, so the five are different trades${r.within < r.list.length ? ' (fewer within the limit: the rest are the least loss above it, marked)' : ''}.`
+          : `<b class="neg">None keeps the options' loss within ₹${num0(r.maxLoss)} at every Nifty level</b> (at market prices a structure that never loses would be free money). Shown are the ones with the <b>least loss</b>; raise the limit to see more protective trades.`;
+        const beesTxt = `<b>${num0(r.bees.qty)}</b> NIFTYBEES${r.bees.auto ? ' (auto: one lot of Nifty’s worth)' : ' (your units)'} at ₹${r.bees.now.toFixed(2)}`;
+        const when = r.hist
+          ? `(only strikes that traded in the ${HIST_FRESH_TXT} before ${r.time} on ${dayLabel(r.day)}${r.missing ? `; ${r.missing} option price histories could not be read` : ''}), the best ${num0(r.priced)} booked at that minute's price ± ${r.slipPct} % with charges, with ${beesTxt}${r.bees.live ? '' : ' (no recorded NIFTYBEES price: Nifty ÷ 100, moved with Nifty)'}`
+          : `(only strikes traded today with a tight quote), the best ${num0(r.priced)} booked at the LTP ± ${r.slipPct} % with charges, with ${beesTxt}${r.bees.live ? '' : ' (estimated)'}`;
+        const h = r.hindsight;
+        const past = r.hist
+          ? `<p class="small"><b>What happened:</b> Nifty ${num0(r.spot)} on ${dayLabel(r.day)} ${r.time} → <b>${num0(r.settle.spot)}</b> at the ${dayLabel(r.expiry)} expiry (${sgnPct((r.settle.spot / r.spot - 1) * 100, 1)}); NIFTYBEES ₹${r.bees.now.toFixed(2)} → ₹${r.settle.bees.toFixed(2)}${r.settle.real ? '' : ' (moved with Nifty)'}. The last two columns are what each pick actually made, held to the expiry with no re-picks.${
+              h ? ` With hindsight, the best of the ${r.within ? `${num0(r.within)} within the limit` : `${num0(r.priced)} booked`} was <b>${esc(h.title)}</b>: options <b class="${cls(h.actual.opt)}">${inrS(Math.round(h.actual.opt))}</b>, total ${inrS(Math.round(h.actual.total))}.` : ''
+            }</p>`
+          : '';
+        const rulesTxt = r.rules?.missing ? ` <span class="neg">The rules’ trade (${esc(r.rules.title)}) could not be priced on this chain.</span>` : r.rules ? ' The <b>Rules</b> row is the trade the rules pick on this chain (as ＋ Enter new trade), scored the same way.' : '';
+        body.innerHTML = `<div class="set-row">${lossInput()}</div><p class="small">${num0(r.tried)} ${BW.many} searched ${when}: ${BW.legs}; ${BW.where}.${rulesTxt} ${note} No call is sold, so NIFTYBEES keep their whole rise; below the bought puts the options gain point for point and hedge them. Click a row for its table.</p>${past}
+        <div class="tbl-wrap"><table class="grid-tbl"><thead><tr><th>#</th><th class="l">Legs</th><th title="Premium received − paid, after slippage">Net credit</th><th title="The options' lowest P&amp;L at expiry at ANY Nifty level, after slippage and charges: the most they can lose">Options: worst at expiry</th><th title="Average options P&amp;L at expiry for Nifty down 1–${BEST_TO} % (NIFTYBEES aside): what the hedge pays back">If Nifty goes down: options</th><th title="Average total (NIFTYBEES + options) at expiry for Nifty up 1–${BEST_TO} %">If Nifty goes up: total</th><th title="Options P&amp;L at expiry if Nifty ends where it is ${r.hist ? 'at the entry' : 'now'}">If Nifty stays: options</th><th title="The lowest total (options + NIFTYBEES) at expiry anywhere with Nifty within ±${r.midBand} %">Rangebound ±${r.midBand} %: lowest</th><th title="Average total (NIFTYBEES + options) for Nifty down 1–${BEST_TO} %">Down: with NIFTYBEES</th><th title="Under this Nifty level the options are in profit again (the net bought put)">Options in profit under</th>${
+          r.hist ? `<th class="mcl-g2" title="What the options actually made, held to the expiry (Nifty ${num0(r.settle.spot)} at its close), after slippage and charges">Actual: options</th><th title="Options + NIFTYBEES, actually, at the expiry">Actual: total</th>` : ''
+        }<th></th></tr></thead><tbody>${rows}</tbody></table></div>
+        ${gridOf(picks()[sel] || r.list[0])}
+        <p class="muted small">At expiry: options at intrinsic value (STT on bought legs in the money included). ${r.hist ? 'If Nifty is there on the entry day: Black-76 at each strike’s IV at the entry minute. The past chain is the minute’s last trades (no bid / ask), so real fills could have been worse.' : 'If Nifty is there today: Black-76 at each strike’s IV now. Prices move: suggestions are a snapshot, not a promise.'} Nothing here places orders.</p>`;
+      };
+      const drawCollar = () => {
         const off = r.rules && !r.rules.missing ? 1 : 0;
         const rows = picks()
           .map(
@@ -2108,6 +2196,11 @@
       // Past month: a new series starts on its first day; the day and time are kept for the next Find
       body.addEventListener('change', (e) => {
         const x = e.target.dataset.x;
+        // Live: another expiry searched at once (the floors typed checked and kept, as Apply does)
+        if (x === 'bexp') {
+          bestExp = e.target.value;
+          return body.querySelector('[data-x="rerun"]')?.click();
+        }
         if (x === 'hexp') {
           histPick.expiry = e.target.value;
           histPick.day = null;
@@ -2126,6 +2219,28 @@
             const s = body.querySelector(`[data-x="${k}"]`)?.value;
             return s === '' || s == null ? NaN : Number(s);
           };
+          if (PBS) {
+            const ml = val('maxloss'); // empty: the Backtest tab's limit
+            if (body.querySelector('[data-x="maxloss"]')?.value !== '' && !(ml >= 0)) return alert('Most the options may lose: an amount in ₹, 0 or more (empty = the Backtest tab’s limit)');
+            maxLoss = Number.isFinite(ml) ? ml : '';
+            BT.store.set('mclBestMaxLoss', maxLoss);
+            pbsRank = body.querySelector('[data-x="rank"]')?.value || pbsRank;
+            BT.store.set('mclBestRank', pbsRank);
+            const n = val('units');
+            if (body.querySelector('[data-x="units"]')?.value !== '' && !(n >= 0)) return alert('NIFTYBEES units: a whole number, 0 or more (empty = auto)');
+            units = Number.isFinite(n) ? Math.round(n) : '';
+            BT.store.set('mclBestUnits', units);
+            const mb = val('midband');
+            if (!(mb >= 0.5 && mb <= 10)) return alert('The range: 0.5 to 10 % either side');
+            midBand = mb;
+            BT.store.set('mclBestMidBand', mb);
+            if (tab === 'hist') {
+              const q = (k) => body.querySelector(`[data-x="${k}"]`)?.value;
+              Object.assign(histPick, { expiry: q('hexp') || histPick.expiry, day: q('hday') || histPick.day, time: q('htime') || '09:30' });
+              BT.store.set('mclBestHist', histPick);
+            }
+            return fetchBest();
+          }
           const v = val('mindown');
           const u = val('minup');
           if (!Number.isFinite(v)) return alert('Enter the least the options should earn if Nifty falls, in ₹');
@@ -2255,14 +2370,142 @@
       $('mclBestBtn')?.addEventListener('click', openBest);
     }
 
-    // A closed trade: its result as booked (options from the saved trade, NIFTYBEES bought → sold), no live prices.
-    function drawClosed() {
-      drawnShape = shape();
+    // ---------- a closed trade ----------
+    // Its result as booked (options from the saved trade, NIFTYBEES bought → sold), laid out like an open one: Nifty now
+    // against the start, the strike track, the legs beside the payoff, and the P&L for Nifty moves from the start. With no
+    // open leg, the payoff and the grid set what was booked against the same legs held to the expiry (options at
+    // intrinsic value, STT on bought legs in the money; NIFTYBEES from its buy price, moving in % with Nifty from the
+    // start). Cover, Close, Study rules, Suggestions and Adjustments act on open legs, so they are not shown.
+    const CLOSED_MOVES = [0.5, 1, 1.5, 2, 2.5, 3, 4, 5, 6, 7, 8, 10, 12, 15, 20];
+    function closedCalc() {
       const P = st.pos;
       const b = st.bees;
+      const L = lot();
+      const S = st.now?.spot > 0 ? st.now.spot : null;
+      const E = st.entrySpot > 0 ? st.entrySpot : null;
       const opt = P.realised.CE + P.realised.PE - (P.costs?.CE || 0) - (P.costs?.PE || 0);
       const bees = b?.qty > 0 && b.exitPx ? b.qty * (b.exitPx - b.price) : null;
-      const total = opt + (bees || 0);
+      const intr = (l, x) => Math.max(0, l.type === 'CE' ? x - l.strike : l.strike - x);
+      // the closed legs kept open from their entries to the expiry, per structure
+      const held = (x, t) => {
+        const ls = P.closed.filter((l) => l.type === t);
+        const stt = window.Costs ? Costs.exercise(ls.filter((l) => l.side > 0).reduce((s, l) => s + intr(l, x) * l.lots * L, 0)) : 0;
+        return ls.reduce((s, l) => s + l.side * (intr(l, x) - l.entry) * l.lots * L, 0) - stt;
+      };
+      const beesPx = (x) => (b?.qty > 0 && E ? (b.price * x) / E : null);
+      const beesHeld = (x) => (b?.qty > 0 && E ? b.qty * (beesPx(x) - b.price) : 0);
+      const heldAt = (x) => {
+        const c = held(x, 'CE');
+        const p = held(x, 'PE');
+        return { call: c, put: p, opt: c + p, bees: beesHeld(x), total: c + p + beesHeld(x) };
+      };
+      return { P, b, S, E, opt, bees, total: opt + (bees || 0), held, beesPx, heldAt };
+    }
+    function closedKpis(c) {
+      const { P, b, S, E, opt, bees, total } = c;
+      const moved = S && E ? (S / E - 1) * 100 : null;
+      const h = S ? c.heldAt(S) : null;
+      return `
+        <div class="kpi"><span class="k-l">Nifty now</span><span class="k-v">${S ? num0(S) : '—'}</span><span class="muted small">${E ? `entry ${num0(E)}` : 'no entry level'}${moved != null ? ` · <b class="${cls(moved)}">${sgnPct(moved, 2)}</b>` : ''}</span></div>
+        <div class="kpi"><span class="k-l">${N.CE}</span><span class="k-v ${cls(P.realised.CE)}">${inrS(Math.round(P.realised.CE))}</span><span class="muted small">booked</span></div>
+        <div class="kpi"><span class="k-l">${N.PE}</span><span class="k-v ${cls(P.realised.PE)}">${inrS(Math.round(P.realised.PE))}</span><span class="muted small">booked</span></div>
+        <div class="kpi"><span class="k-l">Options</span><span class="k-v ${cls(opt)}">${inrS(Math.round(opt))}</span><span class="muted small">${P.closed.length} leg${P.closed.length === 1 ? '' : 's'} closed</span></div>
+        <div class="kpi"><span class="k-l">NIFTYBEES</span><span class="k-v ${cls(bees)}">${bees == null ? '—' : inrS(Math.round(bees))}</span><span class="muted small">${b?.qty > 0 ? `${num0(b.qty)} × ₹${b.price.toFixed(2)} → ${b.exitPx ? '₹' + b.exitPx.toFixed(2) : 'not sold'}` : 'none entered'}</span></div>
+        <div class="kpi"><span class="k-l">Total</span><span class="k-v ${cls(total)}">${inrS(Math.round(total))}</span><span class="muted small">NIFTYBEES + options, booked</span></div>
+        ${
+          h
+            ? `<div class="kpi" title="The same legs and NIFTYBEES kept to the expiry (${dayLabel(P.expiry)}) with Nifty where it is now"><span class="k-l">If held to expiry</span><span class="k-v ${cls(h.total)}">${inrS(Math.round(h.total))}</span><span class="muted small">at Nifty now · closing ${total - h.total >= 0 ? 'gained' : 'cost'} <b class="${cls(total - h.total)}">${inrS(Math.round(total - h.total))}</b></span></div>`
+            : ''
+        }`;
+    }
+    function closedGridRows(c) {
+      const { S, E, total } = c;
+      const base = E || S;
+      if (!base) return '';
+      const td = (v, bold) => `<td class="${cls(v)}">${bold ? '<b>' : ''}${inrS(Math.round(v))}${bold ? '</b>' : ''}</td>`;
+      const rows = [...CLOSED_MOVES.map((m) => -m).reverse(), 0, ...CLOSED_MOVES].map((m) => ({ m, mark: m === 0 ? (S && Math.abs(S - base) < 0.5 ? 'now' : 'entry') : null }));
+      if (S && Math.abs(S - base) >= 0.5) rows.push({ m: (S / base - 1) * 100, mark: 'now' });
+      return rows
+        .sort((a, b) => b.m - a.m)
+        .map(({ m, mark }) => {
+          const x = mark === 'now' ? S : base * (1 + m / 100);
+          const h = c.heldAt(x);
+          const px = c.beesPx(x);
+          const label = mark === 'now' ? `<b>Now</b> <b class="${cls(m)}">${sgnPct(m, 2)}</b>` : mark === 'entry' ? '<b>Started</b> <span class="muted">0 %</span>' : sgnPct(m, 1);
+          return `<tr class="${mark === 'now' ? 'sel' : mark === 'entry' ? 'mcl-entry' : ''}"><td class="l">${label}</td><td><b>${num0(x)}</b></td><td class="muted">${S ? (mark === 'now' ? '—' : sgnPct((x / S - 1) * 100, 1)) : '—'}</td>
+            <td>${px != null ? '₹' + px.toFixed(2) : '—'}</td>${px != null ? td(h.bees) : '<td class="muted">—</td>'}
+            <td class="mcl-g2 ${cls(h.call)}">${inrS(Math.round(h.call))}</td>${td(h.put)}${td(h.opt)}${td(h.total, true)}
+            <td class="mcl-g1 ${cls(total)}">${inrS(Math.round(total))}</td>${td(total - h.total, true)}</tr>`;
+        })
+        .join('');
+    }
+    function closedGridHtml(c) {
+      if (!(c.E || c.S)) return '';
+      return `<div class="panel cc-doc"><h3>P&amp;L for Nifty moves from where the trade started <span class="muted small" id="mclGridNow">${c.E ? `started at <b>${num0(c.E)}</b>` : ''}${c.S ? `${c.E ? ', ' : ''}now <b>${num0(c.S)}</b>${c.E ? ` (<b class="${cls(c.S - c.E)}">${sgnPct((c.S / c.E - 1) * 100, 2)}</b>)` : ''}` : ''}</span></h3>
+      <div class="muted small">The trade is closed, so its result is fixed: <b>Booked</b> is the same at every level. <b>If held to expiry</b>: the same legs kept open from their entry premiums to the expiry (${dayLabel(c.P.expiry)}) at intrinsic value (STT on bought legs in the money included)${c.b?.qty > 0 ? ', and the NIFTYBEES kept from their buy price, moving in % with Nifty from the start' : ''}. <b>Closing vs holding</b>: booked − held; positive where closing did better.</div>
+      <div class="tbl-wrap mcc-scen mcl-grid"><table class="grid-tbl"><thead>
+        <tr class="mcl-ghead"><th colspan="5"></th><th colspan="4" class="mcl-g2">If held to expiry (${dayLabel(c.P.expiry)})</th><th colspan="2" class="mcl-g1">Closed</th></tr>
+        <tr><th class="l" title="Nifty's move from where the trade started">From start</th><th>Nifty</th><th title="How far that level is from Nifty now">From now</th><th>NIFTYBEES</th><th>NIFTYBEES P&amp;L</th>
+        <th class="mcl-g2">${N.ce}</th><th>${N.pe}</th><th>Options</th><th>Total</th><th class="mcl-g1">Booked</th><th title="Booked − held to expiry: positive where closing did better">Closing vs holding</th></tr></thead>
+        <tbody id="mclGridBody">${closedGridRows(c)}</tbody></table></div></div>`;
+    }
+    function closedPayoff(c, update = false) {
+      const canvas = $('mclPay');
+      if (!canvas) return;
+      const { S, E, total } = c;
+      const mid = S || E;
+      if (!mid) return;
+      const xs = [];
+      for (let x = Math.floor((mid * 0.8) / 25) * 25; x <= mid * 1.2; x += 25) xs.push(x);
+      const home = [Math.floor((mid * 0.9) / 50) * 50, Math.ceil((mid * 1.1) / 50) * 50];
+      const line = (label, f, color, extra = {}) => ({ label, data: xs.map((x) => ({ x, y: Math.round(f(x)) })), borderColor: color, borderWidth: 2, pointRadius: 0, ...extra });
+      const sets = [
+        line('Booked (closed)', () => total, '#3fb68b', { borderWidth: 2.5 }),
+        line('Options if held to expiry', (x) => c.held(x, 'CE') + c.held(x, 'PE'), '#b392f0'),
+        line(N.ce + ' if held', (x) => c.held(x, 'CE'), '#d6af4c', { borderWidth: 1.5, borderDash: [5, 3] }),
+        line(N.pe + ' if held', (x) => c.held(x, 'PE'), '#7ee0b5', { borderWidth: 1.5, borderDash: [5, 3] }),
+      ];
+      if (c.b?.qty > 0 && E) sets.push(line('NIFTYBEES + options if held to expiry', (x) => c.heldAt(x).total, '#58a6ff', { borderWidth: 1.5, borderDash: [2, 3] }));
+      const marks = [];
+      if (S) marks.push({ x: S, y: total, text: `Now ${num0(S)}${E ? ' · ' + sgnPct((S / E - 1) * 100, 2) : ''} · booked ${inrS(Math.round(total))}`, color: '#58a6ff', row: 0 });
+      if (E && (!S || Math.abs(E - S) >= 1)) marks.push({ x: E, y: null, text: `Started ${num0(E)}`, color: '#e3b341', row: 1 });
+      if (update && chartObj && chartObj.canvas === canvas && chartObj.data.datasets.length === sets.length) {
+        sets.forEach((d, i) => (chartObj.data.datasets[i].data = d.data));
+        chartObj.$mclMarks = marks;
+        chartObj.update('none');
+        return;
+      }
+      chartObj = BT.chart(canvas, {
+        plugins: [marksPlugin],
+        type: 'line',
+        data: { datasets: sets },
+        options: {
+          parsing: true,
+          interaction: { mode: 'nearest', axis: 'x', intersect: false },
+          scales: { x: { type: 'linear', min: home[0], max: home[1], title: { display: true, text: 'Nifty at expiry' } }, y: { ticks: { callback: (v) => kinr(v) } } },
+          plugins: {
+            payZoom: { on: true, home },
+            tooltip: { filter: (i) => !i.dataset.pz_skip, callbacks: { label: (x) => `${x.dataset.label}: ${inrS(x.parsed.y)}`, title: (x) => 'Nifty ' + num0(x[0].parsed.x) } },
+          },
+        },
+      });
+      chartObj.$mclMarks = marks;
+      chartObj.update('none');
+    }
+    const closedTrack = (c) => (c.S && c.P.closed.length ? trackHtml({ ...c.P, legs: c.P.closed, closed: [] }, c.S) : '');
+    // a poll with the same closed trade on screen: Nifty now into the cards, the track, the grid and the chart
+    function refreshClosed() {
+      if (!$('mclKpis')) return draw();
+      const c = closedCalc();
+      $('mclKpis').innerHTML = closedKpis(c);
+      if ($('mclTrack')) $('mclTrack').innerHTML = closedTrack(c);
+      if ($('mclGridBody')) $('mclGridBody').innerHTML = closedGridRows(c);
+      closedPayoff(c, true);
+    }
+    function drawClosed() {
+      drawnShape = shape();
+      const c = closedCalc();
+      const { P, b, total } = c;
       const when = P.closedAt
         ? new Date(P.closedAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
         : null;
@@ -2271,11 +2514,11 @@
           const ls = P.closed.filter((l) => l.type === t);
           if (!ls.length) return '';
           return (
-            `<tr class="mcl-grp"><td class="l" colspan="4"><b>${N[t]}</b></td><td class="${cls(P.realised[t])}"><b>${inrS(Math.round(P.realised[t]))}</b></td></tr>` +
+            `<tr class="mcl-grp"><td class="l" colspan="4"><b>${N[t]}</b> <span class="muted small">${ls.length} closed</span></td><td class="${cls(P.realised[t])}"><b>${inrS(Math.round(P.realised[t]))}</b></td></tr>` +
             ls
               .map(
                 (l) =>
-                  `<tr class="mcl-closed"><td class="l"><b class="${l.side < 0 ? 'neg' : 'pos'}">${l.side < 0 ? 'Sell' : 'Buy'}</b> ${l.lots} × ${l.strike} ${l.type}</td><td class="l muted small">${l.exitDay ? dayLabel(l.exitDay) + (l.exitAt ? ' ' + esc(l.exitAt) : '') : ''}</td><td>${l.entry.toFixed(2)}</td><td>${l.exit.toFixed(2)}</td><td class="${cls(l.pnl)}">${inrS(Math.round(l.pnl))}</td></tr>`,
+                  `<tr class="mcl-closed"><td class="l"><b class="${l.side < 0 ? 'neg' : 'pos'}">${l.side < 0 ? 'Sell' : 'Buy'}</b> ${l.lots} × ${l.strike} ${l.type}</td><td class="l"><span class="cat-pill">closed</span> <span class="muted small">${l.exitDay ? dayLabel(l.exitDay) + (l.exitAt ? ' ' + esc(l.exitAt) : '') : ''}</span></td><td>${l.entry.toFixed(2)}</td><td>${l.exit.toFixed(2)}</td><td class="${cls(l.pnl)}">${inrS(Math.round(l.pnl))}</td></tr>`,
               )
               .join('')
           );
@@ -2283,26 +2526,30 @@
         .join('');
       const beesRow =
         b?.qty > 0
-          ? `<tr class="mcl-grp"><td class="l"><b>NIFTYBEES</b> ${num0(b.qty)} units</td><td class="l muted small">${b.exitDay ? dayLabel(b.exitDay) + (b.exitAt ? ' ' + esc(b.exitAt) : '') : ''}</td><td>${b.price.toFixed(2)}</td><td>${b.exitPx ? b.exitPx.toFixed(2) : '<span class="muted">not sold</span>'}</td><td class="${cls(bees)}"><b>${bees == null ? '—' : inrS(Math.round(bees))}</b></td></tr>`
-          : '';
+          ? `<tr class="mcl-grp"><td class="l"><b class="pos">Buy</b> ${num0(b.qty)} NIFTYBEES</td><td class="l">${b.exitPx ? '<span class="cat-pill">sold</span>' : '<span class="cat-pill c-bullish">not sold</span>'} <span class="muted small">${b.exitDay ? dayLabel(b.exitDay) + (b.exitAt ? ' ' + esc(b.exitAt) : '') : ''}</span></td><td>${b.price.toFixed(2)}</td><td>${b.exitPx ? b.exitPx.toFixed(2) : '<span class="muted">—</span>'}</td><td class="${cls(c.bees)}"><b>${c.bees == null ? '—' : inrS(Math.round(c.bees))}</b></td></tr>`
+          : '<tr class="mcl-grp"><td class="l" colspan="4"><b>NIFTYBEES</b> <span class="muted small">none entered for this trade</span></td><td>—</td></tr>';
+      const legLine = P.closed.map((l) => `${l.side > 0 ? 'B' : 'S'} ${l.lots}× ${l.strike} ${l.type} ${l.entry.toFixed(1)} → ${l.exit.toFixed(1)}`).join(' · ');
       el.innerHTML = `<div class="panel cc-doc mcl-head">
       <div class="set-row"><h3>Live trade</h3>${pickerHtml()} <span class="cat-pill">closed</span>
-        <button class="btn-sm ghost" id="mclToSb" title="Open this saved trade in the Builder">Load in Builder ▸</button>
         ${enterBtn()}
         ${P.closeBatch ? '<button class="btn-sm ghost" id="mclReopen" title="Undo the close recorded on this tab: the legs it closed open again and the NIFTYBEES sale is removed">Undo close</button>' : ''}</div>
-      <div class="muted small">${esc(P.name)} · expiry ${dayLabel(P.expiry)}${when ? ` · closed ${esc(when)}` : ''} · P&amp;L before charges, as the Builder shows it</div>
+      <div class="muted small">${esc(P.name)} · ${esc(legLine)} · expiry ${dayLabel(P.expiry)}${when ? ` · closed ${esc(when)}` : ''} · P&amp;L before charges, as the Builder shows it</div>
       <div class="small mcl-now" id="mclNow">${nowHtml()}</div>
-      <div class="kpis cc-kpis-main">
-        <div class="kpi"><span class="k-l">${N.CE}</span><span class="k-v ${cls(P.realised.CE)}">${inrS(Math.round(P.realised.CE))}</span></div>
-        <div class="kpi"><span class="k-l">${N.PE}</span><span class="k-v ${cls(P.realised.PE)}">${inrS(Math.round(P.realised.PE))}</span></div>
-        <div class="kpi"><span class="k-l">Options</span><span class="k-v ${cls(opt)}">${inrS(Math.round(opt))}</span></div>
-        <div class="kpi"><span class="k-l">NIFTYBEES</span><span class="k-v ${cls(bees)}">${bees == null ? '—' : inrS(Math.round(bees))}</span><span class="muted small">${b?.qty > 0 ? `${num0(b.qty)} × ₹${b.price.toFixed(2)} → ${b.exitPx ? '₹' + b.exitPx.toFixed(2) : 'not sold'}` : 'none entered'}</span></div>
-        <div class="kpi"><span class="k-l">Total</span><span class="k-v ${cls(total)}">${inrS(Math.round(total))}</span><span class="muted small">NIFTYBEES + options, booked</span></div>
-      </div>
+      <div class="kpis cc-kpis-main" id="mclKpis">${closedKpis(c)}</div>
+      <div id="mclTrack">${closedTrack(c)}</div>
       ${b?.qty > 0 && !b.exitPx ? '<div class="muted small">The NIFTYBEES sale is not recorded: enter it in the Builder (Held against NIFTYBEES › Sold at ₹) and save the trade.</div>' : ''}
       <span class="small" id="mclMsg"></span></div>
-      <div class="panel cc-doc"><h3>Legs</h3><div class="tbl-wrap"><table class="grid-tbl mcl-legs"><thead><tr><th class="l">Leg</th><th class="l">Closed</th><th>Entry</th><th>Exit</th><th>P&amp;L</th></tr></thead><tbody>${legRows}${beesRow}
-        <tr class="mcl-tot"><td class="l" colspan="4"><b>Total</b></td><td class="${cls(total)}"><b>${inrS(Math.round(total))}</b></td></tr></tbody></table></div></div>`;
+      <div class="panel cc-doc"><h3>Legs and payoff <button class="btn-sm ghost" id="mclToSb" title="Open this saved trade in the Builder: its closed legs, log and P&amp;L">Load in Builder ▸</button></h3><div class="cc-pos-grid">
+        <div class="tbl-wrap"><table class="grid-tbl mcl-legs"><thead><tr><th class="l">Leg</th><th class="l">Status</th><th>Entry</th><th>Exit</th><th>P&amp;L</th></tr></thead><tbody>${legRows}
+          <tr class="mcl-tot"><td class="l" colspan="4"><b>Options: closed legs</b></td><td class="${cls(c.opt)}"><b>${inrS(Math.round(c.opt))}</b></td></tr>
+          ${beesRow}
+          <tr class="mcl-tot mcl-total"><td class="l" colspan="4"><b>Total: NIFTYBEES + options</b></td><td class="${cls(total)}"><b>${inrS(Math.round(total))}</b></td></tr></tbody></table>
+          <div class="muted small">lot ${lot()} · every leg closed: the P&amp;L is booked and no longer moves with Nifty</div></div>
+        <div class="cc-pay"><div class="cc-pay-chart"><canvas id="mclPay"></canvas></div><div class="muted small">Green: what was booked. Purple: the same legs held to the expiry${b?.qty > 0 ? '; blue dotted: with the NIFTYBEES kept too' : ''}. Where purple / blue is above green, holding would have done better.</div></div>
+      </div></div>` +
+        closedGridHtml(c) +
+        '<div class="panel cc-doc muted small">Not shown for a closed trade: NIFTYBEES needed for the upside, Close, Study rules, Suggestions and Adjustments: they work on open legs, and this trade has none.</div>';
+      closedPayoff(c);
       bindPick();
       bindEnter();
       $('mclToSb')?.addEventListener('click', () => BT.emit('open-trade', P.id));

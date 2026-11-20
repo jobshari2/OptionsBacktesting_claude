@@ -489,8 +489,9 @@ async function runMonth(data, p, { P, E }, once, X = ENGINE) {
   const S0 = spotAt(d0, p.entryMin);
   const pos = newPosition(E, S0);
   // the ideal trade prices every strike its search may use; the month then rolls with the shape it picked
-  if (p.target?.on) await Promise.all(X.shapeStrikes(S0, strikes).map((x) => load(x.type, x.strike)));
-  const pick = X.pickLegs(S0, p, strikes, priceOn(d0, p.entryMin), lot);
+  // (an engine whose strikes always come from the chain, X.priced, too)
+  if (p.target?.on || X.priced) await Promise.all(X.shapeStrikes(S0, strikes, p).map((x) => load(x.type, x.strike)));
+  const pick = X.pickLegs(S0, p, strikes, priceOn(d0, p.entryMin), lot, d0);
   const legs = pick.legs;
   p = pick.p;
   await Promise.all(legs.map((l) => load(l.type, l.strike)));
@@ -532,8 +533,10 @@ async function runMonth(data, p, { P, E }, once, X = ENGINE) {
       if (d === d0 && m <= p.entryMin) continue;
       const S = spotAt(d, m);
       if (S == null) continue;
+      // an engine that prices strikes beyond its open legs when it adjusts (X.preload) has them loaded first
+      if (X.preload) await Promise.all(X.preload(pos, S, { daysLeft, strikes }, p).map((x) => load(x.type, x.strike)));
       const price = priceOn(d, m);
-      const acts = X.decide(pos, S, { daysLeft, strikes, px: (l) => price(l.type, l.strike) }, p);
+      const acts = X.decide(pos, S, { daysLeft, strikes, day: d, px: (l) => price(l.type, l.strike) }, p);
       for (const a of acts) {
         await Promise.all(needs(pos, a).map((x) => load(x.type, x.strike)));
         const at = { day: d, time: timeOf(m) };

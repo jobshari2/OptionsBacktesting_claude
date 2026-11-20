@@ -61,6 +61,7 @@
     cc: 'MCC',
     psc: 'PSC',
     bpc: 'BPC',
+    pbs: 'PBS',
     nbo: 'NBO',
     lab: 'LAB',
     tadj: 'ADJ',

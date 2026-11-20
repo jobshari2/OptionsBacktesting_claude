@@ -39,6 +39,12 @@ bt-data/nbo-compare.json
 bt-data/nbo-live.json
 bt-data/nbo-live-demo.json
 bt-data/bpc-live-demo.json
+bt-data/pbs-backtest.json
+bt-data/pbs-study.json
+bt-data/pbs-paper.json
+bt-data/pbs-paper-demo.json
+bt-data/pbs-live.json
+bt-data/pbs-live-demo.json
 bt-data/live-source.json
 bt-data/kite-prev-oi.json
 bt-data/surge-scan.json

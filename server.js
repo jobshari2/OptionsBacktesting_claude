@@ -36,6 +36,7 @@ const { createMccPaper, weekdaysLeft, monthlyFor } = require('./mccpaper');
 const mccLive = require('./bt/mcclive');
 const psc = require('./bt/psc');
 const bpc = require('./bt/bpc');
+const pbs = require('./bt/pbs');
 const nbo = require('./bt/nbo');
 const lab = require('./bt/lab');
 const adjust = require('./bt/adjust');
@@ -803,7 +804,24 @@ const bestUnits = (b, auto) => {
 };
 // The Live trade tabs with a Suggestion, and the legs its search builds: the collars' (sold call + put spread), or the
 // Modified covered call's (call ratio + put butterfly, in the tab's ratios: 1 × 2 and 2-3-1 by default).
-const BEST_KINDS = new Set(['psc', 'bpc', 'mcc']);
+const BEST_KINDS = new Set(['psc', 'bpc', 'mcc', 'pbs']);
+// The search a Suggestion runs: the Put back spread's (bt/mcclive.js bestBackSpreads: b.maxLoss ₹ the options may lose at
+// expiry anywhere, b.rank, the tab's search settings b.params, the rules' pick first) or the collars' / covered call's.
+// base: { lot, lots, beesQty, beesPx, expiry, slip, day, settle? } and the floors.
+function bestSearch(L, M, prm, b, plan, base) {
+  if (L.kind !== 'pbs') return mccLive.bestCollars(M, { ...base, ...bestShape(L, prm, b, plan) });
+  const lots = prm.lots || 1;
+  const v = Number(b.maxLoss);
+  const maxLoss = b.maxLoss === '' || b.maxLoss == null || !Number.isFinite(v) || v < 0 ? prm.pick.maxLoss * lots : v;
+  const legs = plan?.pick?.legs || [];
+  return mccLive.bestBackSpreads(M, {
+    ...base,
+    maxLoss,
+    rank: String(b.rank || prm.pick.rank),
+    params: prm,
+    fixed: legs.length ? { label: 'By the rules', note: plan.shapeText || '', g: plan.pick.shape, open: legs.map((l) => ({ type: l.type, strike: l.strike, side: l.side, lots: l.lots, role: l.role })) } : null,
+  });
+}
 // The covered call's also: its two peaks (options at expiry at the sold calls and at the sold puts) within b.peakTol ₹ of
 // each other (default BEST_PEAK_TOL; '' = off), and the trade its rules pick on the same chain (plan: L.plan with
 // prices) shown first whatever the floors.
@@ -837,11 +855,14 @@ async function bestHist(L, expiry, day, time, { minDown, minUp, minMid, midBand 
   const info = await d.contracts(expiry);
   const lot = info.lot || L.defaults.lotSize;
   const atm = Math.round(S / 50) * 50;
-  const ks = info.strikes.filter((k) => Math.abs(k - atm) <= 1050);
-  const tasks = ks.flatMap((k) => [
+  // the Put back spread: puts only, from ATM + 700 down to ATM − 2,300 (the search's sold puts reach ATM − 1,000, their
+  // bought puts and butterfly wings further down)
+  const pbsHist = L.kind === 'pbs';
+  const ks = info.strikes.filter((k) => (pbsHist ? k <= atm + 700 && k >= atm - 2300 : Math.abs(k - atm) <= 1050));
+  const tasks = ks.flatMap((k) => (pbsHist ? [[k, 'PE']] : [
     [k, 'CE'],
     [k, 'PE'],
-  ]);
+  ]));
   const quotes = new Map();
   let missing = 0;
   let next = 0;
@@ -873,12 +894,12 @@ async function bestHist(L, expiry, day, time, { minDown, minUp, minMid, midBand 
   const real = b0 > 0 && bE > 0;
   const beesPx = real ? b0 : S / 100;
   const beesEnd = real ? bE : (beesPx * SE) / S;
-  const plan = L.plan(S, ks, (t, k) => (L.kind === 'mcc' ? M.px(t, k) : null), lot, b);
+  const plan = L.plan(S, ks, (t, k) => (L.kind === 'mcc' || L.kind === 'pbs' ? M.px(t, k) : null), lot, b);
   const { prm } = plan;
   const { qty: beesQty, auto: beesAuto } = bestUnits(b, mccEtfQty(prm, S, beesPx));
   const flat = bestFlat(b, beesQty, beesPx, lot, prm.lots, S);
   const slip = (L.defaults.costs.slipPct || 0.5) / 100;
-  const out = mccLive.bestCollars(M, { lot, lots: prm.lots || 1, beesQty, beesPx, expiry, slip, day, minDown, minUp, minMid, midBand, minFlat: flat.minFlat, settle: { spot: SE, bees: beesEnd }, ...bestShape(L, prm, b, plan) });
+  const out = bestSearch(L, M, prm, b, plan, { lot, lots: prm.lots || 1, beesQty, beesPx, expiry, slip, day, minDown, minUp, minMid, midBand, minFlat: flat.minFlat, settle: { spot: SE, bees: beesEnd } });
   return {
     ...out,
     hist: true,
@@ -1187,7 +1208,7 @@ async function handleLive(req, res, url, p, L) {
   // Suggestion: the 5 best strikes for a new collar on an expiry's live chain (bt/mcclive.js bestCollars), each with
   // its P&L for Nifty moves from now. Nothing is sent to a broker.
   if (p === '/live/best' && req.method === 'POST') {
-    if (!BEST_KINDS.has(L.kind)) throw new Error('Suggestions of strikes are for the collars and the covered call only');
+    if (!BEST_KINDS.has(L.kind)) throw new Error('Suggestions of strikes are for the collars, the covered call and the put back spread only');
     if (!liveLoggedIn()) throw new Error(`Log in to ${useKite() ? 'Kite' : 'Upstox'} first: the strikes are priced on the live chain`);
     const b = JSON.parse((await readBody(req, 10_000)).toString('utf8') || '{}');
     const expiry = String(b.expiry || '');
@@ -1195,7 +1216,7 @@ async function handleLive(req, res, url, p, L) {
     if (!(chain?.spot > 0) || !chain.rows?.length) throw new Error(`No live chain for the ${expiry} expiry yet`);
     const M = mccLive.market(chain, mccLive.yearsTo(expiry));
     const lot = contracts.lot || L.defaults.lotSize;
-    const plan = L.plan(chain.spot, chain.rows.map((r) => r.strike).sort((x, y) => x - y), (t, k) => (L.kind === 'mcc' ? M.px(t, k) : null), lot, b);
+    const plan = L.plan(chain.spot, chain.rows.map((r) => r.strike).sort((x, y) => x - y), (t, k) => (L.kind === 'mcc' || L.kind === 'pbs' ? M.px(t, k) : null), lot, b);
     const { prm } = plan;
     const beesLive = await mccBeesNow().catch(() => null);
     const beesPx = beesLive?.px || chain.spot / 100;
@@ -1204,7 +1225,7 @@ async function handleLive(req, res, url, p, L) {
     // the least the options must earn on average on Nifty falls of 1 … 8 % (₹, default 30,000)
     const { minDown, minUp, minMid, midBand } = bestFloors(b);
     const flat = bestFlat(b, beesQty, beesPx, lot, prm.lots, chain.spot);
-    const out = mccLive.bestCollars(M, { lot, lots: prm.lots || 1, beesQty, beesPx, expiry, slip, day: istDate(), minDown, minUp, minMid, midBand, minFlat: flat.minFlat, ...bestShape(L, prm, b, plan) });
+    const out = bestSearch(L, M, prm, b, plan, { lot, lots: prm.lots || 1, beesQty, beesPx, expiry, slip, day: istDate(), minDown, minUp, minMid, midBand, minFlat: flat.minFlat });
     return sendJson(res, 200, {
       ...out,
       expiry,
@@ -1221,11 +1242,11 @@ async function handleLive(req, res, url, p, L) {
   // (the cached 1-minute option candles, downloading what the cache lacks), plus what each pick actually made at the
   // expiry. expiries: the expired monthly series (newest first) with their trading days.
   if (p === '/live/best-hist/expiries') {
-    if (!BEST_KINDS.has(L.kind)) throw new Error('Suggestions of strikes are for the collars and the covered call only');
+    if (!BEST_KINDS.has(L.kind)) throw new Error('Suggestions of strikes are for the collars, the covered call and the put back spread only');
     return sendJson(res, 200, { expiries: await bestHistSeries(L.defaults.minDays), minDays: L.defaults.minDays });
   }
   if (p === '/live/best-hist' && req.method === 'POST') {
-    if (!BEST_KINDS.has(L.kind)) throw new Error('Suggestions of strikes are for the collars and the covered call only');
+    if (!BEST_KINDS.has(L.kind)) throw new Error('Suggestions of strikes are for the collars, the covered call and the put back spread only');
     const b = JSON.parse((await readBody(req, 10_000)).toString('utf8') || '{}');
     return sendJson(res, 200, await bestHist(L, String(b.expiry || ''), String(b.day || ''), String(b.time || '09:30'), bestFloors(b), b));
   }
@@ -1421,8 +1442,9 @@ function collarIdea(cfg) {
     // the strikes at the page's settings (b.params: the Backtest tab's distances and lots), else the defaults
     plan(S, strikes, ltp, lot, b) {
       const prm = E.merge({ ...(b.params || {}), lotSize: lot });
-      const pick = E.pickLegs(S, prm, strikes);
-      return { prm, pick, shapeText: cfg.shapeText(prm) };
+      // (ltp: the live chain's prices, for a strategy whose strikes are searched on the chain: bt/pbs.js)
+      const pick = E.pickLegs(S, prm, strikes, ltp, lot);
+      return { prm, pick, shapeText: cfg.shapeText(prm, pick) };
     },
   };
   const jobs = new Map();
@@ -1550,6 +1572,53 @@ const handleBpc = collarIdea({
   looks: mccLive.looksBpc,
   shapeText: (prm) => `call ATM+${prm.ce.sellOff}, sold put spread ATM−${prm.pe.sellOff}/−${prm.pe.sellOff + prm.pe.buyGap}`,
 });
+
+// Trading Ideas › Put back spread: NIFTYBEES + a put back spread (sell 1 / buy 2) + up to 2 put butterflies in its loss
+// stretch, the strikes searched on the chain at each entry within an options-only loss limit (bt/pbs.js).
+const handlePbs = collarIdea({
+  id: 'pbs',
+  name: 'Put back spread',
+  engine: { ...pbs, run: pbs.runPbs, runStudy: pbs.runPbsStudy, runModel: pbs.runPbsModel },
+  looks: mccLive.looksPbs,
+  shapeText: (prm, pick) =>
+    pick?.shape ? pbs.shapeText(pick.shape) : `put back spread + flies searched on the chain (options loss ≤ ₹${prm.pick.maxLoss * prm.lots}, rank ${prm.pick.rank})`,
+});
+// The Strategy & rules tab's worked example: the search run on a model chain (Black-Scholes with a put skew) for Nifty
+// at S, iv % at the money, days to expiry; its legs, figures and options-only payoff at expiry. Nothing saved.
+function pbsExample(b) {
+  const { bsm } = require('./lib/pricing');
+  const num = (v, lo, hi, d) => (Number.isFinite(Number(v)) ? Math.min(hi, Math.max(lo, Number(v))) : d);
+  const S = num(b.S, 5000, 100000, 25000);
+  const iv = num(b.iv, 5, 60, 13) / 100;
+  const days = num(b.days, 3, 90, 45);
+  const skew = num(b.skew, 0, 3, 1); // IV points added per 1 % under the money (puts dearer below, as Nifty's are)
+  const T = days / 365;
+  const strikes = [];
+  for (let k = Math.floor((S * 0.75) / 50) * 50; k <= S * 1.15; k += 50) strikes.push(k);
+  const price = (t, k) => {
+    const m = Math.max(0, (S - k) / S) * 100;
+    return Math.max(0.05, bsm(S, k, T, iv + (skew * m) / 100, t === 'CE'));
+  };
+  const prm = pbs.merge({ ...(b.params || {}), lotSize: contracts.lot || pbs.DEFAULTS.lotSize });
+  const pick = pbs.pickLegs(S, prm, strikes, price, prm.lotSize);
+  const legs = pick.legs.map((l) => ({ ...l, px: Math.round(price('PE', l.strike) * 100) / 100 }));
+  const fig = pbs.figures(pick.legs, S, prm, (k) => price('PE', k), prm.lotSize);
+  const xs = [];
+  for (let x = Math.round((S * 0.85) / 25) * 25; x <= S * 1.08; x += 25) xs.push(x);
+  return {
+    S,
+    iv: iv * 100,
+    days,
+    skew,
+    lot: prm.lotSize,
+    params: prm,
+    legs,
+    shape: pick.shape,
+    text: pbs.shapeText(pick.shape),
+    curve: fig ? xs.map((x) => [x, Math.round(fig.at(x))]) : [],
+    bees: prm.lotSize * prm.lots * 100, // NIFTYBEES units (Nifty ÷ 100 each) worth one lot per lot
+  };
+}
 
 // ---------- Trading Ideas › NIFTYBEES + options (bt/nbo.js on bt/mcc.js's runner) ----------
 // NIFTYBEES + any options structure the user builds (legs in points from ATM), backtested like the collars, and a
@@ -2127,6 +2196,15 @@ const server = http.createServer(async (req, res) => {
   if (p.startsWith('/api/psc/')) return handlePsc(req, res, url, p);
 
   if (p.startsWith('/api/bpc/')) return handleBpc(req, res, url, p);
+
+  if (p === '/api/pbs/example' && req.method === 'POST') {
+    try {
+      return sendJson(res, 200, pbsExample(JSON.parse((await readBody(req, 20_000)).toString('utf8') || '{}')));
+    } catch (e) {
+      return sendJson(res, 400, { error: e.message });
+    }
+  }
+  if (p.startsWith('/api/pbs/')) return handlePbs(req, res, url, p);
 
   if (p.startsWith('/api/nbo/')) return handleNbo(req, res, url, p);
 

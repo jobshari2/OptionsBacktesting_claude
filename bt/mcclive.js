@@ -48,8 +48,10 @@ const SHAPES = {
   bpc: { name: 'Bull put collar', calls: 'sold call', callStruct: 'sold call', soldCalls: 'sold call', puts: 'put spread', soldPutRoll: 'over' },
   // NIFTYBEES + options (bt/nbo.js): any legs, so a sold put may roll anywhere (the worst-case guard still applies)
   nbo: { name: 'NIFTYBEES + options', calls: 'call legs', callStruct: 'call legs', soldCalls: 'sold call', puts: 'put legs', soldPutRoll: 'any' },
+  // Put back spread (bt/pbs.js): puts only (back spread + flies), searched again on a move
+  pbs: { name: 'Put back spread', calls: 'call legs', callStruct: 'call legs', soldCalls: 'sold call', puts: 'puts', soldPutRoll: 'any' },
 };
-const KINDS = ['mcc', 'psc', 'bpc', 'nbo'];
+const KINDS = ['mcc', 'psc', 'bpc', 'nbo', 'pbs'];
 // The strategy a saved trade's NIFTYBEES (snap.mcc) were entered for: kind 'psc' / 'bpc', else the Modified covered call.
 const kindOf = (m) => (KINDS.includes(m?.kind) ? m.kind : 'mcc');
 // The strategy of a saved Builder trade: snap.mcc.kind when picked in the Builder ('mcc' / 'psc' / 'bpc'); unmarked
@@ -62,7 +64,7 @@ function kindOfTrade(t) {
   const open = all.filter((l) => l.open);
   const legs = (open.length ? open : all).map((l) => ({ type: l.type, strike: l.strike, lots: l.lots, side: l.action === 'B' ? 1 : -1 }));
   if (!legs.length || looksMcc(legs)) return 'mcc';
-  return looksPsc(legs) ? 'psc' : looksBpc(legs) ? 'bpc' : 'mcc';
+  return looksPsc(legs) ? 'psc' : looksBpc(legs) ? 'bpc' : looksPbs(legs) ? 'pbs' : 'mcc';
 }
 
 // ---------- the position ----------
@@ -304,6 +306,15 @@ function looksPsc(legs) {
   );
 }
 // A sold call with no bought call, and a bull put spread: puts sold above the puts bought, as many bought as sold.
+// A Put back spread (bt/pbs.js): puts only, some sold, more bought than sold (the back spread's extra put; its flies
+// add as many bought as sold).
+function looksPbs(legs) {
+  const ls = (legs || []).filter((l) => l.lots > 0);
+  if (!ls.length || ls.some((l) => l.type !== 'PE')) return false;
+  const sold = sum(ls.filter((l) => l.side < 0), (l) => l.lots);
+  const bought = sum(ls.filter((l) => l.side > 0), (l) => l.lots);
+  return sold > 0 && bought > sold;
+}
 function looksBpc(legs) {
   const of = (t, s) => legs.filter((l) => l.type === t && l.side === s);
   const lots = (a) => sum(a, (l) => l.lots);
@@ -974,6 +985,7 @@ function studyRules(study, pos, M, entrySpot, shape = 'mcc', current = null) {
       if (!live) due = null;
       else if (shape === 'psc' || shape === 'bpc') due = pscDue(r.params || {}, move, entrySpot, pos, M, shape === 'bpc');
       else if (shape === 'nbo') due = nboDue(r.params || {}, move, entrySpot, pos, M);
+      else if (shape === 'pbs') due = pbsDue(r.params || {}, move, entrySpot);
       else if (a.on && a.trigger === 'move' && Math.abs(move) >= a.movePct)
         due = `Nifty is ${move > 0 ? 'up' : 'down'} ${Math.abs(move).toFixed(1)} % since the entry (${Math.round(entrySpot)}): the rule moves the ${move > 0 ? 'sold puts up' : 'sold calls down'}${a.legs === 'all' ? ' (the whole structure)' : ''}`;
       else if (a.on && a.trigger === 'decay' && decay(a.decayPct).length)
@@ -986,7 +998,7 @@ function studyRules(study, pos, M, entrySpot, shape = 'mcc', current = null) {
 }
 // The study row run with the strategy's own rules (defaults: the legs' distances, adjustments, up-market extra): every
 // setting the row and the defaults both have is equal. null when none is.
-const STUDY_KEYS = ['ce', 'pe', 'adj', 'up'];
+const STUDY_KEYS = ['ce', 'pe', 'adj', 'up', 'pick'];
 function studyCurrent(study, defaults) {
   const same = (a = {}, b = {}) => Object.keys(b).every((k) => !(k in a) || JSON.stringify(a[k]) === JSON.stringify(b[k]));
   const row = (study?.rows || []).find((r) => STUDY_KEYS.every((k) => same(r.params?.[k], defaults?.[k])));
@@ -1023,6 +1035,14 @@ function nboDue(prm, move, entrySpot, pos, M) {
   }
   if (!out.length) return null;
   return `Nifty is ${move > 0 ? 'up' : 'down'} ${Math.abs(move).toFixed(1)} % since the entry (${Math.round(entrySpot)}): ${out.join('; ')}`;
+}
+// A Put back spread rule (bt/pbs.js decide) on this trade now: the whole structure searched again once Nifty has moved
+// movePct % since the entry, in a direction the rule allows. null when nothing is due (or the rule holds to expiry).
+function pbsDue(prm, move, entrySpot) {
+  const a = prm.adj || {};
+  if (!a.on || !(Math.abs(move) >= a.movePct)) return null;
+  if ((move > 0 && a.dir === 'down') || (move < 0 && a.dir === 'up')) return null;
+  return `Nifty is ${move > 0 ? 'up' : 'down'} ${Math.abs(move).toFixed(1)} % since the entry (${Math.round(entrySpot)}): the rule closes the options and searches the chain again at the new Nifty`;
 }
 // A Put spread collar rule (bt/psc.js decide; bt/bpc.js for the Bull put collar, credit: true) on this trade now:
 // market down → the sold call rolled down (and the put spread down with putDown); market up → the put spread moved up.
@@ -1319,6 +1339,136 @@ function bestCollars(M, { lot, lots = 1, beesQty = 0, beesPx, expiry, slip = 0.0
         whole(o);
         return out1(o, o.r.next.legs, o.r);
       }),
+  };
+}
+
+// ---------- Suggestion for the Put back spread (bt/pbs.js) ----------
+// The back spread search (pbs.searchRough: every sold put K1, width W, butterfly centre and half-width, 0 … flies
+// butterflies) on the expiry's live chain, only strikes traded today with a tight quote, roughly priced; the best ~300
+// by the rank are then booked exactly (LTP ± slip, charges per order, STT on bought puts in the money) and scored at
+// expiry like the collars' picks: up (options + NIFTYBEES on rises of 1 … 8 %), downOpt (options on falls), down
+// (with NIFTYBEES), flat (options if Nifty stays), mid (lowest total within ±midBand %), and optWorst: the options'
+// lowest P&L at expiry at ANY Nifty level (the user's "no loss / minimal loss"). Kept: optWorst ≥ −maxLoss (₹ for the
+// whole trade); none: the least loss first. Ranked by rank: 'protect' downOpt, 'loss' optWorst, 'credit' flat, 'up'
+// up. One per sold put strike, so the picks are different trades. fixed: the trade the rules pick (plan), shown first.
+// settle (a past month): each pick's actual result and the hindsight best, as bestCollars.
+const PBS_KEY = { protect: 'downOpt', loss: 'optWorst', credit: 'flat', up: 'up' };
+function bestBackSpreads(M, { lot, lots = 1, beesQty = 0, beesPx, expiry, slip = 0.005, day = null, n = 5, maxLoss = 2500, rank = 'protect', params = {}, midBand = MID_BAND, settle = null, fixed = null } = {}) {
+  const Pbs = require('./pbs');
+  const S = M.spot;
+  const bees = beesQty > 0 ? { qty: beesQty, price: beesPx, now: beesPx } : null;
+  const empty = { legs: [], realised: { CE: 0, PE: 0 }, costs: {}, lot, expiry };
+  const ups = BEST_MOVES.map((m) => S * (1 + m / 100));
+  const downs = BEST_MOVES.map((m) => S * (1 - m / 100));
+  const band = Math.min(10, Math.max(0.5, Number(midBand) || MID_BAND));
+  const mids = Array.from({ length: Math.round(band * 20) + 1 }, (_, i) => S * (1 + (i / 10 - band) / 100));
+  const key = PBS_KEY[rank] ? rank : 'protect';
+  const p = Pbs.merge({
+    ...params,
+    lots,
+    lotSize: lot,
+    costs: { ...(params.costs || {}), slipPct: slip * 100 },
+    pick: { ...(params.pick || {}), mode: 'search', maxLoss: maxLoss / lots, rank: key === 'up' ? 'credit' : key },
+  });
+  const pr = (k) => (M.exec('PE', k) > 0 && !M.notEnterable('PE', k) ? M.exec('PE', k) : null);
+  const rough = Pbs.searchRough(S, p, pr, lot);
+  const margin = 150 * lots;
+  const pass = rough.filter((c) => c.f.worst >= -maxLoss - margin);
+  const rs = (c) => Pbs.score(c.f, p.pick.rank);
+  // the best by the rank within the limit, and the least-loss ones (to fill the list when few are within)
+  const pool = [
+    ...new Set([...pass.sort((a, b) => rs(b) - rs(a) || b.f.worst - a.f.worst).slice(0, 300), ...[...rough].sort((a, b) => b.f.worst - a.f.worst).slice(0, 200)]),
+  ];
+  const avg = (a) => sum(a, (v) => v) / a.length;
+  const titleOf = (g) =>
+    g.put != null ? `Buy ${g.put} PE` : `Sell ${g.K1} PE · buy ${2 * lots}× ${g.K2} PE${g.nf ? ` + ${g.nf * lots}× fly ${g.C - g.h}/${g.C}/${g.C + g.h}` : ''}`;
+  // a structure booked and scored; null when a leg cannot be priced
+  const score = (open, g, Mx = M) => {
+    const r = priceChange(empty, { close: [], open }, Mx, slip, day);
+    if (!r) return null;
+    const opt = (x) => {
+      const e = optExpiry(r.next, x);
+      return e.CE + e.PE;
+    };
+    const ks = [...new Set(open.map((l) => l.strike))].sort((a, b) => a - b);
+    const optWorst = Math.min(...[ks[0] - 500, ...ks, ks[ks.length - 1] + STEP].map(opt));
+    const dnOpt = downs.map(opt);
+    const dnTot = downs.map((x, i) => dnOpt[i] + beesAt(bees, S, x));
+    let lowBE = null;
+    for (let x = ks[0]; x > ks[0] - 5000; x -= 5)
+      if (opt(x) >= 0) {
+        lowBE = x;
+        break;
+      }
+    const legs = r.next.legs;
+    return {
+      g,
+      r,
+      id: open.map((l) => `${l.side > 0 ? 'b' : 's'}${l.lots}x${l.strike}`).join(''),
+      key: g.K1 ?? g.put,
+      title: titleOf(g),
+      legs: legs.map((l) => ({ type: l.type, strike: l.strike, side: l.side, lots: l.lots, role: l.role, fill: l.entry, ltp: M.px(l.type, l.strike) })),
+      credit: sum(legs, (l) => -l.side * l.entry * l.lots * lot),
+      charges: r.charges,
+      up: avg(ups.map((x) => opt(x) + beesAt(bees, S, x))),
+      downOpt: avg(dnOpt),
+      down: avg(dnTot),
+      worst: Math.min(...dnTot),
+      optWorst,
+      flat: opt(S),
+      mid: Math.min(...mids.map((x) => opt(x) + beesAt(bees, S, x))),
+      lowBE,
+      atSettle: settle?.spot > 0 ? opt(settle.spot) : null,
+    };
+  };
+  const exact = pool.map((c) => score(Pbs.legsOf(c.g, p), c.g)).filter(Boolean);
+  const within = exact.filter((o) => o.optWorst >= -maxLoss);
+  const by = (a, b) => b[PBS_KEY[key]] - a[PBS_KEY[key]] || b.optWorst - a.optWorst;
+  // within the limit by the rank, then the rest with the least loss first (marked over: true)
+  const over = exact.filter((o) => o.optWorst < -maxLoss).sort((a, b) => b.optWorst - a.optWorst || by(a, b));
+  const list = [...[...within].sort(by), ...over.map((o) => ({ ...o, over: true }))];
+  const beesOut = settle?.bees > 0 && bees ? bees.qty * (settle.bees - bees.price) : 0;
+  const actualOf = (opt) => (settle?.spot > 0 ? { spot: settle.spot, opt, bees: beesOut, total: opt + beesOut } : null);
+  const out1 = (o) => {
+    const { g, r, atSettle, ...rest } = o;
+    return { ...rest, shape: g, grid: grid(r.next, M, bees, S), actual: atSettle == null ? null : actualOf(atSettle) };
+  };
+  let hindsight = null;
+  if (settle?.spot > 0 && exact.length) {
+    const h = (within.length ? within : exact).reduce((a, b) => (b.atSettle > a.atSettle ? b : a));
+    hindsight = { title: h.title, actual: actualOf(h.atSettle), up: h.up, downOpt: h.downOpt };
+  }
+  let rules = null;
+  if (fixed?.open?.length) {
+    const o = score(fixed.open, fixed.g || {}, { ...M, notEnterable: () => null });
+    if (o) {
+      const why = fixed.open.map((l) => [l, M.notEnterable(l.type, l.strike)]).filter(([, w]) => w && w !== 'price');
+      rules = {
+        ...out1(o),
+        title: fixed.g ? titleOf(fixed.g) : o.title,
+        rules: true,
+        label: fixed.label || 'By the rules',
+        note: fixed.note || '',
+        meets: { loss: o.optWorst >= -maxLoss },
+        thin: why.map(([l, w]) => `${l.strike} ${l.type} (${w === 'volume' ? 'no trades today' : 'wide quote'})`),
+      };
+    } else rules = { rules: true, label: fixed.label || 'By the rules', missing: true, title: fixed.g ? titleOf(fixed.g) : 'the rules’ trade' };
+  }
+  const seen = new Set();
+  return {
+    shape: 'pbs',
+    tried: rough.length,
+    priced: exact.length,
+    within: within.length,
+    maxLoss,
+    rank: key,
+    midBand: band,
+    flies: p.pick.flies,
+    rules,
+    hindsight,
+    list: list
+      .filter((o) => seen.size < n && !seen.has(o.key) && seen.add(o.key))
+      .map(out1),
   };
 }
 
@@ -1809,6 +1959,7 @@ module.exports = {
   adjPayoff,
   adjMin,
   bestCollars,
+  bestBackSpreads,
   BEST_MOVES,
   MOVES,
   RELIABLE,
@@ -1824,6 +1975,7 @@ module.exports = {
   looksMcc,
   looksPsc,
   looksBpc,
+  looksPbs,
   SHAPES,
   kindOf,
   kindOfTrade,

@@ -285,7 +285,26 @@
     const lv = opts.levels;
     if (lv?.resistance) marks.push({ x: lv.resistance.price, label: `R${lv.resistance.cls === 'major' ? '★' : ''}`, color: '#f0716b', dash: [1, 3], row: 2 });
     if (lv?.support) marks.push({ x: lv.support.price, label: `S${lv.support.cls === 'major' ? '★' : ''}`, color: '#3fb68b', dash: [1, 3], row: 2 });
-    BT.chart(canvas, {
+    const callbacks = {
+      title: (c) => `Nifty ${Math.round(c[0].raw.x)} (${(((c[0].raw.x - A.spot) / A.spot) * 100).toFixed(1)}%)`,
+      label: (c) =>
+        `${c.dataset.label}: ${inrS(c.raw.y)}${A.capSel.total > 0 && !c.dataset.noPct ? ` (${c.raw.y > 0 ? '+' : ''}${((c.raw.y / A.capSel.total) * 100).toFixed(1).replace('-', '−')}% of capital)` : ''}`,
+    };
+    // The same curves already on this canvas (a live redraw, every second in the Builder): new values into that chart
+    // instead of a new chart, so a tooltip being read stays up until the mouse leaves the chart (Chart.js replays the
+    // last mouse position on update, so it shows the new values), and legend clicks and the zoom stay as they were.
+    const sig = ds.map((d) => `${d.borderColor}|${d.fill ? 1 : 0}|${(d.borderDash || []).join(',')}`).join(';');
+    const old = window.Chart?.getChart(canvas);
+    if (old && old.$paySig === sig) {
+      ds.forEach((d, i) => Object.assign(old.data.datasets[i], d));
+      const p = old.config.options.plugins;
+      p.tooltip.callbacks = callbacks;
+      p.payv.marks = marks;
+      p.payZoom.home = A.home;
+      old.update('none');
+      return;
+    }
+    const c = BT.chart(canvas, {
       type: 'line',
       data: { datasets: ds },
       plugins: [vline],
@@ -294,13 +313,7 @@
         interaction: { mode: 'nearest', axis: 'x', intersect: false },
         plugins: {
           legend: { position: 'bottom' },
-          tooltip: {
-            callbacks: {
-              title: (c) => `Nifty ${Math.round(c[0].raw.x)} (${(((c[0].raw.x - A.spot) / A.spot) * 100).toFixed(1)}%)`,
-              label: (c) =>
-                `${c.dataset.label}: ${inrS(c.raw.y)}${A.capSel.total > 0 && !c.dataset.noPct ? ` (${c.raw.y > 0 ? '+' : ''}${((c.raw.y / A.capSel.total) * 100).toFixed(1).replace('-', '−')}% of capital)` : ''}`,
-            },
-          },
+          tooltip: { callbacks },
           payv: { marks },
           payZoom: { on: true, home: A.home },
         },
@@ -310,6 +323,7 @@
         },
       },
     });
+    c.$paySig = sig;
   }
 
   // ---------- concrete position <-> relative strategy ----------
